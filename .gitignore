@@ -30,7 +30,20 @@ yarn-debug.log*
 yarn-error.log*
 
 # local env files
-.env*.local
+.env
+.env.*
+!.env.example
+
+# key material and credential stores
+*.p12
+*.pfx
+*.keystore
+*.jks
+.netrc
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
 
 # vercel
 .vercel
@@ -38,3 +51,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# minimized assets for explorations.
+*-assets

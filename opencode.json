@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "read": {
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.pem": "deny",
+      "*.key": "deny",
+      "*.p12": "deny",
+      "*credentials*": "deny",
+      "*secret*": "deny",
+      "*.env.example": "allow"
+    },
+    "bash": {
+      "security *": "deny",
+      "security": "deny",
+      "cat *.env*": "deny",
+      "grep *.env*": "deny",
+      "rg *.env*": "deny",
+      "printenv*": "deny",
+      "env": "deny",
+      "launchctl getenv*": "deny"
+    }
+  }
+}

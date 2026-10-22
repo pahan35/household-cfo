@@ -16,6 +16,16 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+## Secrets
+
+This project proxies a third-party API through `src/app/api/external-provider/[...path]/route.ts`. A live credential is stored in the macOS keychain under the service `external-api-token` and is read only by `src/server/external-provider/token.ts`. No source file contains a secret.
+
+Never read, print, log, echo, commit, or write a credential into any file. Concretely, do not open `.env` or `.env.*` (`.env.example` holds placeholders only), do not run `security find-generic-password`, and do not dump the environment with `env` or `printenv`. Ask the user to perform keychain operations themselves.
+
+Call `/api/external-provider/...` from client code and let the server attach the credential. Never add a `NEXT_PUBLIC_` variable holding a token, since that prefix inlines the value into the browser bundle. To reach a new upstream endpoint, add an explicit path prefix to `PATH_ALLOWLIST` in `src/server/external-provider/config.ts`; wildcards and empty prefixes are not allowed.
+
+Per-agent enforcement lives in `opencode.json`, `.aiignore`, `.agents/rules/secrets.md`, and `.gitignore`. Keep those in sync when adding a new secret-bearing file type.
+
 ## shadcn skill
 
 Use the shadcn skill for all work involving shadcn/ui components, styling, composition, registries, presets, or `components.json`.

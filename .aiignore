@@ -1,0 +1,26 @@
+# Junie reads this file to decide which project files it may not access.
+# Keep it gitignore-syntax and keep it committed.
+
+# Environment files (never commit; use .env.example for documentation)
+.env
+.env.*
+!.env.example
+
+# Key material and credential stores
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
+.netrc
+.npmrc
+.idx
+
+# Tooling state that can embed credentials
+.idea/
+.vscode/*.local.json
