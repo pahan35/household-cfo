@@ -57,10 +57,11 @@ npm run lint
 npm run format
 npm run check
 npm run check:fix
+npm run verify
 npm run generate:presets
 ```
 
-There is currently no automated test command. Run build, lint, check, or other validation commands only when the user explicitly requests that validation.
+There is currently no automated test command. Run build, lint, check, or other validation commands only when the user explicitly requests that validation. For fast change validation, prefer `npm run verify` (`biome check && tsc --noEmit`), which verifies linting, formatting, and full TypeScript strict types in ~5 seconds without the multi-minute overhead of a full production `npm run build`.
 
 ## Co-location-based structure
 

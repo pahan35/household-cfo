@@ -14,4 +14,4 @@
 ## 3. Integration & Validation
 
 - [ ] 3.1 Place `YoYTrendsCard` in `family-budget-dashboard.tsx` layout and connect active exclusion preset and period props; verify layout responsiveness.
-- [ ] 3.2 Run `npm run check` and `npm run build` to verify end-to-end type safety, linting, and build success.
+- [ ] 3.2 Run `npm run verify` (`biome check && tsc --noEmit`) to verify end-to-end type safety, linting, and build readiness.

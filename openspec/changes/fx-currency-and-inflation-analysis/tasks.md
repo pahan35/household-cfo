@@ -15,4 +15,4 @@
 ## 3. Dashboard Integration & Verification
 
 - [ ] 3.1 Place `MacroFxAnalysisCard` into `family-budget-dashboard.tsx` layout; verify responsive behavior on desktop and mobile.
-- [ ] 3.2 Run `npm run check` and `npm run build` to verify type safety, linting, formatting, and build success.
+- [ ] 3.2 Run `npm run verify` (`biome check && tsc --noEmit`) to verify type safety, linting, formatting, and build readiness.
