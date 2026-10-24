@@ -45,6 +45,7 @@ interface ExpensePieCardProps {
   // Optional shared presets hook instance
   presetController?: ReturnType<typeof useExclusionPresets>;
   comparison?: PeriodComparisonResult | null;
+  onSelectCategory?: (category: ExpenseSlice) => void;
 }
 
 function formatCategoryDelta(
@@ -132,6 +133,7 @@ export function ExpensePieCard({
   onRetry,
   presetController: externalPresetController,
   comparison = null,
+  onSelectCategory,
 }: ExpensePieCardProps) {
   const [sortMode, setSortMode] = useState<CategorySortMode>("spend");
   const internalPresetController = useExclusionPresets(categories);
@@ -323,6 +325,12 @@ export function ExpensePieCard({
                   cornerRadius={4}
                   strokeWidth={2}
                   stroke="var(--background)"
+                  className={cn(onSelectCategory && "cursor-pointer")}
+                  onClick={(entry) => {
+                    if (onSelectCategory && entry && "id" in entry) {
+                      onSelectCategory(entry as unknown as ExpenseSlice);
+                    }
+                  }}
                 >
                   <Label
                     content={({ viewBox }) => {
@@ -409,10 +417,15 @@ export function ExpensePieCard({
 
               return (
                 <div key={cat.id} className="flex flex-col gap-1">
-                  <div className="border-border/40 bg-muted/20 hover:bg-muted/40 flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => onSelectCategory?.(cat)}
+                    title="Click to trace category expenses"
+                    className="border-border/40 bg-muted/20 hover:bg-muted/50 group focus-visible:ring-ring flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors select-none focus-visible:ring-1 focus-visible:outline-none"
+                  >
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="size-2 shrink-0 rounded-xs" style={{ backgroundColor: colorVar }} />
-                      <span className="truncate font-medium">{cat.name}</span>
+                      <span className="group-hover:text-foreground truncate font-medium">{cat.name}</span>
                       {cat.isSmartGroup && (
                         <Badge variant="secondary" className="h-4 px-1 text-[9px] font-normal">
                           Group
@@ -429,7 +442,7 @@ export function ExpensePieCard({
                       {catDelta && catDelta.deltaAbs !== 0 && (
                         <span
                           className={cn(
-                            "text-[10px] tabular-nums font-medium",
+                            "text-[10px] font-medium tabular-nums",
                             catDelta.deltaAbs > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400",
                           )}
                         >
@@ -441,7 +454,7 @@ export function ExpensePieCard({
                         {cat.percentage.toFixed(0)}%
                       </span>
                     </div>
-                  </div>
+                  </button>
 
                   {/* Render child sub-items for smart groups (Transport & Taxi breakdown) */}
                   {cat.isSmartGroup && cat.children && cat.children.length > 0 && (
@@ -450,10 +463,21 @@ export function ExpensePieCard({
                         const isTaxi = isTaxiCategory(child.name);
                         const childDelta = comparison?.categoryDeltaMap.get(child.id);
                         return (
-                          <div key={child.id} className="flex items-center justify-between gap-2 py-0.5 text-[11px]">
+                          <button
+                            key={child.id}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectCategory?.(child);
+                            }}
+                            title="Click to trace category expenses"
+                            className="hover:bg-muted/40 group focus-visible:ring-ring flex w-full cursor-pointer items-center justify-between gap-2 rounded px-1.5 py-0.5 text-left text-[11px] transition-colors select-none focus-visible:ring-1 focus-visible:outline-none"
+                          >
                             <div className="flex min-w-0 items-center gap-1.5">
                               <span className="text-muted-foreground size-1.5 rounded-full bg-current" />
-                              <span className="truncate text-foreground/90">{child.name}</span>
+                              <span className="text-foreground/90 group-hover:text-foreground truncate">
+                                {child.name}
+                              </span>
                               <Badge
                                 variant="outline"
                                 className="text-muted-foreground h-3.5 px-1 text-[8px] font-normal"
@@ -465,7 +489,7 @@ export function ExpensePieCard({
                               {childDelta && childDelta.deltaAbs !== 0 && (
                                 <span
                                   className={cn(
-                                    "text-[9px] tabular-nums font-medium",
+                                    "text-[9px] font-medium tabular-nums",
                                     childDelta.deltaAbs > 0
                                       ? "text-destructive"
                                       : "text-emerald-600 dark:text-emerald-400",
@@ -481,7 +505,7 @@ export function ExpensePieCard({
                                 {child.percentage.toFixed(0)}%
                               </span>
                             </div>
-                          </div>
+                          </button>
                         );
                       })}
                     </div>

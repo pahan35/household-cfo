@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
 import { BudgetSummaryCard } from "./budget-summary-card";
+import { CategoryExpenseTraceSheet } from "./category-expense-trace-sheet";
 import {
   getBudgetSelection,
   getCategories,
@@ -31,7 +32,7 @@ import {
   type StatPingData,
 } from "./external-provider-data";
 import { ExpensePieCard } from "./expense-pie-card";
-import { type CompareMode, computePeriodComparison, transformExpenses } from "./expense-transforms";
+import { type CompareMode, computePeriodComparison, type ExpenseSlice, transformExpenses } from "./expense-transforms";
 import { MonthPeriodPicker } from "./month-period-picker";
 import { useExclusionPresets } from "./use-exclusion-presets";
 import { extractAvailableMonths, parsePointDate, resolveBaselineMonth } from "./yoy-transforms";
@@ -60,6 +61,8 @@ export function BudgetOverviewDashboard() {
   const [periodTransactions, setPeriodTransactions] = useState<ExternalProviderTransaction[]>([]);
   const [isLoadingPeriodTx, setIsLoadingPeriodTx] = useState(true);
   const [, setPeriodTxError] = useState<Error | null>(null);
+
+  const [selectedTraceCategory, setSelectedTraceCategory] = useState<ExpenseSlice | null>(null);
 
   const presetController = useExclusionPresets(categories);
 
@@ -282,6 +285,72 @@ export function BudgetOverviewDashboard() {
     [categories],
   );
 
+  const handleSelectCategory = useCallback((slice: ExpenseSlice | null) => {
+    setSelectedTraceCategory(slice);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (slice) {
+        url.searchParams.set("traceCategory", slice.id);
+      } else {
+        url.searchParams.delete("traceCategory");
+      }
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, []);
+
+  // Synchronize URL search params (?traceCategory=<id>) on initial mount or category arrival
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const traceId = params.get("traceCategory");
+    if (!traceId || selectedTraceCategory) return;
+
+    const findSlice = (slices: ExpenseSlice[]): ExpenseSlice | undefined => {
+      for (const s of slices) {
+        if (s.id === traceId) return s;
+        if (s.children) {
+          const foundChild = s.children.find((c) => c.id === traceId);
+          if (foundChild) return foundChild;
+        }
+      }
+      return undefined;
+    };
+
+    const found =
+      findSlice(transformed.controllableCategories) ??
+      findSlice(transformed.excludedCategories) ??
+      findSlice(transformed.taxDeductionCategories);
+
+    if (found) {
+      setSelectedTraceCategory(found);
+    } else if (categories.length > 0) {
+      const rawCat = categories.find((c) => c.id === traceId);
+      if (rawCat) {
+        setSelectedTraceCategory({
+          id: rawCat.id,
+          name: rawCat.name,
+          amount: 0,
+          percentage: 0,
+        });
+      }
+    }
+  }, [transformed, categories, selectedTraceCategory]);
+
+  // Synchronize browser forward/back buttons
+  useEffect(() => {
+    const onPopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const traceId = params.get("traceCategory");
+      if (!traceId) {
+        setSelectedTraceCategory(null);
+      }
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, []);
+
   const isLoadingPeriodData = isLoadingStatData || isLoadingPeriodTx;
   const isRefreshing = isLoadingBaseData || isLoadingStatData || isLoadingPeriodTx;
 
@@ -356,6 +425,7 @@ export function BudgetOverviewDashboard() {
         isLoading={isLoadingPeriodData}
         presetController={presetController}
         comparison={comparison}
+        onSelectCategory={handleSelectCategory}
       />
 
       {/* Year-over-Year Historical Trends */}
@@ -393,6 +463,21 @@ export function BudgetOverviewDashboard() {
           />
         </div>
       </div>
+
+      {/* Category Expense Trace Slide-over Sheet */}
+      <CategoryExpenseTraceSheet
+        open={Boolean(selectedTraceCategory)}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            handleSelectCategory(null);
+          }
+        }}
+        category={selectedTraceCategory}
+        categories={categories}
+        activeMonthDateStr={activeMonthDateStr}
+        baselineResolution={baselineResolution}
+        defaultCurrency={defaultCurrency}
+      />
     </div>
   );
 }
