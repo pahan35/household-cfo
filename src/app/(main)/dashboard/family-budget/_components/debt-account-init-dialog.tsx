@@ -43,7 +43,7 @@ export function DebtAccountInitDialog({
 
   const [name, setName] = useState("");
   const [currency, setCurrency] = useState(defaultCurrency);
-  const [exceptFromBalance, setExceptFromBalance] = useState(false);
+  const [exceptFromBalance, setExceptFromBalance] = useState(true);
 
   const availableCurrencies = useMemo(() => {
     const set = new Set(COMMON_CURRENCIES);
@@ -68,7 +68,7 @@ export function DebtAccountInitDialog({
     });
 
     setName("");
-    setExceptFromBalance(false);
+    setExceptFromBalance(true);
     onOpenChange(false);
   }
 
@@ -77,9 +77,9 @@ export function DebtAccountInitDialog({
       <DialogContent className="sm:max-w-md">
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <DialogHeader>
-            <DialogTitle>New Throwaway Debt Account</DialogTitle>
+            <DialogTitle>New Debt Account</DialogTitle>
             <DialogDescription>
-              Create a temporary clearing account to track purchases, third-party shared expenses, or deal settlements.
+              Create a native debt account to track purchases, third-party shared expenses, or deal settlements.
             </DialogDescription>
           </DialogHeader>
 

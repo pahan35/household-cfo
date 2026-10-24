@@ -140,11 +140,20 @@ async function handleResponse<T>(response: Response): Promise<T> {
     }
     let errorDetail = `Request failed with status ${response.status}`;
     try {
-      const errJson = (await response.json()) as { error?: { message?: string }; message?: string };
-      if (errJson.error?.message) {
-        errorDetail = errJson.error.message;
-      } else if (errJson.message) {
-        errorDetail = errJson.message;
+      const errJson = (await response.json()) as {
+        error?: { message?: string; detail?: string };
+        message?: string;
+        detail?: string;
+      };
+      const message = errJson.error?.message ?? errJson.message;
+      const detail = errJson.error?.detail ?? errJson.detail;
+
+      if (message && detail) {
+        errorDetail = `${message}: ${detail}`;
+      } else if (message) {
+        errorDetail = message;
+      } else if (detail) {
+        errorDetail = detail;
       }
     } catch {
       // response body was not JSON
@@ -366,7 +375,7 @@ export async function createTransaction(
   const response = await fetch("/api/external-provider/api/transaction/create", {
     method: "POST",
     headers,
-    body: JSON.stringify(tx),
+    body: JSON.stringify([tx]),
     signal: options?.signal,
   });
 

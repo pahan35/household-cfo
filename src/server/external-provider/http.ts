@@ -51,3 +51,26 @@ export function buildUpstreamErrorBody(
     },
   });
 }
+
+/**
+ * Adds `userId` to a JSON request body for upstream routes that require it
+ * (`/api/transaction/get`). The value comes from the keychain and is injected
+ * server-side; malformed or empty bodies are passed through untouched.
+ */
+export function injectUserId(rawBody: ArrayBuffer, userId: string | undefined): ArrayBuffer {
+  if (rawBody.byteLength === 0 || userId === undefined || userId.length === 0) {
+    return rawBody;
+  }
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(rawBody));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return rawBody;
+    }
+    const record = parsed as Record<string, unknown>;
+    record.userId = /^\d+$/.test(userId) ? Number(userId) : userId;
+    const encoded = new TextEncoder().encode(JSON.stringify(record));
+    return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+  } catch {
+    return rawBody;
+  }
+}

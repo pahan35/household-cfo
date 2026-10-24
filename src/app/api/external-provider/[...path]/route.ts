@@ -8,32 +8,13 @@ import {
   RESPONSE_HEADER_ALLOWLIST,
   UPSTREAM_ORIGIN,
 } from "@/server/external-provider/config";
-import { buildUpstreamErrorBody, scrubSecrets } from "@/server/external-provider/http";
+import { buildUpstreamErrorBody, injectUserId, scrubSecrets } from "@/server/external-provider/http";
 import { getUpstreamToken, getWebCredentials, MissingTokenError } from "@/server/external-provider/token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type CatchAllContext = { params: Promise<{ path: string[] }> };
-
-/**
- * Adds `userId` to a JSON request body for upstream routes that require it
- * (`/api/transaction/get`). The value comes from the keychain and is injected
- * server-side; malformed or empty bodies are passed through untouched.
- */
-function injectUserId(rawBody: ArrayBuffer, userId: string | undefined): ArrayBuffer {
-  if (rawBody.byteLength === 0 || userId === undefined || userId.length === 0) {
-    return rawBody;
-  }
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(rawBody)) as Record<string, unknown>;
-    parsed.userId = /^\d+$/.test(userId) ? Number(userId) : userId;
-    const encoded = new TextEncoder().encode(JSON.stringify(parsed));
-    return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
-  } catch {
-    return rawBody;
-  }
-}
 
 function jsonError(message: string, status: number): NextResponse {
   return NextResponse.json({ error: { message } }, { status });
@@ -98,7 +79,7 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
   }
 
   let requestBody = method === "GET" ? undefined : await request.arrayBuffer();
-  if (webCreds !== undefined && requestBody !== undefined && upstreamPath.startsWith("/api/transaction/")) {
+  if (webCreds !== undefined && requestBody !== undefined && upstreamPath === "/api/transaction/get") {
     requestBody = injectUserId(requestBody, webCreds.userId);
   }
 
@@ -159,6 +140,10 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
 
       if (!upstreamResponse.ok) {
         const upstreamBody = await upstreamResponse.text().catch(() => "");
+        const scrubbedError = scrubSecrets(upstreamBody, ...secrets);
+        console.error(
+          `[External API Proxy] ${method} ${upstreamPath} -> ${upstreamResponse.status} (upstream error: ${scrubbedError})`,
+        );
         const body = buildUpstreamErrorBody(
           upstreamResponse.status,
           upstreamResponse.statusText,
@@ -171,6 +156,11 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
           status: upstreamResponse.status,
         });
       }
+
+      const statusMsg = upstreamResponse.statusText
+        ? `${upstreamResponse.status} ${upstreamResponse.statusText}`
+        : `${upstreamResponse.status} OK`;
+      console.log(`[External API Proxy] ${method} ${upstreamPath} -> ${statusMsg}`);
 
       const responseHeaders = new Headers();
       for (const name of RESPONSE_HEADER_ALLOWLIST) {
@@ -200,6 +190,10 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
 
         if (!upstreamResponse.ok) {
           const upstreamBody = await upstreamResponse.text().catch(() => "");
+          const scrubbedError = scrubSecrets(upstreamBody, ...secrets);
+          console.error(
+            `[External API Proxy] ${method} ${upstreamPath} -> ${upstreamResponse.status} (upstream error: ${scrubbedError})`,
+          );
           const body = buildUpstreamErrorBody(
             upstreamResponse.status,
             upstreamResponse.statusText,
@@ -241,7 +235,9 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    return jsonError(`Upstream request failed: ${scrubSecrets(message, ...secrets)}`, 502);
+    const scrubbed = scrubSecrets(message, ...secrets);
+    console.error(`[External API Proxy] ${method} ${upstreamPath} -> Error: ${scrubbed}`);
+    return jsonError(`Upstream request failed: ${scrubbed}`, 502);
   }
 }
 

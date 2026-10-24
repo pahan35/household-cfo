@@ -163,7 +163,7 @@ describe("Client updateCategoriesOrder", () => {
     expect(cached).toBeUndefined();
   });
 
-  it("createTransaction POSTs to /api/external-provider/api/transaction/create and invalidates client cache", async () => {
+  it("createTransaction POSTs an array payload [tx] to /api/external-provider/api/transaction/create and invalidates client cache", async () => {
     let capturedUrl = "";
     let capturedMethod = "";
     let capturedHeaders: Headers | undefined;
@@ -195,7 +195,28 @@ describe("Client updateCategoriesOrder", () => {
     expect(capturedUrl).toBe("/api/external-provider/api/transaction/create");
     expect(capturedMethod).toBe("POST");
     expect(capturedHeaders?.get("cache-control")).toBe("no-cache");
-    expect(capturedBody).toEqual(txPayload);
+    expect(capturedBody).toEqual([txPayload]);
+  });
+
+  it("surfaces upstream error message and detail when API request fails", async () => {
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return new Response(
+        JSON.stringify({
+          error: {
+            message: "Upstream request failed with 400 Bad Request",
+            detail: '{"error":"Invalid ticks"}',
+          },
+        }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    });
+
+    await expect(createTransaction({ id: "tx-fail", sourceAmount: 100, destinationAmount: 100 })).rejects.toThrow(
+      'Upstream request failed with 400 Bad Request: {"error":"Invalid ticks"}',
+    );
   });
 
   it("updateTransaction and updateTransactionTags POST to /api/external-provider/api/transaction/update and invalidate cache", async () => {

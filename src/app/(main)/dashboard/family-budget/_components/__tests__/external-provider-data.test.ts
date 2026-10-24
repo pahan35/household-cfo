@@ -551,48 +551,48 @@ describe("moveAccountsAboveArchived", () => {
 });
 
 describe("formatThrowawayDebtAccountName", () => {
-  it("formats bare names into 'Debt: <Name>'", () => {
-    expect(formatThrowawayDebtAccountName("Alex")).toBe("Debt: Alex");
-    expect(formatThrowawayDebtAccountName("Laptop Deal")).toBe("Debt: Laptop Deal");
+  it("formats bare names directly without artificial prefixes", () => {
+    expect(formatThrowawayDebtAccountName("Alex")).toBe("Alex");
+    expect(formatThrowawayDebtAccountName("Laptop Deal")).toBe("Laptop Deal");
   });
 
   it("normalizes names that already contain 'Debt:' or leading underscores", () => {
-    expect(formatThrowawayDebtAccountName("Debt: Alex")).toBe("Debt: Alex");
-    expect(formatThrowawayDebtAccountName("debt: Alex")).toBe("Debt: Alex");
-    expect(formatThrowawayDebtAccountName("_Debt: Alex")).toBe("Debt: Alex");
-    expect(formatThrowawayDebtAccountName("___debt:  Alex  ")).toBe("Debt: Alex");
-    expect(formatThrowawayDebtAccountName("_Alex")).toBe("Debt: Alex");
+    expect(formatThrowawayDebtAccountName("Debt: Alex")).toBe("Alex");
+    expect(formatThrowawayDebtAccountName("debt: Alex")).toBe("Alex");
+    expect(formatThrowawayDebtAccountName("_Debt: Alex")).toBe("Alex");
+    expect(formatThrowawayDebtAccountName("___debt:  Alex  ")).toBe("Alex");
+    expect(formatThrowawayDebtAccountName("_Alex")).toBe("Alex");
   });
 
-  it("falls back to 'Debt: Deal' if input is empty or whitespace", () => {
-    expect(formatThrowawayDebtAccountName("")).toBe("Debt: Deal");
-    expect(formatThrowawayDebtAccountName("   ")).toBe("Debt: Deal");
+  it("falls back to 'Debt' if input is empty or whitespace", () => {
+    expect(formatThrowawayDebtAccountName("")).toBe("Debt");
+    expect(formatThrowawayDebtAccountName("   ")).toBe("Debt");
   });
 });
 
 describe("isThrowawayDebtAccount", () => {
-  it("identifies active and archived debt accounts", () => {
+  it("identifies active and archived native debt accounts by categoryType 5", () => {
     expect(
       isThrowawayDebtAccount({
         id: "1",
-        name: "Debt: Alex",
-        categoryType: CategoryType.Account,
+        name: "Alex",
+        categoryType: CategoryType.DebtAccount,
       }),
     ).toBe(true);
 
     expect(
       isThrowawayDebtAccount({
         id: "2",
-        name: "_Debt: Alex",
-        categoryType: CategoryType.Account,
+        name: "_Alex",
+        categoryType: CategoryType.DebtAccount,
       }),
     ).toBe(true);
 
     expect(
       isThrowawayDebtAccount({
         id: "3",
-        name: "_debt: Laptop Deal",
-        categoryType: CategoryType.BankAccount,
+        name: "Laptop Deal",
+        categoryType: 5,
       }),
     ).toBe(true);
   });
@@ -601,24 +601,24 @@ describe("isThrowawayDebtAccount", () => {
     expect(
       isThrowawayDebtAccount({
         id: "4",
-        name: "Main Card",
-        categoryType: CategoryType.BankAccount,
+        name: "Debt: Alex",
+        categoryType: CategoryType.Account, // synthetic prefix without native enum is not recognized
       }),
     ).toBe(false);
 
     expect(
       isThrowawayDebtAccount({
         id: "5",
-        name: "Debt: Alex",
-        categoryType: CategoryType.Expense, // expense category, not account
+        name: "Alex",
+        categoryType: CategoryType.Expense,
       }),
     ).toBe(false);
 
     expect(
       isThrowawayDebtAccount({
         id: "6",
-        name: "Debt: Alex",
-        categoryType: CategoryType.Account,
+        name: "Alex",
+        categoryType: CategoryType.DebtAccount,
         deleted: true,
       }),
     ).toBe(false);
@@ -640,7 +640,7 @@ describe("toDotNetTicks", () => {
 });
 
 describe("buildNewDebtAccountCategory", () => {
-  it("creates account named 'Debt: <Name>' inserted immediately before the first archived account", () => {
+  it("creates native CategoryType.DebtAccount inserted immediately before the first archived account", () => {
     const categories: ExternalProviderCategory[] = [
       { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
       { id: "acc-2", name: "Savings", categoryType: CategoryType.BankAccount, order: 1 },
@@ -653,8 +653,10 @@ describe("buildNewDebtAccountCategory", () => {
       id: "debt-alex-1",
     });
 
-    expect(result.newAccount.name).toBe("Debt: Alex");
-    expect(result.newAccount.categoryType).toBe(CategoryType.Account);
+    expect(result.newAccount.name).toBe("Alex");
+    expect(result.newAccount.categoryType).toBe(CategoryType.DebtAccount);
+    expect(result.newAccount.icon).toBe("debt");
+    expect(result.newAccount.exceptFromBalance).toBe(true);
     expect(result.newAccount.currencyId).toBe("USD");
     expect(result.newAccount.amount).toBe(0);
     expect(result.newAccount.order).toBe(2);
@@ -662,15 +664,15 @@ describe("buildNewDebtAccountCategory", () => {
     expect(result.updatedCategories.map((c) => ({ name: c.name, order: c.order }))).toEqual([
       { name: "Checking", order: 0 },
       { name: "Savings", order: 1 },
-      { name: "Debt: Alex", order: 2 },
+      { name: "Alex", order: 2 },
       { name: "_ArchivedOld", order: 3 },
     ]);
 
-    expect(result.modifiedCategories.map((c) => c.name)).toContain("Debt: Alex");
+    expect(result.modifiedCategories.map((c) => c.name)).toContain("Alex");
     expect(result.modifiedCategories.map((c) => c.name)).toContain("_ArchivedOld");
   });
 
-  it("normalizes prefixed user input and respects exceptFromBalance option", () => {
+  it("normalizes prefixed user input and respects explicit exceptFromBalance option", () => {
     const categories: ExternalProviderCategory[] = [
       { id: "acc-1", name: "Cash", categoryType: CategoryType.Account, order: 0 },
     ];
@@ -678,14 +680,15 @@ describe("buildNewDebtAccountCategory", () => {
     const result = buildNewDebtAccountCategory(categories, {
       name: "  _Debt: Laptop Deal  ",
       currencyId: "EUR",
-      exceptFromBalance: true,
+      exceptFromBalance: false,
       id: "debt-deal-2",
     });
 
-    expect(result.newAccount.name).toBe("Debt: Laptop Deal");
-    expect(result.newAccount.exceptFromBalance).toBe(true);
+    expect(result.newAccount.name).toBe("Laptop Deal");
+    expect(result.newAccount.categoryType).toBe(CategoryType.DebtAccount);
+    expect(result.newAccount.exceptFromBalance).toBe(false);
     expect(result.newAccount.order).toBe(1);
-    expect(result.updatedCategories.map((c) => c.name)).toEqual(["Cash", "Debt: Laptop Deal"]);
+    expect(result.updatedCategories.map((c) => c.name)).toEqual(["Cash", "Laptop Deal"]);
   });
 });
 
@@ -693,13 +696,13 @@ describe("archiveAccountCategory with exceptFromBalance", () => {
   it("updates exceptFromBalance to true when specified in options", () => {
     const categories: ExternalProviderCategory[] = [
       { id: "acc-1", name: "Main", categoryType: CategoryType.Account, order: 0 },
-      { id: "debt-1", name: "Debt: Alex", categoryType: CategoryType.Account, order: 1, exceptFromBalance: false },
+      { id: "debt-1", name: "Alex", categoryType: CategoryType.DebtAccount, order: 1, exceptFromBalance: false },
     ];
 
     const result = archiveAccountCategory(categories, "debt-1", { exceptFromBalance: true });
     const archived = result.updatedCategories.find((c) => c.id === "debt-1");
 
-    expect(archived?.name).toBe("_Debt: Alex");
+    expect(archived?.name).toBe("_Alex");
     expect(archived?.exceptFromBalance).toBe(true);
     expect(result.modifiedCategories.some((c) => c.id === "debt-1" && c.exceptFromBalance === true)).toBe(true);
   });
@@ -715,8 +718,8 @@ describe("Clearing Transaction Builders", () => {
 
   const debtAccount: ExternalProviderCategory = {
     id: "debt-alex",
-    name: "Debt: Alex",
-    categoryType: CategoryType.Account,
+    name: "Alex",
+    categoryType: CategoryType.DebtAccount,
     currencyId: "USD",
   };
 
@@ -742,11 +745,10 @@ describe("Clearing Transaction Builders", () => {
   };
 
   describe("buildPrincipalOutflowTransaction", () => {
-    it("builds a transfer from personal account to debt account with cross-currency amounts", () => {
-      const fixedDate = new Date("2026-10-24T12:00:00.000Z");
+    it("builds a transfer from personal account to debt account with complete timestamps and flags", () => {
       const tx = buildPrincipalOutflowTransaction({
         id: "tx-outflow-1",
-        date: fixedDate,
+        date: "2026-10-15",
         sourceAccount,
         debtAccount,
         sourceAmount: 1000,
@@ -760,17 +762,23 @@ describe("Clearing Transaction Builders", () => {
       expect(tx.sourceAmount).toBe(1000);
       expect(tx.sourceCurrencyId).toBe("PLN");
       expect(tx.destinationId).toBe("debt-alex");
-      expect(tx.destinationType).toBe(CategoryType.Account);
+      expect(tx.destinationType).toBe(CategoryType.DebtAccount);
       expect(tx.destinationAmount).toBe(250);
       expect(tx.destinationCurrencyId).toBe("USD");
       expect(tx.comment).toBe("Monitor purchase");
-      expect(tx.dateTimestamp).toBe(toDotNetTicks(fixedDate));
+      expect(tx.dateTimestamp).toBe(toDotNetTicks(new Date(Date.UTC(2026, 9, 15))));
+      expect(tx.dateTimestampISO).toBe("2026-10-15T00:00:00.000Z");
+      expect(tx.createdTimestamp).toBeGreaterThan(0);
+      expect(tx.timestamp).toBeGreaterThan(0);
+      expect(tx.isComplete).toBe(true);
+      expect(tx.debtPaymentAmount).toBe(0);
     });
   });
 
   describe("buildFeeTransaction", () => {
-    it("builds debtor-absorbed fee as transfer to debt account", () => {
+    it("builds debtor-absorbed fee as transfer to debt account with complete timestamps", () => {
       const tx = buildFeeTransaction({
+        date: "2026-10-20",
         sourceAccount,
         debtAccount,
         absorbedBy: "debtor",
@@ -781,14 +789,19 @@ describe("Clearing Transaction Builders", () => {
 
       expect(tx.sourceId).toBe("card-pln");
       expect(tx.destinationId).toBe("debt-alex");
-      expect(tx.destinationType).toBe(CategoryType.Account);
+      expect(tx.destinationType).toBe(CategoryType.DebtAccount);
       expect(tx.sourceAmount).toBe(120);
       expect(tx.destinationAmount).toBe(30);
       expect(tx.comment).toBe("Wire fee (debtor)");
+      expect(tx.dateTimestamp).toBe(toDotNetTicks(new Date(Date.UTC(2026, 9, 20))));
+      expect(tx.dateTimestampISO).toBe("2026-10-20T00:00:00.000Z");
+      expect(tx.isComplete).toBe(true);
+      expect(tx.debtPaymentAmount).toBe(0);
     });
 
-    it("builds user-absorbed fee as expense to fee expense category", () => {
+    it("builds user-absorbed fee as expense to fee expense category with complete timestamps", () => {
       const tx = buildFeeTransaction({
+        date: "2026-10-20",
         sourceAccount,
         debtAccount,
         feeExpenseCategory: feeCategory,
@@ -803,12 +816,15 @@ describe("Clearing Transaction Builders", () => {
       expect(tx.sourceAmount).toBe(120);
       expect(tx.destinationAmount).toBe(120);
       expect(tx.comment).toBe("Wire fee (absorbed by me)");
+      expect(tx.isComplete).toBe(true);
+      expect(tx.debtPaymentAmount).toBe(0);
     });
   });
 
   describe("buildSettlementTransaction", () => {
     it("builds Case A shared expense settlement from debt account to expense category", () => {
       const tx = buildSettlementTransaction({
+        date: "2026-10-18",
         debtAccount,
         destinationCategory: expenseCategory,
         deductedDebtAmount: 20,
@@ -817,16 +833,20 @@ describe("Clearing Transaction Builders", () => {
       });
 
       expect(tx.sourceId).toBe("debt-alex");
-      expect(tx.sourceType).toBe(CategoryType.Account);
+      expect(tx.sourceType).toBe(CategoryType.DebtAccount);
       expect(tx.sourceAmount).toBe(20);
       expect(tx.destinationId).toBe("cat-taxi");
       expect(tx.destinationType).toBe(CategoryType.Expense);
       expect(tx.destinationAmount).toBe(80);
       expect(tx.destinationCurrencyId).toBe("PLN");
+      expect(tx.dateTimestamp).toBe(toDotNetTicks(new Date(Date.UTC(2026, 9, 18))));
+      expect(tx.isComplete).toBe(true);
+      expect(tx.debtPaymentAmount).toBe(0);
     });
 
     it("builds Case C transfer settlement from debt account to family account", () => {
       const tx = buildSettlementTransaction({
+        date: "2026-10-21",
         debtAccount,
         destinationCategory: familyAccount,
         deductedDebtAmount: 150,
@@ -835,11 +855,15 @@ describe("Clearing Transaction Builders", () => {
       });
 
       expect(tx.sourceId).toBe("debt-alex");
+      expect(tx.sourceType).toBe(CategoryType.DebtAccount);
       expect(tx.sourceAmount).toBe(150);
       expect(tx.destinationId).toBe("acc-wife");
       expect(tx.destinationType).toBe(CategoryType.BankAccount);
       expect(tx.destinationAmount).toBe(6200);
       expect(tx.destinationCurrencyId).toBe("UAH");
+      expect(tx.dateTimestamp).toBe(toDotNetTicks(new Date(Date.UTC(2026, 9, 21))));
+      expect(tx.isComplete).toBe(true);
+      expect(tx.debtPaymentAmount).toBe(0);
     });
   });
 
@@ -864,6 +888,7 @@ describe("Clearing Transaction Builders", () => {
 
     it("builds expense adjustment when balance > 0 (forgiven remainder / FX loss)", () => {
       const tx = buildFxReconciliationTransaction({
+        date: "2026-10-24",
         debtAccount,
         balance: 1.45,
         reconciliationCategory: feeCategory,
@@ -871,10 +896,14 @@ describe("Clearing Transaction Builders", () => {
 
       expect(tx).not.toBeNull();
       expect(tx?.sourceId).toBe("debt-alex");
+      expect(tx?.sourceType).toBe(CategoryType.DebtAccount);
       expect(tx?.destinationId).toBe("cat-fees");
       expect(tx?.sourceAmount).toBe(1.45);
       expect(tx?.destinationAmount).toBe(1.45);
       expect(tx?.destinationType).toBe(CategoryType.Expense);
+      expect(tx?.dateTimestamp).toBe(toDotNetTicks(new Date(Date.UTC(2026, 9, 24))));
+      expect(tx?.isComplete).toBe(true);
+      expect(tx?.debtPaymentAmount).toBe(0);
     });
 
     it("builds income adjustment when balance < 0 (FX gain / overpayment)", () => {
@@ -886,6 +915,7 @@ describe("Clearing Transaction Builders", () => {
       };
 
       const tx = buildFxReconciliationTransaction({
+        date: "2026-10-24",
         debtAccount,
         balance: -2.1,
         reconciliationCategory: incomeCategory,
@@ -895,9 +925,12 @@ describe("Clearing Transaction Builders", () => {
       expect(tx?.sourceId).toBe("cat-fx-gain");
       expect(tx?.sourceType).toBe(CategoryType.Income);
       expect(tx?.destinationId).toBe("debt-alex");
-      expect(tx?.destinationType).toBe(CategoryType.Account);
+      expect(tx?.destinationType).toBe(CategoryType.DebtAccount);
       expect(tx?.sourceAmount).toBe(2.1);
       expect(tx?.destinationAmount).toBe(2.1);
+      expect(tx?.dateTimestamp).toBe(toDotNetTicks(new Date(Date.UTC(2026, 9, 24))));
+      expect(tx?.isComplete).toBe(true);
+      expect(tx?.debtPaymentAmount).toBe(0);
     });
   });
 

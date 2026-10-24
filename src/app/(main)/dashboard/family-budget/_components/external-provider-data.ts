@@ -31,8 +31,7 @@ export function isAccountType(type: number | undefined | null): boolean {
 }
 
 /**
- * Normalizes user input into standard "Debt: <Person/Deal>" format,
- * removing any duplicate "Debt:" or leading "_" prefixes.
+ * Normalizes user input for debt account name, stripping any accidental leading "Debt:" or "_" prefixes.
  */
 export function formatThrowawayDebtAccountName(rawName: string): string {
   const clean = rawName
@@ -41,18 +40,15 @@ export function formatThrowawayDebtAccountName(rawName: string): string {
     .trim()
     .replace(/^debt:\s*/i, "")
     .trim();
-  return clean.length > 0 ? `Debt: ${clean}` : "Debt: Deal";
+  return clean.length > 0 ? clean : "Debt";
 }
 
 /**
- * Returns true if the category is a non-deleted account-type category whose name
- * starts with "Debt:" or "_Debt:" (case-insensitive after leading underscores).
+ * Returns true if the category is a non-deleted native Debt Account (`categoryType === CategoryType.DebtAccount` / 5).
  */
 export function isThrowawayDebtAccount(category: ExternalProviderCategory | null | undefined): boolean {
   if (!category || category.deleted) return false;
-  if (!isAccountType(category.categoryType)) return false;
-  const nameWithoutUnderscores = category.name.trim().replace(/^_+/, "").trim();
-  return /^debt:\s*/i.test(nameWithoutUnderscores);
+  return Number(category.categoryType) === CategoryType.DebtAccount;
 }
 export interface ExternalProviderSettings {
   language?: string;
@@ -465,6 +461,49 @@ export function toDotNetTicks(date: Date = new Date()): number {
   return Number(BigInt(date.getTime()) * BigInt(10000) + BigInt("621355968000000000"));
 }
 
+/**
+ * Normalizes a transaction date input (Date or YYYY-MM-DD string) to UTC midnight .NET ticks and ISO string.
+ */
+export function normalizeTransactionDate(dateInput?: Date | string): {
+  dateUtcMidnight: Date;
+  dateTimestamp: number;
+  dateTimestampISO: string;
+} {
+  let year: number;
+  let month: number;
+  let day: number;
+
+  if (typeof dateInput === "string") {
+    const parts = dateInput.trim().split("-");
+    if (parts.length === 3) {
+      year = Number.parseInt(parts[0], 10);
+      month = Number.parseInt(parts[1], 10) - 1;
+      day = Number.parseInt(parts[2], 10);
+    } else {
+      const parsed = new Date(dateInput);
+      year = parsed.getUTCFullYear();
+      month = parsed.getUTCMonth();
+      day = parsed.getUTCDate();
+    }
+  } else if (dateInput instanceof Date) {
+    year = dateInput.getUTCFullYear();
+    month = dateInput.getUTCMonth();
+    day = dateInput.getUTCDate();
+  } else {
+    const now = new Date();
+    year = now.getFullYear();
+    month = now.getMonth();
+    day = now.getDate();
+  }
+
+  const dateUtcMidnight = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  return {
+    dateUtcMidnight,
+    dateTimestamp: toDotNetTicks(dateUtcMidnight),
+    dateTimestampISO: dateUtcMidnight.toISOString(),
+  };
+}
+
 export interface NewDebtAccountInput {
   name: string;
   currencyId: string;
@@ -478,9 +517,10 @@ export interface BuildNewDebtAccountResult extends ReorderCategoriesResult {
 }
 
 /**
- * Creates a new ExternalProviderCategory entity of type CategoryType.Account (2) named "Debt: <Person/Deal>",
+ * Creates a new ExternalProviderCategory entity of native type CategoryType.DebtAccount (5) with icon "debt",
  * places it immediately before the first archived ("_"-prefixed) account (or at the end of active accounts),
  * and re-indexes sequential integer order values (0, 1, 2, ...).
+ * Defaults exceptFromBalance to true.
  * Returns the new category along with updatedCategories and modifiedCategories.
  */
 export function buildNewDebtAccountCategory(
@@ -495,16 +535,16 @@ export function buildNewDebtAccountCategory(
         : `debt-${Date.now()}`),
     name: formatThrowawayDebtAccountName(input.name),
     currencyId: input.currencyId,
-    categoryType: CategoryType.Account,
+    categoryType: CategoryType.DebtAccount,
     amount: 0,
     limitAmount: 0,
     periodizedLimitAmount: 0,
     deleted: false,
     deletedWithTransactions: false,
     goalClosed: false,
-    icon: "Miscellaneous",
+    icon: "debt",
     parentUid: null,
-    exceptFromBalance: Boolean(input.exceptFromBalance),
+    exceptFromBalance: input.exceptFromBalance !== undefined ? Boolean(input.exceptFromBalance) : true,
     createdTimestamp: toDotNetTicks(input.createdDate ?? new Date()),
   };
 
@@ -605,7 +645,7 @@ export function archiveIncomeCategory(
 
 export interface PrincipalOutflowParams {
   id?: string;
-  date?: Date;
+  date?: Date | string;
   sourceAccount: ExternalProviderCategory;
   debtAccount: ExternalProviderCategory;
   sourceAmount: number;
@@ -615,7 +655,8 @@ export interface PrincipalOutflowParams {
 }
 
 export function buildPrincipalOutflowTransaction(params: PrincipalOutflowParams): ExternalProviderTransaction {
-  const date = params.date ?? new Date();
+  const { dateTimestamp, dateTimestampISO } = normalizeTransactionDate(params.date);
+  const nowTicks = toDotNetTicks();
   const id =
     params.id ??
     (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -625,8 +666,12 @@ export function buildPrincipalOutflowTransaction(params: PrincipalOutflowParams)
   return {
     id,
     deleted: false,
-    dateTimestamp: toDotNetTicks(date),
-    dateTimestampISO: date.toISOString(),
+    dateTimestamp,
+    dateTimestampISO,
+    createdTimestamp: nowTicks,
+    timestamp: nowTicks,
+    isComplete: true,
+    debtPaymentAmount: 0,
     sourceId: params.sourceAccount.id,
     sourceType: params.sourceAccount.categoryType,
     sourceAmount: Math.abs(params.sourceAmount),
@@ -644,7 +689,7 @@ export function buildPrincipalOutflowTransaction(params: PrincipalOutflowParams)
 
 export interface FeeTransactionParams {
   id?: string;
-  date?: Date;
+  date?: Date | string;
   sourceAccount: ExternalProviderCategory;
   debtAccount: ExternalProviderCategory;
   feeExpenseCategory?: ExternalProviderCategory;
@@ -656,7 +701,8 @@ export interface FeeTransactionParams {
 }
 
 export function buildFeeTransaction(params: FeeTransactionParams): ExternalProviderTransaction {
-  const date = params.date ?? new Date();
+  const { dateTimestamp, dateTimestampISO } = normalizeTransactionDate(params.date);
+  const nowTicks = toDotNetTicks();
   const id =
     params.id ??
     (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -671,8 +717,12 @@ export function buildFeeTransaction(params: FeeTransactionParams): ExternalProvi
     return {
       id,
       deleted: false,
-      dateTimestamp: toDotNetTicks(date),
-      dateTimestampISO: date.toISOString(),
+      dateTimestamp,
+      dateTimestampISO,
+      createdTimestamp: nowTicks,
+      timestamp: nowTicks,
+      isComplete: true,
+      debtPaymentAmount: 0,
       sourceId: params.sourceAccount.id,
       sourceType: params.sourceAccount.categoryType,
       sourceAmount: feeAmount,
@@ -693,8 +743,12 @@ export function buildFeeTransaction(params: FeeTransactionParams): ExternalProvi
   return {
     id,
     deleted: false,
-    dateTimestamp: toDotNetTicks(date),
-    dateTimestampISO: date.toISOString(),
+    dateTimestamp,
+    dateTimestampISO,
+    createdTimestamp: nowTicks,
+    timestamp: nowTicks,
+    isComplete: true,
+    debtPaymentAmount: 0,
     sourceId: params.sourceAccount.id,
     sourceType: params.sourceAccount.categoryType,
     sourceAmount: feeAmount,
@@ -712,7 +766,7 @@ export function buildFeeTransaction(params: FeeTransactionParams): ExternalProvi
 
 export interface SettlementTransactionParams {
   id?: string;
-  date?: Date;
+  date?: Date | string;
   debtAccount: ExternalProviderCategory;
   destinationCategory: ExternalProviderCategory;
   deductedDebtAmount: number;
@@ -722,7 +776,8 @@ export interface SettlementTransactionParams {
 }
 
 export function buildSettlementTransaction(params: SettlementTransactionParams): ExternalProviderTransaction {
-  const date = params.date ?? new Date();
+  const { dateTimestamp, dateTimestampISO } = normalizeTransactionDate(params.date);
+  const nowTicks = toDotNetTicks();
   const id =
     params.id ??
     (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -735,8 +790,12 @@ export function buildSettlementTransaction(params: SettlementTransactionParams):
   return {
     id,
     deleted: false,
-    dateTimestamp: toDotNetTicks(date),
-    dateTimestampISO: date.toISOString(),
+    dateTimestamp,
+    dateTimestampISO,
+    createdTimestamp: nowTicks,
+    timestamp: nowTicks,
+    isComplete: true,
+    debtPaymentAmount: 0,
     sourceId: params.debtAccount.id,
     sourceType: params.debtAccount.categoryType,
     sourceAmount: deductedAmount,
@@ -754,7 +813,7 @@ export function buildSettlementTransaction(params: SettlementTransactionParams):
 
 export interface FxReconciliationParams {
   id?: string;
-  date?: Date;
+  date?: Date | string;
   debtAccount: ExternalProviderCategory;
   balance: number;
   reconciliationCategory: ExternalProviderCategory;
@@ -768,7 +827,8 @@ export function buildFxReconciliationTransaction(params: FxReconciliationParams)
     return null;
   }
 
-  const date = params.date ?? new Date();
+  const { dateTimestamp, dateTimestampISO } = normalizeTransactionDate(params.date);
+  const nowTicks = toDotNetTicks();
   const id =
     params.id ??
     (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -783,8 +843,12 @@ export function buildFxReconciliationTransaction(params: FxReconciliationParams)
     return {
       id,
       deleted: false,
-      dateTimestamp: toDotNetTicks(date),
-      dateTimestampISO: date.toISOString(),
+      dateTimestamp,
+      dateTimestampISO,
+      createdTimestamp: nowTicks,
+      timestamp: nowTicks,
+      isComplete: true,
+      debtPaymentAmount: 0,
       sourceId: params.debtAccount.id,
       sourceType: params.debtAccount.categoryType,
       sourceAmount: balanceAmount,
@@ -807,8 +871,12 @@ export function buildFxReconciliationTransaction(params: FxReconciliationParams)
   return {
     id,
     deleted: false,
-    dateTimestamp: toDotNetTicks(date),
-    dateTimestampISO: date.toISOString(),
+    dateTimestamp,
+    dateTimestampISO,
+    createdTimestamp: nowTicks,
+    timestamp: nowTicks,
+    isComplete: true,
+    debtPaymentAmount: 0,
     sourceId: params.reconciliationCategory.id,
     sourceType: params.reconciliationCategory.categoryType ?? CategoryType.Income,
     sourceAmount: converted,

@@ -467,6 +467,8 @@ function getAccountIcon(type: number) {
       return <Landmark className="text-primary size-4" />;
     case CategoryType.Account:
       return <Wallet className="size-4 text-emerald-600 dark:text-emerald-400" />;
+    case CategoryType.DebtAccount:
+      return <Scale className="size-4 text-purple-600 dark:text-purple-400" />;
     default:
       return <CreditCard className="text-muted-foreground size-4" />;
   }
@@ -594,16 +596,17 @@ function SortableAccountRow({
           </div>
 
           <div className="flex items-center gap-2 text-xs">
-            <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">
-              {getCategoryTypeName(typeNum)}
-            </Badge>
-
-            {isThrowawayDebtAccount(account) && (
+            {!isThrowawayDebtAccount(account) ? (
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">
+                {getCategoryTypeName(typeNum)}
+              </Badge>
+            ) : (
               <Badge
                 variant="outline"
-                className="border-purple-500/30 bg-purple-500/10 text-purple-600 dark:text-purple-400 px-1.5 py-0 text-[10px] font-normal"
+                className="flex items-center gap-1 border-purple-500/30 bg-purple-500/10 px-1.5 py-0 text-[10px] font-normal text-purple-600 dark:text-purple-400"
               >
-                Clearing
+                <Scale className="size-3" />
+                <span>Debt</span>
               </Badge>
             )}
 

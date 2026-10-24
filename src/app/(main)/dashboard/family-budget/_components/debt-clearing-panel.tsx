@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "cn";
+import { format } from "date-fns";
 import {
   AlertCircle,
   Archive,
@@ -68,8 +69,18 @@ export function DebtClearingPanel({
   onArchiveSettledAccount,
   isMutating = false,
 }: DebtClearingPanelProps) {
+  const outflowDateId = useId();
+  const feeDateId = useId();
+  const settleDateId = useId();
+  const reconcileDateId = useId();
+
   const [activeTab, setActiveTab] = useState<string>("outflow");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [outflowDate, setOutflowDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [feeDate, setFeeDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [settleDate, setSettleDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [reconcileDate, setReconcileDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
 
   const balance = Number(debtAccount.amount) || 0;
   const debtCurrency = debtAccount.currencyId ?? defaultCurrency;
@@ -124,6 +135,10 @@ export function DebtClearingPanel({
 
   async function handleOutflowSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!outflowDate.trim()) {
+      toast.error("Please enter a valid transaction date");
+      return;
+    }
     if (!outflowSourceAccount) return;
     const srcAmt = parseFloat(outflowSourceAmount);
     const destAmt = parseFloat(outflowDestAmount);
@@ -135,6 +150,7 @@ export function DebtClearingPanel({
     try {
       setIsSubmitting(true);
       const tx = buildPrincipalOutflowTransaction({
+        date: outflowDate,
         sourceAccount: outflowSourceAccount,
         debtAccount,
         sourceAmount: srcAmt,
@@ -142,6 +158,7 @@ export function DebtClearingPanel({
         comment: outflowComment.trim() || undefined,
       });
       await onCreateTransaction(tx);
+      setOutflowDate(format(new Date(), "yyyy-MM-dd"));
       setOutflowSourceAmount("");
       setOutflowDestAmount("");
       setOutflowComment("");
@@ -182,6 +199,10 @@ export function DebtClearingPanel({
 
   async function handleFeeSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!feeDate.trim()) {
+      toast.error("Please enter a valid transaction date");
+      return;
+    }
     if (!feeSourceAccount) return;
     const feeNum = parseFloat(feeAmount);
     if (Number.isNaN(feeNum) || feeNum <= 0) {
@@ -195,6 +216,7 @@ export function DebtClearingPanel({
     try {
       setIsSubmitting(true);
       const tx = buildFeeTransaction({
+        date: feeDate,
         sourceAccount: feeSourceAccount,
         debtAccount,
         feeExpenseCategory,
@@ -204,6 +226,7 @@ export function DebtClearingPanel({
         comment: feeComment.trim() || undefined,
       });
       await onCreateTransaction(tx);
+      setFeeDate(format(new Date(), "yyyy-MM-dd"));
       setFeeAmount("");
       setFeeConvertedAmount("");
       setFeeComment("");
@@ -248,6 +271,10 @@ export function DebtClearingPanel({
 
   async function handleSettleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!settleDate.trim()) {
+      toast.error("Please enter a valid transaction date");
+      return;
+    }
     if (!settleTargetCategory) {
       toast.error("Please select a destination category or account");
       return;
@@ -262,6 +289,7 @@ export function DebtClearingPanel({
     try {
       setIsSubmitting(true);
       const tx = buildSettlementTransaction({
+        date: settleDate,
         debtAccount,
         destinationCategory: settleTargetCategory,
         deductedDebtAmount: debtAmt,
@@ -269,6 +297,7 @@ export function DebtClearingPanel({
         comment: settleComment.trim() || undefined,
       });
       await onCreateTransaction(tx);
+      setSettleDate(format(new Date(), "yyyy-MM-dd"));
       setSettleDebtAmount("");
       setSettleDestAmount("");
       setSettleComment("");
@@ -299,6 +328,10 @@ export function DebtClearingPanel({
     try {
       setIsSubmitting(true);
       if (!isZeroBalance) {
+        if (!reconcileDate.trim()) {
+          toast.error("Please enter a valid transaction date");
+          return;
+        }
         const cat = allCategories.find((c) => c.id === reconcileCategoryId);
         if (!cat) {
           toast.error("Please select a category for remainder reconciliation");
@@ -306,6 +339,7 @@ export function DebtClearingPanel({
         }
 
         const adjustmentTx = buildFxReconciliationTransaction({
+          date: reconcileDate,
           debtAccount,
           balance,
           reconciliationCategory: cat,
@@ -418,20 +452,35 @@ export function DebtClearingPanel({
             </div>
           </div>
 
-          <div className="flex max-w-sm flex-col gap-2 pt-1">
-            <Label className="text-xs font-medium">Reconciliation Expense Category</Label>
-            <Select value={reconcileCategoryId} onValueChange={setReconcileCategoryId} disabled={isSubmitting}>
-              <SelectTrigger className="bg-background w-full text-xs">
-                <SelectValue placeholder="Select FX Loss / Expense category" />
-              </SelectTrigger>
-              <SelectContent>
-                {expenseCategories.map((cat) => (
-                  <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                    {cat.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="grid max-w-md grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={reconcileDateId} className="text-xs font-medium">
+                Date
+              </Label>
+              <Input
+                id={reconcileDateId}
+                type="date"
+                value={reconcileDate}
+                onChange={(e) => setReconcileDate(e.target.value)}
+                disabled={isSubmitting || isMutating}
+                className="bg-background h-8 text-xs"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs font-medium">Reconciliation Expense Category</Label>
+              <Select value={reconcileCategoryId} onValueChange={setReconcileCategoryId} disabled={isSubmitting}>
+                <SelectTrigger className="bg-background w-full text-xs">
+                  <SelectValue placeholder="Select FX Loss / Expense category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {expenseCategories.map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id} className="text-xs">
+                      {cat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <Button
@@ -463,20 +512,35 @@ export function DebtClearingPanel({
           </div>
         </div>
 
-        <div className="flex max-w-sm flex-col gap-2 pt-1">
-          <Label className="text-xs font-medium">Reconciliation Income Category</Label>
-          <Select value={reconcileCategoryId} onValueChange={setReconcileCategoryId} disabled={isSubmitting}>
-            <SelectTrigger className="bg-background w-full text-xs">
-              <SelectValue placeholder="Select FX Gain / Income category" />
-            </SelectTrigger>
-            <SelectContent>
-              {incomeCategories.map((cat) => (
-                <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                  {cat.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="grid max-w-md grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={reconcileDateId} className="text-xs font-medium">
+              Date
+            </Label>
+            <Input
+              id={reconcileDateId}
+              type="date"
+              value={reconcileDate}
+              onChange={(e) => setReconcileDate(e.target.value)}
+              disabled={isSubmitting || isMutating}
+              className="bg-background h-8 text-xs"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs font-medium">Reconciliation Income Category</Label>
+            <Select value={reconcileCategoryId} onValueChange={setReconcileCategoryId} disabled={isSubmitting}>
+              <SelectTrigger className="bg-background w-full text-xs">
+                <SelectValue placeholder="Select FX Gain / Income category" />
+              </SelectTrigger>
+              <SelectContent>
+                {incomeCategories.map((cat) => (
+                  <SelectItem key={cat.id} value={cat.id} className="text-xs">
+                    {cat.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         <Button
@@ -566,7 +630,21 @@ export function DebtClearingPanel({
           {/* TAB 1: Outflow */}
           <TabsContent value="outflow" className="pt-3">
             <form onSubmit={handleOutflowSubmit} className="flex flex-col gap-3">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={outflowDateId} className="text-xs font-medium">
+                    Date
+                  </Label>
+                  <Input
+                    id={outflowDateId}
+                    type="date"
+                    value={outflowDate}
+                    onChange={(e) => setOutflowDate(e.target.value)}
+                    disabled={isSubmitting || isMutating}
+                    className="h-8 text-xs"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs font-medium">Source Account (I paid from)</Label>
                   <Select value={outflowSourceId} onValueChange={setOutflowSourceId} disabled={isSubmitting}>
@@ -643,7 +721,21 @@ export function DebtClearingPanel({
           {/* TAB 2: Fee */}
           <TabsContent value="fee" className="pt-3">
             <form onSubmit={handleFeeSubmit} className="flex flex-col gap-3">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={feeDateId} className="text-xs font-medium">
+                    Date
+                  </Label>
+                  <Input
+                    id={feeDateId}
+                    type="date"
+                    value={feeDate}
+                    onChange={(e) => setFeeDate(e.target.value)}
+                    disabled={isSubmitting || isMutating}
+                    className="h-8 text-xs"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs font-medium">Payment Account</Label>
                   <Select value={feeSourceId} onValueChange={setFeeSourceId} disabled={isSubmitting}>
@@ -820,7 +912,21 @@ export function DebtClearingPanel({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={settleDateId} className="text-xs font-medium">
+                    Date
+                  </Label>
+                  <Input
+                    id={settleDateId}
+                    type="date"
+                    value={settleDate}
+                    onChange={(e) => setSettleDate(e.target.value)}
+                    disabled={isSubmitting || isMutating}
+                    className="h-8 text-xs"
+                  />
+                </div>
+
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs font-medium">Deducted from Debt ({debtCurrency})</Label>
                   <Input
