@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
-import { buildProxyCacheKey, fetchWithProxyCache } from "@/server/external-provider/cache";
+import { buildProxyCacheKey, fetchWithProxyCache, invalidateProxyCacheByPathPrefix } from "@/server/external-provider/cache";
 import {
   ALLOWED_METHODS,
   isAllowedPath,
@@ -102,9 +102,29 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
     requestBody = injectUserId(requestBody, webCreds.userId);
   }
 
+  let isExchangeWritePayload = false;
+  if (upstreamPath === "/Exchange/Ping" && method === "POST" && requestBody && requestBody.byteLength > 0) {
+    try {
+      const parsedBody = JSON.parse(new TextDecoder().decode(requestBody)) as {
+        items?: Array<{ entityJson?: unknown }>;
+      };
+      if (Array.isArray(parsedBody.items)) {
+        isExchangeWritePayload = parsedBody.items.some(
+          (item) => item.entityJson !== null && item.entityJson !== undefined,
+        );
+      }
+    } catch {
+      // malformed or non-JSON body
+    }
+  }
+
+  if (isExchangeWritePayload) {
+    invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+  }
+
   const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
-  const bypassCache = cacheControl.includes("no-cache") || cacheControl.includes("max-age=0");
-  const isCacheable = method === "GET" || method === "POST";
+  const bypassCache = cacheControl.includes("no-cache") || cacheControl.includes("max-age=0") || isExchangeWritePayload;
+  const isCacheable = (method === "GET" || method === "POST") && !isExchangeWritePayload;
 
   try {
     if (!isCacheable) {
@@ -115,6 +135,10 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
         cache: "no-store",
         redirect: "error",
       });
+
+      if (isExchangeWritePayload) {
+        invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+      }
 
       if (!upstreamResponse.ok) {
         const upstreamBody = await upstreamResponse.text().catch(() => "");

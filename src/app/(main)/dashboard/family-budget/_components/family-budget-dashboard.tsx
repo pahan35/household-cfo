@@ -12,12 +12,20 @@ import { Button } from "@/components/ui/button";
 import { AccountsCard } from "./accounts-card";
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
 import { type BudgetPeriodMonth, BudgetSummaryCard } from "./budget-summary-card";
-import { getBudgetSelection, getCategories, getSettings, getTransactionPage } from "./external-provider-client";
 import {
+  getBudgetSelection,
+  getCategories,
+  getSettings,
+  getTransactionPage,
+  updateCategoriesOrder,
+} from "./external-provider-client";
+import {
+  buildLastTransactionMap,
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
+  reorderCategoriesSubset,
   type StatPingData,
 } from "./external-provider-data";
 import { ExpensePieCard } from "./expense-pie-card";
@@ -30,6 +38,7 @@ import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 export function FamilyBudgetDashboard() {
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
+  const [recentTransactions, setRecentTransactions] = useState<ExternalProviderTransaction[]>([]);
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
   const [baseDataError, setBaseDataError] = useState<Error | null>(null);
 
@@ -55,9 +64,10 @@ export function FamilyBudgetDashboard() {
     setIsLoadingBaseData(true);
     setBaseDataError(null);
     try {
-      const [settingsRes, categoriesRes] = await Promise.allSettled([
+      const [settingsRes, categoriesRes, recentTxRes] = await Promise.allSettled([
         getSettings({ signal, forceRefresh }),
         getCategories({ signal, forceRefresh }),
+        getTransactionPage({ skip: 0, take: 300, signal, forceRefresh }),
       ]);
       if (settingsRes.status === "fulfilled") {
         setSettings(settingsRes.value);
@@ -72,6 +82,9 @@ export function FamilyBudgetDashboard() {
         setBaseDataError(
           categoriesRes.reason instanceof Error ? categoriesRes.reason : new Error("Failed to load categories"),
         );
+      }
+      if (recentTxRes.status === "fulfilled") {
+        setRecentTransactions(recentTxRes.value.transactions ?? []);
       }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
@@ -196,6 +209,37 @@ export function FamilyBudgetDashboard() {
     });
   }, [statCategories, categories, presetController.activePreset, grossIncome]);
 
+  const lastTransactionByCategoryId = useMemo(() => {
+    return buildLastTransactionMap([...recentTransactions, ...periodTransactions]);
+  }, [recentTransactions, periodTransactions]);
+
+  const handleReorderCategories = useCallback(
+    async (reorderedVisibleIds: string[], isSameGroup?: (cat: ExternalProviderCategory) => boolean) => {
+      const prevCategories = categories;
+      const { updatedCategories, modifiedCategories } = reorderCategoriesSubset(
+        categories,
+        reorderedVisibleIds,
+        isSameGroup,
+      );
+
+      if (modifiedCategories.length === 0) {
+        return;
+      }
+
+      setCategories(updatedCategories);
+
+      try {
+        await updateCategoriesOrder(modifiedCategories, {
+          allUpdatedCategories: updatedCategories,
+        });
+      } catch (err) {
+        setCategories(prevCategories);
+        throw err;
+      }
+    },
+    [categories],
+  );
+
   const isLoadingPeriodData = isLoadingStatData || isLoadingPeriodTx;
   const isRefreshing = isLoadingBaseData || isLoadingStatData || isLoadingPeriodTx;
 
@@ -295,6 +339,8 @@ export function FamilyBudgetDashboard() {
             isLoading={isLoadingBaseData}
             error={baseDataError}
             onRetry={() => void loadBaseData(undefined, true)}
+            onReorderCategories={handleReorderCategories}
+            lastTransactionByCategoryId={lastTransactionByCategoryId}
           />
         </div>
         <div className="xl:col-span-7">
@@ -340,6 +386,8 @@ export function FamilyBudgetDashboard() {
             isLoading={isLoadingStatData}
             error={statDataError}
             onRetry={() => void loadStatData(undefined, true)}
+            onReorderCategories={handleReorderCategories}
+            lastTransactionByCategoryId={lastTransactionByCategoryId}
           />
         </div>
       </div>

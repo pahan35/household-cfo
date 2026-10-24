@@ -127,3 +127,35 @@ export function clearProxyCache(): void {
   proxyCacheState.entries.clear();
   proxyCacheState.inflight.clear();
 }
+
+/**
+ * Invalidates cached proxy responses whose pathname matches or starts with the given prefix.
+ */
+export function invalidateProxyCacheByPathPrefix(pathnamePrefix: string): void {
+  const normalizedPrefix = pathnamePrefix.startsWith("/") ? pathnamePrefix : `/${pathnamePrefix}`;
+
+  for (const key of proxyCacheState.entries.keys()) {
+    // Key format is METHOD:pathname:search:bodyHash
+    const parts = key.split(":");
+    const pathname = parts[1];
+    if (
+      pathname &&
+      (pathname === normalizedPrefix ||
+        pathname.startsWith(normalizedPrefix.endsWith("/") ? normalizedPrefix : `${normalizedPrefix}/`))
+    ) {
+      proxyCacheState.entries.delete(key);
+    }
+  }
+
+  for (const key of proxyCacheState.inflight.keys()) {
+    const parts = key.split(":");
+    const pathname = parts[1];
+    if (
+      pathname &&
+      (pathname === normalizedPrefix ||
+        pathname.startsWith(normalizedPrefix.endsWith("/") ? normalizedPrefix : `${normalizedPrefix}/`))
+    ) {
+      proxyCacheState.inflight.delete(key);
+    }
+  }
+}

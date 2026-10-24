@@ -37,6 +37,16 @@ export function invalidateExternalProviderClientCache(key?: string): void {
   }
 }
 
+export function getExternalProviderClientCacheEntry<T = unknown>(key: string): T | undefined {
+  const entry = clientCacheState.entries.get(key);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    clientCacheState.entries.delete(key);
+    return undefined;
+  }
+  return entry.data as T;
+}
+
 function attachSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) {
     return promise;
@@ -201,6 +211,54 @@ export async function getCategories(options?: {
     },
     options,
   );
+}
+
+/**
+ * Pushes updated categories upstream to ExternalProvider via POST /api/external-provider/Exchange/Ping
+ * under ExchangeKey.Category (key: 2), bypassing cache with Cache-Control: no-cache,
+ * and updates/invalidates the client categories cache entry.
+ */
+export async function updateCategoriesOrder(
+  modifiedCategories: ExternalProviderCategory[],
+  options?: {
+    signal?: AbortSignal;
+    allUpdatedCategories?: ExternalProviderCategory[];
+  },
+): Promise<ExchangePingResponseEnvelope> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "Cache-Control": "no-cache",
+  };
+
+  const payload = {
+    items: [
+      {
+        key: ExchangeKey.Category,
+        entityJson: JSON.stringify(modifiedCategories),
+      },
+    ],
+  };
+
+  const response = await fetch("/api/external-provider/Exchange/Ping", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  });
+
+  const body = await handleResponse<ExchangePingResponseEnvelope>(response);
+
+  if (options?.allUpdatedCategories) {
+    clientCacheState.entries.set("categories", {
+      data: options.allUpdatedCategories,
+      expiresAt: Date.now() + CLIENT_CACHE_TTL_MS,
+    });
+  } else {
+    invalidateExternalProviderClientCache("categories");
+  }
+
+  return body;
 }
 
 export async function getTransactionPage(options?: {

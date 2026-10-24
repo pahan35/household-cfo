@@ -2,12 +2,25 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { CreditCard, Landmark, Wallet } from "lucide-react";
+import { RestrictToVerticalAxis } from "@dnd-kit/abstract/modifiers";
+import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
+import { cn } from "cn";
+import { AlertTriangle, Archive, CreditCard, GripVertical, Landmark, Wallet } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { getCategories } from "./external-provider-client";
-import { CategoryType, type ExternalProviderCategory, formatMoney } from "./external-provider-data";
+import {
+  CategoryType,
+  type ExternalProviderCategory,
+  filterAndClassifyAccounts,
+  formatMoney,
+  type LastTransactionSummary,
+} from "./external-provider-data";
+import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 
 interface AccountsCardProps {
@@ -16,6 +29,8 @@ interface AccountsCardProps {
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
+  onReorderCategories?: (reorderedVisibleIds: string[]) => Promise<void>;
+  lastTransactionByCategoryId?: Map<string, LastTransactionSummary>;
 }
 
 export function AccountsCard({
@@ -24,10 +39,13 @@ export function AccountsCard({
   isLoading: controlledIsLoading,
   error: controlledError,
   onRetry: controlledOnRetry,
+  onReorderCategories,
+  lastTransactionByCategoryId,
 }: AccountsCardProps) {
   const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
   const [internalError, setInternalError] = useState<Error | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   const isControlled = controlledCategories !== undefined;
   const categories = isControlled ? controlledCategories : internalCategories;
@@ -67,95 +85,244 @@ export function AccountsCard({
     }
   }, [controlledOnRetry, fetchAccounts]);
 
-  const accountCategories = useMemo(() => {
+  // Classified accounts respecting archive rules and sorted by order
+  const classifiedAccounts = useMemo(() => {
+    return filterAndClassifyAccounts(categories, { showArchived });
+  }, [categories, showArchived]);
+
+  // Total balance of ALL non-deleted accounts (including hidden ones)
+  const totalBalance = useMemo(() => {
+    return categories
+      .filter((c) => {
+        if (c.deleted) return false;
+        const t = Number(c.categoryType);
+        return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
+      })
+      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+  }, [categories]);
+
+  // Count hidden archived accounts with zero balance
+  const hiddenArchivedCount = useMemo(() => {
     return categories.filter((c) => {
       if (c.deleted) return false;
       const t = Number(c.categoryType);
-      return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
-    });
+      const isAccount = t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
+      if (!isAccount) return false;
+      const isArchived = typeof c.name === "string" && c.name.trim().startsWith("_");
+      const isZero = Math.abs(Number(c.amount) || 0) < 0.005;
+      return isArchived && isZero;
+    }).length;
   }, [categories]);
 
-  const totalBalance = useMemo(() => {
-    return accountCategories.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  }, [accountCategories]);
+  function handleDragEnd(event: DragEndEvent) {
+    const { source } = event.operation;
 
-  function getCategoryTypeName(type: number): string {
-    switch (type) {
-      case CategoryType.BankAccount:
-        return "Bank Account";
-      case CategoryType.Account:
-        return "Cash / Wallet";
-      case CategoryType.DebtAccount:
-        return "Debt Account";
-      default:
-        return "Account";
+    if (event.canceled || !isSortable(source) || source.initialIndex === source.index) {
+      return;
     }
-  }
 
-  function getAccountIcon(type: number) {
-    switch (type) {
-      case CategoryType.BankAccount:
-        return <Landmark className="size-4 text-primary" />;
-      case CategoryType.Account:
-        return <Wallet className="size-4 text-emerald-600 dark:text-emerald-400" />;
-      default:
-        return <CreditCard className="size-4 text-muted-foreground" />;
+    const visibleIds = classifiedAccounts.map((c) => c.account.id);
+    const [moved] = visibleIds.splice(source.initialIndex, 1);
+    visibleIds.splice(source.index, 0, moved);
+
+    if (onReorderCategories) {
+      void onReorderCategories(visibleIds);
     }
   }
 
   return (
-    <SectionShell
-      title="Accounts & Cards"
-      description="Active accounts, cards, and liquid balances"
-      action={
-        !isLoading && !error && accountCategories.length > 0 ? (
-          <div className="text-right">
-            <span className="text-muted-foreground text-xs">Total: </span>
-            <span className="font-semibold text-sm">{formatMoney(totalBalance, currency)}</span>
-          </div>
-        ) : undefined
-      }
-      isLoading={isLoading}
-      error={error}
-      onRetry={handleRetry}
-      isEmpty={accountCategories.length === 0}
-      emptyTitle="No accounts found"
-      emptyDescription="No account-type categories found in ExternalProvider. Add accounts in ExternalProvider to see them here."
-      emptyIcon={<Wallet className="size-6 text-muted-foreground" />}
-      skeletonCount={4}
-    >
-      <div className="flex flex-col divide-y divide-border/60">
-        {accountCategories.map((acc) => {
-          const typeNum = Number(acc.categoryType);
-          const balance = Number(acc.amount) || 0;
-          return (
-            <div key={acc.id} className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
-              <div className="flex items-center gap-3">
-                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60">
-                  {getAccountIcon(typeNum)}
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-medium text-sm leading-none">{acc.name}</span>
-                  <div className="flex items-center gap-1.5">
-                    <Badge variant="outline" className="px-1.5 py-0 font-normal text-[10px]">
-                      {getCategoryTypeName(typeNum)}
-                    </Badge>
-                  </div>
-                </div>
-              </div>
-              <div className="text-right">
-                <span
-                  className={
-                    balance < 0 ? "font-medium text-destructive text-sm" : "font-medium text-foreground text-sm"
-                  }
+    <TooltipProvider delayDuration={150}>
+      <SectionShell
+        title="Accounts & Cards"
+        description="Active accounts, cards, and liquid balances"
+        action={
+          !isLoading && !error && classifiedAccounts.length > 0 ? (
+            <div className="flex items-center gap-3">
+              {(hiddenArchivedCount > 0 || showArchived) && (
+                <Button
+                  type="button"
+                  variant={showArchived ? "secondary" : "ghost"}
+                  size="xs"
+                  onClick={() => setShowArchived((prev) => !prev)}
+                  className="h-6 gap-1 px-2 text-[11px]"
                 >
-                  {formatMoney(balance, acc.currencyId || currency)}
-                </span>
+                  <Archive className="text-muted-foreground size-3" />
+                  <span>{showArchived ? "Hide archived" : `Show archived (${hiddenArchivedCount})`}</span>
+                </Button>
+              )}
+              <div className="text-right">
+                <span className="text-muted-foreground text-xs">Total: </span>
+                <span className="text-sm font-semibold">{formatMoney(totalBalance, currency)}</span>
               </div>
             </div>
-          );
-        })}
+          ) : undefined
+        }
+        isLoading={isLoading}
+        error={error}
+        onRetry={handleRetry}
+        isEmpty={classifiedAccounts.length === 0}
+        emptyTitle="No accounts found"
+        emptyDescription="No account-type categories found in ExternalProvider. Add accounts in ExternalProvider to see them here."
+        emptyIcon={<Wallet className="text-muted-foreground size-6" />}
+        skeletonCount={4}
+      >
+        <DragDropProvider onDragEnd={handleDragEnd}>
+          <div className="divide-border/60 flex flex-col divide-y">
+            {classifiedAccounts.map(({ account, isArchived, hasUnreconciledBalance, balance }, index) => {
+              const lastTx = lastTransactionByCategoryId?.get(account.id);
+
+              return (
+                <SortableAccountRow
+                  key={account.id}
+                  id={account.id}
+                  index={index}
+                  account={account}
+                  balance={balance}
+                  currency={account.currencyId || currency}
+                  isArchived={isArchived}
+                  hasUnreconciledBalance={hasUnreconciledBalance}
+                  lastTx={lastTx}
+                  canReorder={Boolean(onReorderCategories)}
+                />
+              );
+            })}
+          </div>
+        </DragDropProvider>
+      </SectionShell>
+    </TooltipProvider>
+  );
+}
+
+function getCategoryTypeName(type: number): string {
+  switch (type) {
+    case CategoryType.BankAccount:
+      return "Bank Account";
+    case CategoryType.Account:
+      return "Cash / Wallet";
+    case CategoryType.DebtAccount:
+      return "Debt Account";
+    default:
+      return "Account";
+  }
+}
+
+function getAccountIcon(type: number) {
+  switch (type) {
+    case CategoryType.BankAccount:
+      return <Landmark className="text-primary size-4" />;
+    case CategoryType.Account:
+      return <Wallet className="size-4 text-emerald-600 dark:text-emerald-400" />;
+    default:
+      return <CreditCard className="text-muted-foreground size-4" />;
+  }
+}
+
+interface SortableAccountRowProps {
+  id: string;
+  index: number;
+  account: ExternalProviderCategory;
+  balance: number;
+  currency: string;
+  isArchived: boolean;
+  hasUnreconciledBalance: boolean;
+  lastTx?: LastTransactionSummary | null;
+  canReorder: boolean;
+}
+
+function SortableAccountRow({
+  id,
+  index,
+  account,
+  balance,
+  currency,
+  isArchived,
+  hasUnreconciledBalance,
+  lastTx,
+  canReorder,
+}: SortableAccountRowProps) {
+  const { handleRef, isDragging, ref } = useSortable({
+    id,
+    index,
+    type: "account-row",
+    accept: "account-row",
+    group: "accounts",
+    modifiers: [RestrictToVerticalAxis],
+    disabled: !canReorder,
+  });
+
+  const typeNum = Number(account.categoryType);
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "group/row flex items-center justify-between py-3 transition-opacity first:pt-0 last:pb-0",
+        isDragging && "bg-muted/40 relative z-10 rounded-lg opacity-50",
+        isArchived && !hasUnreconciledBalance && "opacity-60",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        {canReorder && (
+          <Button
+            ref={handleRef}
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className="text-muted-foreground/40 hover:text-foreground -ml-1 cursor-grab opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 active:cursor-grabbing"
+            aria-label={`Reorder ${account.name}`}
+          >
+            <GripVertical className="size-3.5" />
+          </Button>
+        )}
+
+        <div className="bg-muted/60 flex size-9 shrink-0 items-center justify-center rounded-lg">
+          {getAccountIcon(typeNum)}
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-sm leading-none font-medium">{account.name}</span>
+
+            {hasUnreconciledBalance && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex cursor-help items-center text-amber-500 transition-colors hover:text-amber-600">
+                    <AlertTriangle className="size-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs p-2.5 text-xs">
+                  <div className="font-semibold text-amber-500">Unreconciled Archived Account</div>
+                  <div className="text-muted-foreground mt-1">
+                    This archived account ('_' prefix) has a non-zero balance ({formatMoney(balance, currency)}). In
+                    ExternalProvider, edit its balance directly to 0 or record a transfer to/from an active account to
+                    reconcile it.
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            )}
+
+            {isArchived && !hasUnreconciledBalance && (
+              <Badge variant="secondary" className="text-muted-foreground px-1.5 py-0 text-[10px] font-normal">
+                Archived
+              </Badge>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">
+              {getCategoryTypeName(typeNum)}
+            </Badge>
+
+            {lastTx && <LastTransactionBadge summary={lastTx} />}
+          </div>
+        </div>
       </div>
-    </SectionShell>
+
+      <div className="shrink-0 pl-3 text-right">
+        <span className={balance < 0 ? "text-destructive text-sm font-medium" : "text-foreground text-sm font-medium"}>
+          {formatMoney(balance, currency)}
+        </span>
+      </div>
+    </div>
   );
 }

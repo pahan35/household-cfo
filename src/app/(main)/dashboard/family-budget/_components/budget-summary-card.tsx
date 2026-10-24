@@ -2,18 +2,31 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { RestrictToVerticalAxis } from "@dnd-kit/abstract/modifiers";
+import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
+import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { cn } from "cn";
 import { format, startOfMonth, subMonths } from "date-fns";
-import { AlertTriangle, PiggyBank } from "lucide-react";
+import { AlertTriangle, Archive, GripVertical, PiggyBank } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
 import { getBudgetSelection } from "./external-provider-client";
-import { type ExternalProviderCategory, formatMoney, type StatCategoryPoint, type StatPingData } from "./external-provider-data";
+import {
+  type ExternalProviderCategory,
+  filterAndClassifyCategories,
+  formatMoney,
+  type LastTransactionSummary,
+  type StatCategoryPoint,
+  type StatPingData,
+} from "./external-provider-data";
+import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 
 export type BudgetPeriodMonth = "current" | "previous";
+export type BudgetSortMode = "custom" | "percent";
 
 export interface BudgetSummaryItem {
   id: string;
@@ -29,6 +42,7 @@ export function computeBudgetSummaryItems(
   statData: StatPingData | null | undefined,
   fromDate: string,
   categoryNameMap: Map<string, string>,
+  options?: { includeAll?: boolean },
 ): BudgetSummaryItem[] {
   const points = statData?.selection?.points ?? [];
   if (points.length === 0) return [];
@@ -38,8 +52,11 @@ export function computeBudgetSummaryItems(
 
   if (!activePoint?.categories) return [];
 
+  const includeAll = options?.includeAll ?? false;
+
   return activePoint.categories
     .filter((cat: StatCategoryPoint) => {
+      if (includeAll) return true;
       const limit = Number(cat.limitAmount) || 0;
       const rawSpend = cat.amount ?? cat.currentAmount ?? cat.value;
       const current = Math.max(0, Number(rawSpend) || 0);
@@ -83,6 +100,8 @@ interface BudgetSummaryCardProps {
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
+  onReorderCategories?: (reorderedVisibleIds: string[]) => Promise<void>;
+  lastTransactionByCategoryId?: Map<string, LastTransactionSummary>;
 }
 
 export function BudgetSummaryCard({
@@ -96,9 +115,14 @@ export function BudgetSummaryCard({
   isLoading: controlledIsLoading,
   error: controlledError,
   onRetry: controlledOnRetry,
+  onReorderCategories,
+  lastTransactionByCategoryId,
 }: BudgetSummaryCardProps) {
   const [internalPeriod, setInternalPeriod] = useState<BudgetPeriodMonth>("current");
   const periodMonth = controlledPeriod ?? internalPeriod;
+
+  const [sortMode, setSortMode] = useState<BudgetSortMode>("custom");
+  const [showArchived, setShowArchived] = useState(false);
 
   const [internalStatData, setInternalStatData] = useState<StatPingData | null>(null);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -173,81 +197,263 @@ export function BudgetSummaryCard({
     return map;
   }, [categories]);
 
+  const categoryOrderMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of categories) {
+      map.set(c.id, typeof c.order === "number" ? c.order : 0);
+    }
+    return map;
+  }, [categories]);
+
   const currency = statData?.selection?.params?.currency ?? defaultCurrency;
 
-  const budgetItems = useMemo(
-    () => computeBudgetSummaryItems(statData, fromDate, categoryNameMap),
-    [statData, fromDate, categoryNameMap],
+  // Raw budget items computed from stats
+  const allBudgetItems = useMemo(
+    () => computeBudgetSummaryItems(statData, fromDate, categoryNameMap, { includeAll: showArchived }),
+    [statData, fromDate, categoryNameMap, showArchived],
   );
+
+  // Filter archived items
+  const classifiedItems = useMemo(() => {
+    return filterAndClassifyCategories(allBudgetItems, { showArchived });
+  }, [allBudgetItems, showArchived]);
+
+  // Count hidden inactive archived items
+  const hiddenArchivedCount = useMemo(() => {
+    const all = computeBudgetSummaryItems(statData, fromDate, categoryNameMap, { includeAll: true });
+    return all.filter((it) => {
+      const isArchived = typeof it.name === "string" && it.name.trim().startsWith("_");
+      const isInactive = it.current === 0 && it.limit === 0;
+      return isArchived && isInactive;
+    }).length;
+  }, [statData, fromDate, categoryNameMap]);
+
+  // Sorted items based on sortMode ("custom" vs "percent")
+  const sortedItems = useMemo(() => {
+    if (sortMode === "percent") {
+      return [...classifiedItems].sort((a, b) => b.item.rawPercent - a.item.rawPercent);
+    }
+    // "custom" mode sorts by ExternalProvider order ascending, tie-breaking by id
+    return [...classifiedItems].sort((a, b) => {
+      const orderA = categoryOrderMap.get(a.item.id) ?? 0;
+      const orderB = categoryOrderMap.get(b.item.id) ?? 0;
+      if (orderA !== orderB) {
+        return orderA - orderB;
+      }
+      return a.item.id.localeCompare(b.item.id);
+    });
+  }, [classifiedItems, sortMode, categoryOrderMap]);
+
+  const canReorder = sortMode === "custom" && Boolean(onReorderCategories);
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { source } = event.operation;
+
+    if (event.canceled || !isSortable(source) || source.initialIndex === source.index) {
+      return;
+    }
+
+    const visibleIds = sortedItems.map((c) => c.item.id);
+    const [moved] = visibleIds.splice(source.initialIndex, 1);
+    visibleIds.splice(source.index, 0, moved);
+
+    if (onReorderCategories) {
+      void onReorderCategories(visibleIds);
+    }
+  }
 
   return (
     <SectionShell
       title="Budget Spent vs Limit"
       description={`Reporting currency: ${currency}`}
       action={
-        <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
-          <button
-            type="button"
-            className={cn(
-              "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              periodMonth === "current"
-                ? "bg-background text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => handlePeriodSwitch("current")}
-          >
-            Current Month
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-              periodMonth === "previous"
-                ? "bg-background text-foreground shadow-xs"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-            onClick={() => handlePeriodSwitch("previous")}
-          >
-            Previous Month
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Custom Order vs % Spent Sort Mode Switch */}
+          <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
+            <button
+              type="button"
+              className={cn(
+                "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                sortMode === "custom"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setSortMode("custom")}
+            >
+              Custom Order
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                sortMode === "percent"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setSortMode("percent")}
+            >
+              % Spent
+            </button>
+          </div>
+
+          {/* Archived Toggle */}
+          {(hiddenArchivedCount > 0 || showArchived) && (
+            <Button
+              type="button"
+              variant={showArchived ? "secondary" : "ghost"}
+              size="xs"
+              onClick={() => setShowArchived((prev) => !prev)}
+              className="h-7 gap-1 px-2 text-[11px]"
+            >
+              <Archive className="text-muted-foreground size-3" />
+              <span>{showArchived ? "Hide archived" : `Show archived (${hiddenArchivedCount})`}</span>
+            </Button>
+          )}
+
+          {/* Period Selection */}
+          <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
+            <button
+              type="button"
+              className={cn(
+                "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                periodMonth === "current"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => handlePeriodSwitch("current")}
+            >
+              Current Month
+            </button>
+            <button
+              type="button"
+              className={cn(
+                "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                periodMonth === "previous"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => handlePeriodSwitch("previous")}
+            >
+              Previous Month
+            </button>
+          </div>
         </div>
       }
       isLoading={isLoading}
       error={error}
       onRetry={handleRetry}
-      isEmpty={budgetItems.length === 0}
+      isEmpty={sortedItems.length === 0}
       emptyTitle="No budget limits defined"
       emptyDescription="No categories with active budget limits or spending found for this period."
       emptyIcon={<PiggyBank className="text-muted-foreground size-6" />}
       skeletonCount={4}
       skeletonHeight="h-14"
     >
-      <div className="flex flex-col gap-4">
-        {budgetItems.map((item) => (
-          <div key={item.id} className="flex flex-col gap-1.5">
-            <div className="flex items-center justify-between text-xs">
-              <div className="flex items-center gap-1.5 font-medium">
-                <span>{item.name}</span>
-                {item.isOverrun && (
-                  <Badge variant="destructive" className="h-4 gap-1 px-1 text-[10px] font-normal">
-                    <AlertTriangle className="size-2.5" />
-                    Overrun
-                  </Badge>
-                )}
-              </div>
-              <div className="text-muted-foreground flex items-center gap-1">
-                <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
-                  {formatMoney(item.current, currency)}
-                </span>
-                <span>/</span>
-                <span>{formatMoney(item.limit, currency)}</span>
-                <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
-              </div>
-            </div>
-            <Progress value={item.percent} className={cn("h-2", item.isOverrun && "[&>div]:bg-destructive")} />
-          </div>
-        ))}
-      </div>
+      <DragDropProvider onDragEnd={handleDragEnd}>
+        <div className="flex flex-col gap-4">
+          {sortedItems.map(({ item, isArchived }, index) => {
+            const lastTx = lastTransactionByCategoryId?.get(item.id);
+
+            return (
+              <SortableBudgetCategoryRow
+                key={item.id}
+                id={item.id}
+                index={index}
+                item={item}
+                currency={currency}
+                isArchived={isArchived}
+                lastTx={lastTx}
+                canReorder={canReorder}
+              />
+            );
+          })}
+        </div>
+      </DragDropProvider>
     </SectionShell>
+  );
+}
+
+interface SortableBudgetCategoryRowProps {
+  id: string;
+  index: number;
+  item: BudgetSummaryItem;
+  currency: string;
+  isArchived: boolean;
+  lastTx?: LastTransactionSummary | null;
+  canReorder: boolean;
+}
+
+function SortableBudgetCategoryRow({
+  id,
+  index,
+  item,
+  currency,
+  isArchived,
+  lastTx,
+  canReorder,
+}: SortableBudgetCategoryRowProps) {
+  const { handleRef, isDragging, ref } = useSortable({
+    id,
+    index,
+    type: "budget-category-row",
+    accept: "budget-category-row",
+    group: "budget-categories",
+    modifiers: [RestrictToVerticalAxis],
+    disabled: !canReorder,
+  });
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "group/row flex flex-col gap-1.5 transition-opacity",
+        isDragging && "bg-muted/40 relative z-10 rounded-lg p-2 opacity-50",
+        isArchived && "opacity-60",
+      )}
+    >
+      <div className="flex items-center justify-between text-xs">
+        <div className="flex min-w-0 items-center gap-1.5 font-medium">
+          {canReorder && (
+            <Button
+              ref={handleRef}
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              className="text-muted-foreground/40 hover:text-foreground -ml-1 cursor-grab opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 active:cursor-grabbing"
+              aria-label={`Reorder ${item.name}`}
+            >
+              <GripVertical className="size-3.5" />
+            </Button>
+          )}
+
+          <span className="truncate">{item.name}</span>
+
+          {item.isOverrun && (
+            <Badge variant="destructive" className="h-4 gap-1 px-1 text-[10px] font-normal">
+              <AlertTriangle className="size-2.5" />
+              Overrun
+            </Badge>
+          )}
+
+          {isArchived && (
+            <Badge variant="secondary" className="text-muted-foreground px-1.5 py-0 text-[10px] font-normal">
+              Archived
+            </Badge>
+          )}
+
+          {lastTx && <LastTransactionBadge summary={lastTx} />}
+        </div>
+
+        <div className="text-muted-foreground flex shrink-0 items-center gap-1 pl-2">
+          <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
+            {formatMoney(item.current, currency)}
+          </span>
+          <span>/</span>
+          <span>{formatMoney(item.limit, currency)}</span>
+          <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
+        </div>
+      </div>
+      <Progress value={item.percent} className={cn("h-2", item.isOverrun && "[&>div]:bg-destructive")} />
+    </div>
   );
 }
