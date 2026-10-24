@@ -20,6 +20,8 @@ interface BudgetSummaryCardProps {
   defaultCurrency?: string;
   periodMonth?: BudgetPeriodMonth;
   onPeriodMonthChange?: (period: BudgetPeriodMonth) => void;
+  customFromDate?: string | null;
+  onClearCustomPeriod?: () => void;
 }
 
 export function BudgetSummaryCard({
@@ -27,6 +29,8 @@ export function BudgetSummaryCard({
   defaultCurrency = "PLN",
   periodMonth: controlledPeriod,
   onPeriodMonthChange,
+  customFromDate,
+  onClearCustomPeriod,
 }: BudgetSummaryCardProps) {
   const [internalPeriod, setInternalPeriod] = useState<BudgetPeriodMonth>("current");
   const periodMonth = controlledPeriod ?? internalPeriod;
@@ -36,12 +40,15 @@ export function BudgetSummaryCard({
   const [error, setError] = useState<Error | null>(null);
 
   const fromDate = useMemo(() => {
+    if (customFromDate) {
+      return customFromDate;
+    }
     const now = new Date();
     if (periodMonth === "previous") {
       return format(startOfMonth(subMonths(now, 1)), "yyyy-MM-dd");
     }
     return format(startOfMonth(now), "yyyy-MM-dd");
-  }, [periodMonth]);
+  }, [periodMonth, customFromDate]);
 
   const fetchBudget = useCallback(
     async (signal?: AbortSignal) => {
@@ -71,6 +78,7 @@ export function BudgetSummaryCard({
   }, [fetchBudget]);
 
   function handlePeriodSwitch(target: BudgetPeriodMonth) {
+    onClearCustomPeriod?.();
     if (onPeriodMonthChange) {
       onPeriodMonthChange(target);
     } else {
@@ -133,11 +141,11 @@ export function BudgetSummaryCard({
       title="Budget Spent vs Limit"
       description={`Reporting currency: ${currency}`}
       action={
-        <div className="flex items-center rounded-lg border bg-muted/40 p-0.5 text-xs">
+        <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
           <button
             type="button"
             className={cn(
-              "cursor-pointer rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
+              "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
               periodMonth === "current"
                 ? "bg-background text-foreground shadow-xs"
                 : "text-muted-foreground hover:text-foreground",
@@ -149,7 +157,7 @@ export function BudgetSummaryCard({
           <button
             type="button"
             className={cn(
-              "cursor-pointer rounded-md px-2.5 py-1 font-medium text-xs transition-colors",
+              "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
               periodMonth === "previous"
                 ? "bg-background text-foreground shadow-xs"
                 : "text-muted-foreground hover:text-foreground",
@@ -168,7 +176,7 @@ export function BudgetSummaryCard({
       isEmpty={budgetItems.length === 0}
       emptyTitle="No budget limits defined"
       emptyDescription="No categories with active budget limits or spending found for this period."
-      emptyIcon={<PiggyBank className="size-6 text-muted-foreground" />}
+      emptyIcon={<PiggyBank className="text-muted-foreground size-6" />}
       skeletonCount={4}
       skeletonHeight="h-14"
     >
@@ -179,14 +187,14 @@ export function BudgetSummaryCard({
               <div className="flex items-center gap-1.5 font-medium">
                 <span>{item.name}</span>
                 {item.isOverrun && (
-                  <Badge variant="destructive" className="h-4 gap-1 px-1 font-normal text-[10px]">
+                  <Badge variant="destructive" className="h-4 gap-1 px-1 text-[10px] font-normal">
                     <AlertTriangle className="size-2.5" />
                     Overrun
                   </Badge>
                 )}
               </div>
-              <div className="flex items-center gap-1 text-muted-foreground">
-                <span className={item.isOverrun ? "font-semibold text-destructive" : "font-medium text-foreground"}>
+              <div className="text-muted-foreground flex items-center gap-1">
+                <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
                   {formatMoney(item.current, currency)}
                 </span>
                 <span>/</span>
