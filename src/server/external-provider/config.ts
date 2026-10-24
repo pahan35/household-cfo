@@ -7,11 +7,11 @@ export const ALLOWED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]
 /**
  * Upstream path prefixes this proxy is permitted to forward.
  *
- * This list is intentionally empty so the proxy fails closed. Populate it with
- * the exact prefixes the frontend needs, for example ["/api/v1/accounts"].
- * A prefix also permits everything nested beneath it.
+ * All prefixes below were verified against the live web backend on
+ * 2026-10-24 (see docs/externalProvider/NOTES.md). A prefix also permits everything
+ * nested beneath it; add new ones explicitly as endpoints are validated.
  */
-export const PATH_ALLOWLIST: string[] = ["/Exchange", "/api/transaction", "/settings", "/stat"]; // TEMP probe (2026-10-22) — keep uncommitted, restore []
+export const PATH_ALLOWLIST: string[] = ["/Exchange", "/api/transaction", "/settings", "/stat"];
 
 export const REQUEST_HEADER_ALLOWLIST = ["accept", "content-type", "if-match", "if-modified-since", "if-none-match"];
 
