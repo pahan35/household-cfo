@@ -93,6 +93,7 @@ export async function loadHighlighter(language: string) {
         lines: tokens.map((line) =>
           line.map((token, index) => (
             <span
+              // biome-ignore lint/suspicious/noArrayIndexKey: tokens have no stable id within a line
               key={index}
               style={token.htmlStyle as React.CSSProperties}
               className="text-(--shiki-light) dark:text-(--shiki-dark)"

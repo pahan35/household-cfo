@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { format } from "date-fns";
-import { Banknote, Filter, RotateCw } from "lucide-react";
-import { toast } from "sonner";
+import { Banknote, RotateCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -27,7 +26,6 @@ import {
   aggregateTaxesByTag,
   computeIncomeTaxMetrics,
   detectUntaggedTaxTransactions,
-  findTaxCategories,
   getTaxCategoryIds,
   hasRecognizedTaxTag,
   matchTaxBucket,
