@@ -48,8 +48,8 @@ export function FamilyBudgetDashboard() {
 
   const presetController = useExclusionPresets(categories);
 
-  // Anchor 40-month statistics series once at current month
-  const currentMonthAnchor = useMemo(() => format(startOfMonth(new Date()), "yyyy-MM-dd"), []);
+  // Anchor 40-month statistics series once at current day so active month is included in Before: 40 window
+  const currentMonthAnchor = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
 
   const loadBaseData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
     setIsLoadingBaseData(true);
@@ -182,7 +182,7 @@ export function FamilyBudgetDashboard() {
   const statCategories = useMemo(() => {
     const points = statData?.selection?.points ?? [];
     if (points.length === 0) return [];
-    const activePoint = points.find((p) => p.id === fromDate) ?? points[points.length - 1];
+    const activePoint = points.find((p) => p.id === fromDate) ?? points[0];
     return activePoint?.categories ?? [];
   }, [statData, fromDate]);
 

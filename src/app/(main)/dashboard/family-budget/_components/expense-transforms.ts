@@ -65,9 +65,12 @@ export function transformExpenses(input: TransformExpensesInput): TransformedExp
   for (const statCat of statCategories) {
     const catId = statCat.id;
     const catMeta = categoryMap.get(catId);
-    const amount = Math.max(0, Number(statCat.currentAmount) || 0);
+    const rawSpend = statCat.amount ?? statCat.currentAmount ?? statCat.value;
+    const amount = Math.max(0, Number(rawSpend) || 0);
     const limitAmount = Number(statCat.limitAmount) || 0;
-    const name = (typeof statCat.name === "string" ? statCat.name : catMeta?.name) ?? "Category";
+    const rawTitle = typeof statCat.title === "string" ? statCat.title.trim() : "";
+    const rawName = typeof statCat.name === "string" ? statCat.name.trim() : "";
+    const name = rawTitle || rawName || catMeta?.name || "Category";
     const isOverrun = limitAmount > 0 && amount > limitAmount;
 
     // Check if category is classified as Income in ExternalProvider metadata

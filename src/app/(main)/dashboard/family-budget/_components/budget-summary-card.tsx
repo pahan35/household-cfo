@@ -15,6 +15,63 @@ import { SectionShell } from "./section-shell";
 
 export type BudgetPeriodMonth = "current" | "previous";
 
+export interface BudgetSummaryItem {
+  id: string;
+  name: string;
+  limit: number;
+  current: number;
+  percent: number;
+  rawPercent: number;
+  isOverrun: boolean;
+}
+
+export function computeBudgetSummaryItems(
+  statData: StatPingData | null | undefined,
+  fromDate: string,
+  categoryNameMap: Map<string, string>,
+): BudgetSummaryItem[] {
+  const points = statData?.selection?.points ?? [];
+  if (points.length === 0) return [];
+
+  // Find point matching selected month fromDate or default to latest point (points[0])
+  const activePoint = points.find((p) => p.id === fromDate) ?? points[0];
+
+  if (!activePoint?.categories) return [];
+
+  return activePoint.categories
+    .filter((cat: StatCategoryPoint) => {
+      const limit = Number(cat.limitAmount) || 0;
+      const rawSpend = cat.amount ?? cat.currentAmount ?? cat.value;
+      const current = Math.max(0, Number(rawSpend) || 0);
+      return limit > 0 || current > 0;
+    })
+    .map((cat: StatCategoryPoint) => {
+      const limit = Number(cat.limitAmount) || 0;
+      const rawSpend = cat.amount ?? cat.currentAmount ?? cat.value;
+      const current = Math.max(0, Number(rawSpend) || 0);
+      const rawTitle = typeof cat.title === "string" ? cat.title.trim() : "";
+      const rawName = typeof cat.name === "string" ? cat.name.trim() : "";
+      const name = rawTitle || rawName || categoryNameMap.get(cat.id) || "Category";
+      let percent = 0;
+      if (limit > 0) {
+        percent = Math.round((current / limit) * 100);
+      } else if (current > 0) {
+        percent = 100;
+      }
+      const isOverrun = limit > 0 && current > limit;
+      return {
+        id: cat.id,
+        name,
+        limit,
+        current,
+        percent: Math.min(100, percent),
+        rawPercent: percent,
+        isOverrun,
+      };
+    })
+    .sort((a, b) => b.rawPercent - a.rawPercent);
+}
+
 interface BudgetSummaryCardProps {
   categories?: ExternalProviderCategory[];
   defaultCurrency?: string;
@@ -118,45 +175,10 @@ export function BudgetSummaryCard({
 
   const currency = statData?.selection?.params?.currency ?? defaultCurrency;
 
-  const budgetItems = useMemo(() => {
-    const points = statData?.selection?.points ?? [];
-    if (points.length === 0) return [];
-
-    // Find point closest to selected month fromDate or default to latest point
-    const activePoint = points.find((p) => p.id === fromDate) ?? points[points.length - 1];
-
-    if (!activePoint?.categories) return [];
-
-    return activePoint.categories
-      .filter((cat: StatCategoryPoint) => {
-        const limit = Number(cat.limitAmount) || 0;
-        const current = Number(cat.currentAmount) || 0;
-        return limit > 0 || current > 0;
-      })
-      .map((cat: StatCategoryPoint) => {
-        const limit = Number(cat.limitAmount) || 0;
-        const current = Number(cat.currentAmount) || 0;
-        const categoryName = typeof cat.name === "string" ? cat.name : undefined;
-        const name = categoryName ?? categoryNameMap.get(cat.id) ?? "Category";
-        let percent = 0;
-        if (limit > 0) {
-          percent = Math.round((current / limit) * 100);
-        } else if (current > 0) {
-          percent = 100;
-        }
-        const isOverrun = limit > 0 && current > limit;
-        return {
-          id: cat.id,
-          name,
-          limit,
-          current,
-          percent: Math.min(100, percent),
-          rawPercent: percent,
-          isOverrun,
-        };
-      })
-      .sort((a, b) => b.rawPercent - a.rawPercent);
-  }, [statData, fromDate, categoryNameMap]);
+  const budgetItems = useMemo(
+    () => computeBudgetSummaryItems(statData, fromDate, categoryNameMap),
+    [statData, fromDate, categoryNameMap],
+  );
 
   return (
     <SectionShell

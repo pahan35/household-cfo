@@ -115,13 +115,17 @@ export interface TransactionPageResponse {
 
 export interface StatCategoryPoint {
   id: string;
+  title?: string;
+  name?: string;
+  amount?: number;
+  value?: number;
   limitAmount?: number;
   currentAmount?: number;
   [key: string]: unknown;
 }
 
 export interface StatPoint {
-  date: string;
+  date?: string;
   id: string;
   categories: StatCategoryPoint[];
   [key: string]: unknown;

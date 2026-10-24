@@ -74,31 +74,50 @@ interface ParsedStatPoint {
   timestamp: number;
 }
 
+function resolveDateCandidate(raw: string | undefined): Date | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const parsedIso = parseISO(trimmed);
+  if (isValid(parsedIso)) return parsedIso;
+
+  // Handle ExternalProvider "M-yyyy" or "MM-yyyy" format (e.g. "9-2026", "10-2026")
+  const monthYearMatch = /^(\d{1,2})-(\d{4})$/.exec(trimmed);
+  if (monthYearMatch) {
+    const month = Number.parseInt(monthYearMatch[1], 10) - 1;
+    const year = Number.parseInt(monthYearMatch[2], 10);
+    if (month >= 0 && month <= 11) {
+      const d = new Date(year, month, 1);
+      if (isValid(d)) return d;
+    }
+  }
+
+  const fallbackDate = new Date(trimmed);
+  if (isValid(fallbackDate)) return fallbackDate;
+
+  const num = Number(trimmed);
+  if (!Number.isNaN(num) && num > 0) {
+    const numDate = new Date(num);
+    if (isValid(numDate)) return numDate;
+  }
+
+  return null;
+}
+
 /**
  * Parses and validates date information from a StatPoint.
  */
 export function parsePointDate(
-  point: StatPoint,
+  point: Pick<StatPoint, "id" | "date">,
 ): { year: number; monthIndex: number; dateStr: string; timestamp: number } | null {
-  const rawDate = point.date || point.id;
-  if (!rawDate) return null;
-
-  let d = parseISO(rawDate);
-  if (!isValid(d)) {
-    d = new Date(rawDate);
-  }
-  if (!isValid(d)) {
-    const num = Number(rawDate);
-    if (!Number.isNaN(num) && num > 0) {
-      d = new Date(num);
-    }
-  }
-  if (!isValid(d)) return null;
+  const d = resolveDateCandidate(point.id) ?? resolveDateCandidate(point.date);
+  if (!d) return null;
 
   const monthStart = startOfMonth(d);
   return {
-    year: d.getFullYear(),
-    monthIndex: d.getMonth(),
+    year: monthStart.getFullYear(),
+    monthIndex: monthStart.getMonth(),
     dateStr: format(monthStart, "yyyy-MM-dd"),
     timestamp: monthStart.getTime(),
   };
