@@ -11,9 +11,7 @@ import {
   Archive,
   ArchiveRestore,
   ArrowUpToLine,
-  CreditCard,
   GripVertical,
-  Landmark,
   MoreHorizontal,
   Plus,
   Scale,
@@ -56,6 +54,7 @@ import {
   moveAccountsAboveArchived,
   unarchiveAccountCategory,
 } from "./external-provider-data";
+import { ExternalProviderIcon } from "./external-provider-icons";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 
@@ -461,16 +460,16 @@ function getCategoryTypeName(type: number): string {
   }
 }
 
-function getAccountIcon(type: number) {
+function getAccountIconColor(type: number): string {
   switch (type) {
     case CategoryType.BankAccount:
-      return <Landmark className="text-primary size-4" />;
+      return "text-primary size-4";
     case CategoryType.Account:
-      return <Wallet className="size-4 text-emerald-600 dark:text-emerald-400" />;
+      return "size-4 text-emerald-600 dark:text-emerald-400";
     case CategoryType.DebtAccount:
-      return <Scale className="size-4 text-purple-600 dark:text-purple-400" />;
+      return "size-4 text-purple-600 dark:text-purple-400";
     default:
-      return <CreditCard className="text-muted-foreground size-4" />;
+      return "text-muted-foreground size-4";
   }
 }
 
@@ -551,7 +550,7 @@ function SortableAccountRow({
         )}
 
         <div className="bg-muted/60 flex size-9 shrink-0 items-center justify-center rounded-lg">
-          {getAccountIcon(typeNum)}
+          <ExternalProviderIcon icon={account.icon} fallbackType={typeNum} className={getAccountIconColor(typeNum)} />
         </div>
 
         <div className="flex min-w-0 flex-col gap-0.5">

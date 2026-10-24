@@ -10,12 +10,14 @@ import { Button } from "@/components/ui/button";
 
 import { getTransactionPage } from "./external-provider-client";
 import {
+  CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
   computeTransactionsWithRunningBalance,
   formatMoney,
   formatTransactionDate,
 } from "./external-provider-data";
+import { ExternalProviderIcon } from "./external-provider-icons";
 import { SectionShell } from "./section-shell";
 
 interface RecentTransactionsCardProps {
@@ -144,6 +146,8 @@ export function RecentTransactionsCard({
     [transactions, categories, defaultCurrency],
   );
 
+  const categoryMap = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
+
   const activeFilterLabel = filterLabel ?? selectedAccount?.name;
   const handleClear = onClearFilter ?? onClearAccountFilter;
 
@@ -194,6 +198,15 @@ export function RecentTransactionsCard({
         {rows.map((row) => {
           const { tx, endpoints, direction } = row;
 
+          const counterpartyCategory =
+            direction === "income"
+              ? tx.sourceId
+                ? categoryMap.get(tx.sourceId)
+                : undefined
+              : tx.destinationId
+                ? categoryMap.get(tx.destinationId)
+                : undefined;
+
           // Resolve the amount and balance shown for this row (account-aware).
           let amountText: string;
           let balanceText: string | null = null;
@@ -234,15 +247,36 @@ export function RecentTransactionsCard({
               <div className="flex min-w-0 items-center gap-3">
                 <div
                   className={cn(
-                    "flex size-9 shrink-0 items-center justify-center rounded-lg",
+                    "relative flex size-9 shrink-0 items-center justify-center rounded-lg",
                     direction === "income" && "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
                     direction === "expense" && "bg-muted text-muted-foreground",
                     direction === "transfer" && "bg-blue-500/10 text-blue-600 dark:text-blue-400",
                   )}
                 >
-                  {direction === "income" && <ArrowDownLeft className="size-4" />}
-                  {direction === "expense" && <ArrowUpRight className="size-4" />}
-                  {direction === "transfer" && <ArrowLeftRight className="size-4" />}
+                  <ExternalProviderIcon
+                    icon={counterpartyCategory?.icon}
+                    fallbackType={
+                      counterpartyCategory?.categoryType ??
+                      (direction === "income"
+                        ? CategoryType.Income
+                        : direction === "expense"
+                          ? CategoryType.Expense
+                          : CategoryType.Account)
+                    }
+                    className="size-4"
+                  />
+                  <span
+                    className={cn(
+                      "absolute -right-1 -bottom-1 flex size-3.5 items-center justify-center rounded-full bg-background shadow-xs ring-1 ring-border",
+                      direction === "income" && "text-emerald-600 dark:text-emerald-400",
+                      direction === "expense" && "text-muted-foreground",
+                      direction === "transfer" && "text-blue-600 dark:text-blue-400",
+                    )}
+                  >
+                    {direction === "income" && <ArrowDownLeft className="size-2.5" />}
+                    {direction === "expense" && <ArrowUpRight className="size-2.5" />}
+                    {direction === "transfer" && <ArrowLeftRight className="size-2.5" />}
+                  </span>
                 </div>
 
                 <div className="flex min-w-0 flex-col gap-0.5">
@@ -250,6 +284,19 @@ export function RecentTransactionsCard({
                     <span className="truncate font-medium text-sm">
                       {endpoints.sourceName} → {endpoints.destinationName}
                     </span>
+                    {counterpartyCategory && (
+                      <Badge
+                        variant="secondary"
+                        className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0 font-normal text-[10px] text-muted-foreground"
+                      >
+                        <ExternalProviderIcon
+                          icon={counterpartyCategory.icon}
+                          fallbackType={counterpartyCategory.categoryType}
+                          className="size-2.5"
+                        />
+                        <span className="max-w-[90px] truncate">{counterpartyCategory.name}</span>
+                      </Badge>
+                    )}
                     {direction === "transfer" && (
                       <Badge variant="outline" className="px-1 py-0 font-normal text-[10px]">
                         Transfer

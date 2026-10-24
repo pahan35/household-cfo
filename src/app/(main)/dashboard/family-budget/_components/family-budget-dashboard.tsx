@@ -30,6 +30,7 @@ import {
   computeAccountLiquiditySummary,
   isThrowawayDebtAccount,
   moveAccountsAboveArchived,
+  type NewDebtAccountInput,
   reorderCategoriesSubset,
   unarchiveAccountCategory,
 } from "./external-provider-data";
@@ -166,7 +167,7 @@ export function FamilyBudgetDashboard() {
   );
 
   const handleCreateDebtAccount = useCallback(
-    async (input: { name: string; currencyId: string; exceptFromBalance: boolean }) => {
+    async (input: NewDebtAccountInput) => {
       const prevCategories = categories;
       const { newAccount, updatedCategories, modifiedCategories } = buildNewDebtAccountCategory(categories, input);
 

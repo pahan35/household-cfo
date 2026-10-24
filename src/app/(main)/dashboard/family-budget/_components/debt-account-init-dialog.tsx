@@ -18,13 +18,19 @@ import { Switch } from "@/components/ui/switch";
 
 import type { ExternalProviderCurrency } from "./external-provider-data";
 import { formatThrowawayDebtAccountName } from "./external-provider-data";
+import { ExternalProviderIconPicker } from "./external-provider-icon-picker";
 
 interface DebtAccountInitDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   defaultCurrency?: string;
   currencies?: ExternalProviderCurrency[];
-  onSubmit: (input: { name: string; currencyId: string; exceptFromBalance: boolean }) => Promise<void> | void;
+  onSubmit: (input: {
+    name: string;
+    currencyId: string;
+    exceptFromBalance: boolean;
+    icon?: string;
+  }) => Promise<void> | void;
   isSubmitting?: boolean;
 }
 
@@ -44,6 +50,7 @@ export function DebtAccountInitDialog({
   const [name, setName] = useState("");
   const [currency, setCurrency] = useState(defaultCurrency);
   const [exceptFromBalance, setExceptFromBalance] = useState(true);
+  const [icon, setIcon] = useState("debt");
 
   const availableCurrencies = useMemo(() => {
     const set = new Set(COMMON_CURRENCIES);
@@ -65,9 +72,11 @@ export function DebtAccountInitDialog({
       name: name.trim(),
       currencyId: currency,
       exceptFromBalance,
+      icon,
     });
 
     setName("");
+    setIcon("debt");
     setExceptFromBalance(true);
     onOpenChange(false);
   }
@@ -118,6 +127,11 @@ export function DebtAccountInitDialog({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs font-medium">Account Icon</Label>
+              <ExternalProviderIconPicker value={icon} onChange={setIcon} disabled={isSubmitting} className="w-full" />
             </div>
 
             <div className="flex items-center justify-between rounded-lg border p-3">

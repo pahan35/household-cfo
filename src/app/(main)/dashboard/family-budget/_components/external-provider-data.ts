@@ -510,6 +510,7 @@ export interface NewDebtAccountInput {
   exceptFromBalance?: boolean;
   id?: string;
   createdDate?: Date;
+  icon?: string;
 }
 
 export interface BuildNewDebtAccountResult extends ReorderCategoriesResult {
@@ -542,7 +543,7 @@ export function buildNewDebtAccountCategory(
     deleted: false,
     deletedWithTransactions: false,
     goalClosed: false,
-    icon: "debt",
+    icon: input.icon ?? "debt",
     parentUid: null,
     exceptFromBalance: input.exceptFromBalance !== undefined ? Boolean(input.exceptFromBalance) : true,
     createdTimestamp: toDotNetTicks(input.createdDate ?? new Date()),

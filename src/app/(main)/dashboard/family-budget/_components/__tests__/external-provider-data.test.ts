@@ -690,6 +690,22 @@ describe("buildNewDebtAccountCategory", () => {
     expect(result.newAccount.order).toBe(1);
     expect(result.updatedCategories.map((c) => c.name)).toEqual(["Cash", "Laptop Deal"]);
   });
+
+  it("persists a custom selected icon on new debt account", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+    ];
+
+    const result = buildNewDebtAccountCategory(categories, {
+      name: "Mortgage Deal",
+      currencyId: "USD",
+      icon: "house",
+    });
+
+    expect(result.newAccount.name).toBe("Mortgage Deal");
+    expect(result.newAccount.categoryType).toBe(CategoryType.DebtAccount);
+    expect(result.newAccount.icon).toBe("house");
+  });
 });
 
 describe("archiveAccountCategory with exceptFromBalance", () => {

@@ -11,7 +11,6 @@ import {
   Archive,
   ArchiveRestore,
   ArrowUpToLine,
-  Banknote,
   Coins,
   GripVertical,
   MoreHorizontal,
@@ -46,6 +45,7 @@ import {
   unarchiveIncomeSource,
 } from "./external-provider-client";
 import {
+  CategoryType,
   type ClassifiedIncomeSource,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
@@ -56,6 +56,7 @@ import {
   type LastTransactionSummary,
   moveIncomeSourcesAboveArchived,
 } from "./external-provider-data";
+import { ExternalProviderIcon } from "./external-provider-icons";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 
@@ -470,7 +471,7 @@ function SortableIncomeRow({
 
         {/* Income Icon */}
         <div className="rounded-md bg-emerald-500/10 p-1.5 text-emerald-600 dark:text-emerald-400">
-          <Banknote className="size-4" />
+          <ExternalProviderIcon icon={category.icon} fallbackType={CategoryType.Income} className="size-4" />
         </div>
 
         {/* Source Name & Subtitle */}
