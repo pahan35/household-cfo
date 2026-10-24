@@ -12,7 +12,14 @@ import {
   type StatPoint,
 } from "./external-provider-data";
 import { type ExclusionPreset, groupSmallSlices, transformExpenses } from "./expense-transforms";
-import { parsePointDate, transformYoYPoints } from "./yoy-transforms";
+import {
+  computeTotalNetWorth,
+  filterChronologicalTrends,
+  parsePointDate,
+  stepZoomRange,
+  transformChronologicalTrends,
+  transformYoYPoints,
+} from "./yoy-transforms";
 
 /**
  * Realistic fixtures modeling ExternalProvider /Exchange/Ping and /stat/ping responses.
@@ -338,5 +345,137 @@ describe("parsePointDate & transformYoYPoints", () => {
     expect(october?.years[2026]?.controllableExpense).toBe(4001);
     expect(october?.deltas[2026]).toBeDefined();
     expect(october?.deltas[2026]?.controllableDeltaAbs).toBe(1001);
+  });
+});
+
+describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
+  it("builds a chronological timeline with backward-reconstructed liquid balance and net worth", () => {
+    const result = transformChronologicalTrends({
+      points: MOEXT_STAT_POINTS,
+      categories: MOEXT_CATEGORIES,
+      activePreset: MOCK_PRESET,
+      currentLiquidBalance: 50000,
+      currentNetWorth: 120000,
+    });
+
+    expect(result.totalPoints).toBe(3);
+    expect(result.points.map((p) => p.dateStr)).toEqual(["2025-10-01", "2026-09-01", "2026-10-01"]);
+
+    const oct26 = result.points[2];
+    expect(oct26.monthLabel).toBe("Oct'26");
+    expect(oct26.netIncome).toBe(21500);
+    expect(oct26.controllableExpense).toBe(4001);
+    expect(oct26.netCashFlowMargin).toBe(17499);
+    expect(oct26.liquidBalance).toBe(50000);
+    expect(oct26.netWorth).toBe(120000);
+
+    const sep26 = result.points[1];
+    expect(sep26.monthLabel).toBe("Sep'26");
+    expect(sep26.controllableExpense).toBe(2100);
+    expect(sep26.netCashFlowMargin).toBe(-2100);
+    // Walking backward: sep26 balance = oct26 balance - oct26 margin
+    expect(sep26.liquidBalance).toBe(50000 - 17499); // 32501
+    expect(sep26.netWorth).toBe(120000 - 17499); // 102501
+
+    const oct25 = result.points[0];
+    expect(oct25.monthLabel).toBe("Oct'25");
+    // oct25 balance = sep26 balance - sep26 margin
+    expect(oct25.liquidBalance).toBe(32501 - -2100); // 34601
+    expect(oct25.netWorth).toBe(102501 - -2100); // 104601
+  });
+
+  it("computes current net worth including accounts, debts, and goals while excluding deleted ones", () => {
+    const testCategories: ExternalProviderCategory[] = [
+      {
+        id: "acc-1",
+        name: "Checking",
+        categoryType: CategoryType.BankAccount,
+        amount: 15000,
+        currencyId: "PLN",
+      },
+      {
+        id: "acc-2",
+        name: "Savings Goal",
+        categoryType: CategoryType.Goal,
+        amount: 25000,
+        currencyId: "PLN",
+        exceptFromBalance: true,
+      },
+      {
+        id: "acc-3",
+        name: "Credit Card Debt",
+        categoryType: CategoryType.DebtAccount,
+        amount: -4000,
+        currencyId: "PLN",
+      },
+      {
+        id: "acc-deleted",
+        name: "Old Account",
+        categoryType: CategoryType.Account,
+        amount: 9999,
+        deleted: true,
+      },
+      {
+        id: "exp-1",
+        name: "Groceries",
+        categoryType: CategoryType.Expense,
+        amount: 200,
+      },
+    ];
+
+    const netWorth = computeTotalNetWorth(testCategories, [], "PLN");
+    // 15000 + 25000 - 4000 = 36000
+    expect(netWorth).toBe(36000);
+  });
+
+  it("filters chronological trend points by window presets (6M, 12M, 24M, 40M) and custom dates", () => {
+    const mockTimelinePoints = Array.from({ length: 30 }, (_, i) => {
+      const month = (i % 12) + 1;
+      const year = 2024 + Math.floor(i / 12);
+      const mStr = String(month).padStart(2, "0");
+      return {
+        dateStr: `${year}-${mStr}-01`,
+        year,
+        monthIndex: month - 1,
+        monthLabel: `M${i}`,
+        timestamp: new Date(year, month - 1, 1).getTime(),
+        netIncome: 10000,
+        controllableExpense: 5000,
+        netCashFlowMargin: 5000,
+        totalExpense: 6000,
+        grossIncome: 10000,
+        excludedExpenseSum: 1000,
+        taxDeductions: 0,
+        savingsRate: 50,
+        liquidBalance: 50000 + i * 5000,
+        netWorth: 100000 + i * 5000,
+      };
+    });
+
+    expect(filterChronologicalTrends(mockTimelinePoints, "6M")).toHaveLength(6);
+    expect(filterChronologicalTrends(mockTimelinePoints, "12M")).toHaveLength(12);
+    expect(filterChronologicalTrends(mockTimelinePoints, "24M")).toHaveLength(24);
+    expect(filterChronologicalTrends(mockTimelinePoints, "40M")).toHaveLength(30);
+
+    // Custom [from, to] date filtering
+    const customFiltered = filterChronologicalTrends(mockTimelinePoints, {
+      customFrom: "2025-01-01",
+      customTo: "2025-06-01",
+    });
+    expect(customFiltered).toHaveLength(6);
+    expect(customFiltered[0].dateStr).toBe("2025-01-01");
+    expect(customFiltered[5].dateStr).toBe("2025-06-01");
+  });
+
+  it("steps timeline zoom ranges inward and outward correctly", () => {
+    expect(stepZoomRange("40M", "in")).toBe("24M");
+    expect(stepZoomRange("24M", "in")).toBe("12M");
+    expect(stepZoomRange("12M", "in")).toBe("6M");
+    expect(stepZoomRange("6M", "in")).toBe("6M");
+
+    expect(stepZoomRange("6M", "out")).toBe("12M");
+    expect(stepZoomRange("12M", "out")).toBe("24M");
+    expect(stepZoomRange("24M", "out")).toBe("40M");
+    expect(stepZoomRange("40M", "out")).toBe("40M");
   });
 });

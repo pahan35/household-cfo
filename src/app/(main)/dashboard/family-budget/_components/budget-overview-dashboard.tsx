@@ -15,6 +15,7 @@ import { type BudgetPeriodMonth, BudgetSummaryCard } from "./budget-summary-card
 import {
   getBudgetSelection,
   getCategories,
+  getCurrencies,
   getSettings,
   getTransactionPage,
   updateCategoriesOrder,
@@ -23,6 +24,7 @@ import {
   buildLastTransactionMap,
   CategoryType,
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
   reorderCategoriesSubset,
@@ -37,6 +39,7 @@ import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 export function BudgetOverviewDashboard() {
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
+  const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<ExternalProviderTransaction[]>([]);
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
   const [baseDataError, setBaseDataError] = useState<Error | null>(null);
@@ -62,9 +65,10 @@ export function BudgetOverviewDashboard() {
     setIsLoadingBaseData(true);
     setBaseDataError(null);
     try {
-      const [settingsRes, categoriesRes, recentTxRes] = await Promise.allSettled([
+      const [settingsRes, categoriesRes, currenciesRes, recentTxRes] = await Promise.allSettled([
         getSettings({ signal, forceRefresh }),
         getCategories({ signal, forceRefresh }),
+        getCurrencies({ signal, forceRefresh }),
         getTransactionPage({ skip: 0, take: 300, signal, forceRefresh }),
       ]);
       if (settingsRes.status === "fulfilled") {
@@ -80,6 +84,9 @@ export function BudgetOverviewDashboard() {
         setBaseDataError(
           categoriesRes.reason instanceof Error ? categoriesRes.reason : new Error("Failed to load categories"),
         );
+      }
+      if (currenciesRes.status === "fulfilled") {
+        setCurrencies(currenciesRes.value);
       }
       if (recentTxRes.status === "fulfilled") {
         setRecentTransactions(recentTxRes.value.transactions ?? []);
@@ -353,6 +360,7 @@ export function BudgetOverviewDashboard() {
           <YoYTrendsCard
             statPoints={statData?.selection?.points ?? []}
             categories={categories}
+            currencies={currencies}
             defaultCurrency={defaultCurrency}
             activePreset={presetController.activePreset}
             isLoading={isLoadingStatData}

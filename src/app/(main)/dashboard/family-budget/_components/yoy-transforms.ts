@@ -1,6 +1,14 @@
 import { format, isValid, parseISO, startOfMonth } from "date-fns";
 
-import type { ExternalProviderCategory, StatPoint } from "./external-provider-data";
+import {
+  CategoryType,
+  type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  computeAccountLiquiditySummary,
+  convertCurrencyAmount,
+  isAccountType,
+  type StatPoint,
+} from "./external-provider-data";
 import { type ExclusionPreset, transformExpenses } from "./expense-transforms";
 
 export const MONTH_LABELS = [
@@ -290,4 +298,259 @@ export function transformYoYPoints(input: TransformYoYInput): TransformYoYResult
     earliestYear,
     totalPointsParsed: parsedPoints.length,
   };
+}
+
+/**
+ * Computes total net worth across all non-deleted accounts, bank accounts, goal/savings accounts,
+ * and debt accounts converted to default currency.
+ */
+export function computeTotalNetWorth(
+  categories: ExternalProviderCategory[] = [],
+  currencies: ExternalProviderCurrency[] = [],
+  defaultCurrency = "PLN",
+): number {
+  let netWorth = 0;
+  for (const cat of categories) {
+    if (cat.deleted) continue;
+    const type = Number(cat.categoryType);
+    const isAccount = isAccountType(type);
+    const isGoal = type === CategoryType.ClassicGoal || type === CategoryType.Goal;
+    if (!isAccount && !isGoal) continue;
+
+    const balance = Number(cat.amount) || 0;
+    const currency = (cat.currencyId?.trim() || defaultCurrency).toUpperCase();
+    const converted = convertCurrencyAmount(balance, currency, defaultCurrency, currencies);
+    netWorth += converted ?? balance;
+  }
+  return netWorth;
+}
+
+export interface ChronologicalTrendPoint {
+  dateStr: string;
+  year: number;
+  monthIndex: number;
+  monthLabel: string;
+  timestamp: number;
+  netIncome: number;
+  controllableExpense: number;
+  netCashFlowMargin: number;
+  totalExpense: number;
+  grossIncome: number;
+  excludedExpenseSum: number;
+  taxDeductions: number;
+  savingsRate: number;
+  liquidBalance: number;
+  netWorth: number;
+  rawPoint?: StatPoint;
+  [key: string]: unknown;
+}
+
+export interface TransformChronologicalInput {
+  points?: StatPoint[];
+  categories?: ExternalProviderCategory[] | Map<string, ExternalProviderCategory>;
+  currencies?: ExternalProviderCurrency[];
+  defaultCurrency?: string;
+  activePreset: ExclusionPreset;
+  currentLiquidBalance?: number;
+  currentNetWorth?: number;
+}
+
+export interface TransformChronologicalResult {
+  points: ChronologicalTrendPoint[];
+  totalPoints: number;
+  earliestDate: string | null;
+  latestDate: string | null;
+  currentLiquidBalance: number;
+  currentNetWorth: number;
+}
+
+/**
+ * Transforms historical StatPoints into a continuous chronological timeline series (oldest to newest)
+ * with monthly net income, controllable expenses, margin, and backward-reconstructed liquid balance & net worth.
+ */
+export function transformChronologicalTrends(input: TransformChronologicalInput): TransformChronologicalResult {
+  const {
+    points = [],
+    categories,
+    currencies = [],
+    defaultCurrency = "PLN",
+    activePreset,
+    currentLiquidBalance,
+    currentNetWorth,
+  } = input;
+
+  const categoriesArray = Array.isArray(categories)
+    ? categories
+    : categories instanceof Map
+      ? Array.from(categories.values())
+      : [];
+
+  // 1. Parse and validate candidate date points
+  const parsedPoints: ParsedStatPoint[] = [];
+  for (const point of points) {
+    const parsed = parsePointDate(point);
+    if (parsed) {
+      parsedPoints.push({
+        point,
+        ...parsed,
+      });
+    }
+  }
+
+  // Sort ascending by timestamp
+  parsedPoints.sort((a, b) => a.timestamp - b.timestamp);
+
+  // Group by year and monthIndex (latest point in list wins for duplicates)
+  const byYearMonth = new Map<string, ParsedStatPoint>();
+  for (const item of parsedPoints) {
+    const key = `${item.year}-${item.monthIndex}`;
+    byYearMonth.set(key, item);
+  }
+
+  const uniqueSorted = Array.from(byYearMonth.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+  // 2. Resolve anchor live balances
+  const anchorLiquid =
+    typeof currentLiquidBalance === "number"
+      ? currentLiquidBalance
+      : computeAccountLiquiditySummary(categoriesArray, currencies, defaultCurrency).totalNetLiquid;
+
+  const anchorNetWorth =
+    typeof currentNetWorth === "number"
+      ? currentNetWorth
+      : computeTotalNetWorth(categoriesArray, currencies, defaultCurrency);
+
+  // 3. Transform monthly expense/income metrics
+  const chronologicalPoints: ChronologicalTrendPoint[] = [];
+
+  for (const item of uniqueSorted) {
+    const transformed = transformExpenses({
+      statCategories: item.point.categories,
+      categories,
+      activePreset,
+    });
+
+    const controllable = transformed.totalControllableExpense;
+    const netIncome = transformed.netDisposableIncome;
+    const margin = transformed.netCashFlowMargin;
+    const totalExp = transformed.totalGrossExpense;
+    const savingsRate = netIncome > 0 ? Math.round(((netIncome - controllable) / netIncome) * 100) : 0;
+    const monthLabel = `${MONTH_LABELS[item.monthIndex]}'${String(item.year).slice(-2)}`;
+
+    chronologicalPoints.push({
+      dateStr: item.dateStr,
+      year: item.year,
+      monthIndex: item.monthIndex,
+      monthLabel,
+      timestamp: item.timestamp,
+      netIncome,
+      controllableExpense: controllable,
+      netCashFlowMargin: margin,
+      totalExpense: totalExp,
+      grossIncome: transformed.grossIncome,
+      excludedExpenseSum: transformed.excludedExpenseSum,
+      taxDeductions: transformed.totalTaxDeductions,
+      savingsRate,
+      liquidBalance: 0,
+      netWorth: 0,
+      rawPoint: item.point,
+    });
+  }
+
+  // 4. Walk backwards from the most recent month to reconstruct historical balances
+  const n = chronologicalPoints.length;
+  if (n > 0) {
+    chronologicalPoints[n - 1].liquidBalance = anchorLiquid;
+    chronologicalPoints[n - 1].netWorth = anchorNetWorth;
+
+    for (let i = n - 2; i >= 0; i--) {
+      const nextPoint = chronologicalPoints[i + 1];
+      const flow = nextPoint.netCashFlowMargin;
+      chronologicalPoints[i].liquidBalance = nextPoint.liquidBalance - flow;
+      chronologicalPoints[i].netWorth = nextPoint.netWorth - flow;
+    }
+  }
+
+  return {
+    points: chronologicalPoints,
+    totalPoints: chronologicalPoints.length,
+    earliestDate: chronologicalPoints.length > 0 ? chronologicalPoints[0].dateStr : null,
+    latestDate: chronologicalPoints.length > 0 ? chronologicalPoints[chronologicalPoints.length - 1].dateStr : null,
+    currentLiquidBalance: anchorLiquid,
+    currentNetWorth: anchorNetWorth,
+  };
+}
+
+export type TimelineZoomRange = "6M" | "12M" | "24M" | "40M";
+
+export const TIMELINE_ZOOM_RANGES: TimelineZoomRange[] = ["6M", "12M", "24M", "40M"];
+
+export interface TimelineFilterOptions {
+  range?: TimelineZoomRange | "all" | string;
+  customFrom?: string | null;
+  customTo?: string | null;
+}
+
+function getZoomRangeCount(range: string | undefined): number | null {
+  switch (range) {
+    case "6M":
+      return 6;
+    case "12M":
+      return 12;
+    case "24M":
+      return 24;
+    case "40M":
+      return 40;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Filters a chronological points array by preset window (6M, 12M, 24M, 40M) or custom [from, to] date range.
+ */
+export function filterChronologicalTrends(
+  points: ChronologicalTrendPoint[],
+  options?: TimelineFilterOptions | TimelineZoomRange,
+): ChronologicalTrendPoint[] {
+  if (points.length === 0) return [];
+  if (!options) return points;
+
+  const filter = typeof options === "string" ? { range: options } : options;
+  let filtered = [...points];
+
+  // Custom [from, to] date filtering if specified
+  if (filter.customFrom || filter.customTo) {
+    const fromPrefix = filter.customFrom?.slice(0, 7);
+    const toPrefix = filter.customTo?.slice(0, 7);
+
+    filtered = filtered.filter((pt) => {
+      const ptPrefix = pt.dateStr.slice(0, 7);
+      if (fromPrefix && ptPrefix < fromPrefix) return false;
+      if (toPrefix && ptPrefix > toPrefix) return false;
+      return true;
+    });
+  }
+
+  // Preset window slicing: 6M, 12M, 24M, 40M
+  if (filter.range && filter.range !== "all") {
+    const count = getZoomRangeCount(filter.range);
+    if (count !== null && filtered.length > count) {
+      filtered = filtered.slice(-count);
+    }
+  }
+
+  return filtered;
+}
+
+/**
+ * Steps the zoom range one step inward ("in") or outward ("out").
+ */
+export function stepZoomRange(current: TimelineZoomRange, direction: "in" | "out"): TimelineZoomRange {
+  const idx = TIMELINE_ZOOM_RANGES.indexOf(current);
+  if (idx === -1) return "12M";
+  if (direction === "in") {
+    return TIMELINE_ZOOM_RANGES[Math.max(0, idx - 1)];
+  }
+  return TIMELINE_ZOOM_RANGES[Math.min(TIMELINE_ZOOM_RANGES.length - 1, idx + 1)];
 }
