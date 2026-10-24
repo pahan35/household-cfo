@@ -14,9 +14,15 @@ This project proxies a third-party API. A live credential exists on this machine
 - Do not echo, log, `console.log`, or throw a variable that holds a token, an `Authorization` header, or a cookie value.
 - Do not paste a real token into a source file, a comment, a test fixture, an issue, or a commit message.
 
-## Where the credential lives
+## Where the credentials live
 
-The token is stored in the macOS keychain under the service name `external-api-token`, and it is read at runtime by `src/server/external-provider/token.ts`. That file contains no secret. If you need to confirm the credential is present, ask the user to run the lookup themselves, or check that the proxy responds without a `503`.
+Credentials are stored in the macOS keychain and are read at runtime by `src/server/external-provider/token.ts`. Those files contain no secret. If you need to confirm a credential is present, ask the user to run the lookup themselves, or check that the proxy responds without a `503`.
+
+| Service | Holds | Cache TTL |
+|---|---|---|
+| `external-api-web-cookie` | Full `Cookie:` request-header string for api.external-provider.example.com (primary upstream auth) | 30 s |
+| `external-api-web-user` | Logged-in user id (`window.USER.id`), injected into `/api/transaction/get` bodies | 30 s |
+| `external-api-token` | Bearer token of unknown provenance (fallback only; web backend is cookie-authenticated) | 1 h |
 
 ## How to work with the upstream API
 
