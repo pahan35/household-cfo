@@ -11,37 +11,61 @@ import { CategoryType, type ExternalProviderCategory, formatMoney } from "./exte
 import { SectionShell } from "./section-shell";
 
 interface AccountsCardProps {
+  categories?: ExternalProviderCategory[];
   currency?: string;
+  isLoading?: boolean;
+  error?: Error | null;
+  onRetry?: () => void;
 }
 
-export function AccountsCard({ currency = "PLN" }: AccountsCardProps) {
-  const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+export function AccountsCard({
+  categories: controlledCategories,
+  currency = "PLN",
+  isLoading: controlledIsLoading,
+  error: controlledError,
+  onRetry: controlledOnRetry,
+}: AccountsCardProps) {
+  const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
+  const [internalIsLoading, setInternalIsLoading] = useState(true);
+  const [internalError, setInternalError] = useState<Error | null>(null);
 
-  const fetchAccounts = useCallback(async (signal?: AbortSignal) => {
-    setIsLoading(true);
-    setError(null);
+  const isControlled = controlledCategories !== undefined;
+  const categories = isControlled ? controlledCategories : internalCategories;
+  const isLoading = isControlled ? (controlledIsLoading ?? false) : internalIsLoading;
+  const error = isControlled ? (controlledError ?? null) : internalError;
+
+  const fetchAccounts = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
+    setInternalIsLoading(true);
+    setInternalError(null);
     try {
-      const data = await getCategories({ signal });
-      setCategories(data);
+      const data = await getCategories({ signal, forceRefresh });
+      setInternalCategories(data);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
         return;
       }
-      setError(err instanceof Error ? err : new Error("Failed to load accounts"));
+      setInternalError(err instanceof Error ? err : new Error("Failed to load accounts"));
     } finally {
-      setIsLoading(false);
+      setInternalIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    if (isControlled) return;
     const controller = new AbortController();
     void fetchAccounts(controller.signal);
     return () => {
       controller.abort();
     };
-  }, [fetchAccounts]);
+  }, [isControlled, fetchAccounts]);
+
+  const handleRetry = useCallback(() => {
+    if (controlledOnRetry) {
+      controlledOnRetry();
+    } else {
+      void fetchAccounts(undefined, true);
+    }
+  }, [controlledOnRetry, fetchAccounts]);
 
   const accountCategories = useMemo(() => {
     return categories.filter((c) => {
@@ -93,9 +117,7 @@ export function AccountsCard({ currency = "PLN" }: AccountsCardProps) {
       }
       isLoading={isLoading}
       error={error}
-      onRetry={() => {
-        void fetchAccounts();
-      }}
+      onRetry={handleRetry}
       isEmpty={accountCategories.length === 0}
       emptyTitle="No accounts found"
       emptyDescription="No account-type categories found in ExternalProvider. Add accounts in ExternalProvider to see them here."

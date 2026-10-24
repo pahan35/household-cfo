@@ -30,43 +30,77 @@ import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 export function FamilyBudgetDashboard() {
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
+  const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
+  const [baseDataError, setBaseDataError] = useState<Error | null>(null);
+
   const [periodMonth, setPeriodMonth] = useState<BudgetPeriodMonth>("current");
   const [selectedHistoricalPeriod, setSelectedHistoricalPeriod] = useState<SelectedPeriod | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   // Period-specific budget points and transactions for metrics calculation
   const [statData, setStatData] = useState<StatPingData | null>(null);
+  const [isLoadingStatData, setIsLoadingStatData] = useState(true);
+  const [statDataError, setStatDataError] = useState<Error | null>(null);
+
   const [periodTransactions, setPeriodTransactions] = useState<ExternalProviderTransaction[]>([]);
-  const [isLoadingPeriodData, setIsLoadingPeriodData] = useState(true);
+  const [txHasMoreData, setTxHasMoreData] = useState(false);
+  const [isLoadingPeriodTx, setIsLoadingPeriodTx] = useState(true);
+  const [periodTxError, setPeriodTxError] = useState<Error | null>(null);
 
   const presetController = useExclusionPresets(categories);
 
-  const loadBaseData = useCallback(async (signal?: AbortSignal) => {
+  // Anchor 40-month statistics series once at current month
+  const currentMonthAnchor = useMemo(() => format(startOfMonth(new Date()), "yyyy-MM-dd"), []);
+
+  const loadBaseData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
+    setIsLoadingBaseData(true);
+    setBaseDataError(null);
     try {
       const [settingsRes, categoriesRes] = await Promise.allSettled([
-        getSettings({ signal }),
-        getCategories({ signal }),
+        getSettings({ signal, forceRefresh }),
+        getCategories({ signal, forceRefresh }),
       ]);
       if (settingsRes.status === "fulfilled") {
         setSettings(settingsRes.value);
+      } else if (!signal?.aborted) {
+        setBaseDataError(
+          settingsRes.reason instanceof Error ? settingsRes.reason : new Error("Failed to load settings"),
+        );
       }
       if (categoriesRes.status === "fulfilled") {
         setCategories(categoriesRes.value);
+      } else if (!signal?.aborted && settingsRes.status === "fulfilled") {
+        setBaseDataError(
+          categoriesRes.reason instanceof Error ? categoriesRes.reason : new Error("Failed to load categories"),
+        );
       }
-    } catch {
-      // Ignored: Individual sections handle their own error/retry states
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      setBaseDataError(err instanceof Error ? err : new Error("Failed to load base data"));
+    } finally {
+      setIsLoadingBaseData(false);
     }
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    void loadBaseData(controller.signal);
-    return () => {
-      controller.abort();
-    };
-  }, [loadBaseData]);
-
-  const defaultCurrency = settings?.defaultCurrency ?? "PLN";
+  const loadStatData = useCallback(
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      setIsLoadingStatData(true);
+      setStatDataError(null);
+      try {
+        const data = await getBudgetSelection({
+          from: currentMonthAnchor,
+          signal,
+          forceRefresh,
+        });
+        setStatData(data);
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setStatDataError(err instanceof Error ? err : new Error("Failed to load budget statistics"));
+      } finally {
+        setIsLoadingStatData(false);
+      }
+    },
+    [currentMonthAnchor],
+  );
 
   const { fromDate, periodFilter } = useMemo(() => {
     if (selectedHistoricalPeriod) {
@@ -88,37 +122,49 @@ export function FamilyBudgetDashboard() {
     return { fromDate: from, periodFilter: { from, to } };
   }, [periodMonth, selectedHistoricalPeriod]);
 
-  // Load period stats and income transactions whenever period or refreshKey changes
+  const loadPeriodTransactions = useCallback(
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      setIsLoadingPeriodTx(true);
+      setPeriodTxError(null);
+      try {
+        const res = await getTransactionPage({
+          period: periodFilter,
+          take: 100,
+          signal,
+          forceRefresh,
+        });
+        setPeriodTransactions(res.transactions ?? []);
+        setTxHasMoreData(Boolean(res.hasMoreData));
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setPeriodTxError(err instanceof Error ? err : new Error("Failed to load transactions"));
+      } finally {
+        setIsLoadingPeriodTx(false);
+      }
+    },
+    [periodFilter],
+  );
+
+  // Initial mount load for base data and 40-month statistics series
   useEffect(() => {
     const controller = new AbortController();
-    setIsLoadingPeriodData(true);
-
-    async function loadPeriodData() {
-      try {
-        const [statRes, txRes] = await Promise.allSettled([
-          getBudgetSelection({ from: fromDate, signal: controller.signal }),
-          getTransactionPage({ period: periodFilter, take: 100, signal: controller.signal }),
-        ]);
-
-        if (statRes.status === "fulfilled") {
-          setStatData(statRes.value);
-        }
-        if (txRes.status === "fulfilled") {
-          setPeriodTransactions(txRes.value.transactions ?? []);
-        }
-      } catch {
-        // Individual cards show appropriate fallback/empty states
-      } finally {
-        setIsLoadingPeriodData(false);
-      }
-    }
-
-    void loadPeriodData();
-
+    void loadBaseData(controller.signal);
+    void loadStatData(controller.signal);
     return () => {
       controller.abort();
     };
-  }, [fromDate, periodFilter]);
+  }, [loadBaseData, loadStatData]);
+
+  // Load period transactions when active period filter changes
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadPeriodTransactions(controller.signal);
+    return () => {
+      controller.abort();
+    };
+  }, [loadPeriodTransactions]);
+
+  const defaultCurrency = settings?.defaultCurrency ?? "PLN";
 
   // Calculate gross income for the active period from income transactions
   const grossIncome = useMemo(() => {
@@ -132,7 +178,7 @@ export function FamilyBudgetDashboard() {
     }, 0);
   }, [periodTransactions]);
 
-  // Extract statCategories for the active point
+  // Extract statCategories for the active point from the 40-month series in memory
   const statCategories = useMemo(() => {
     const points = statData?.selection?.points ?? [];
     if (points.length === 0) return [];
@@ -150,9 +196,13 @@ export function FamilyBudgetDashboard() {
     });
   }, [statCategories, categories, presetController.activePreset, grossIncome]);
 
+  const isLoadingPeriodData = isLoadingStatData || isLoadingPeriodTx;
+  const isRefreshing = isLoadingBaseData || isLoadingStatData || isLoadingPeriodTx;
+
   function handleRefreshAll() {
-    setRefreshKey((k) => k + 1);
-    void loadBaseData();
+    void loadBaseData(undefined, true);
+    void loadStatData(undefined, true);
+    void loadPeriodTransactions(undefined, true);
   }
 
   return (
@@ -218,7 +268,7 @@ export function FamilyBudgetDashboard() {
           </div>
 
           <Button size="sm" variant="outline" onClick={handleRefreshAll} className="gap-1.5 text-xs">
-            <RotateCw className="size-3.5" />
+            <RotateCw className={cn("size-3.5", isRefreshing && "animate-spin")} />
             <span>Refresh Data</span>
           </Button>
         </div>
@@ -237,9 +287,15 @@ export function FamilyBudgetDashboard() {
       />
 
       {/* Overview Grid: Accounts & Controllable Expense Pie Card */}
-      <div key={`overview-grid-${refreshKey}`} className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <div className="xl:col-span-5">
-          <AccountsCard currency={defaultCurrency} />
+          <AccountsCard
+            categories={categories}
+            currency={defaultCurrency}
+            isLoading={isLoadingBaseData}
+            error={baseDataError}
+            onRetry={() => void loadBaseData(undefined, true)}
+          />
         </div>
         <div className="xl:col-span-7">
           <ExpensePieCard
@@ -254,14 +310,14 @@ export function FamilyBudgetDashboard() {
       </div>
 
       {/* Year-over-Year Historical Trends */}
-      <div key={`yoy-grid-${refreshKey}`} className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <div className="xl:col-span-12">
           <YoYTrendsCard
             statPoints={statData?.selection?.points ?? []}
             categories={categories}
             defaultCurrency={defaultCurrency}
             activePreset={presetController.activePreset}
-            isLoading={isLoadingPeriodData}
+            isLoading={isLoadingStatData}
             selectedPeriod={selectedHistoricalPeriod}
             onSelectPeriod={(period) => {
               setSelectedHistoricalPeriod(period);
@@ -271,7 +327,7 @@ export function FamilyBudgetDashboard() {
       </div>
 
       {/* Detailed Budget Limits and Spending */}
-      <div key={`budget-grid-${refreshKey}`} className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <div className="xl:col-span-12">
           <BudgetSummaryCard
             categories={categories}
@@ -280,14 +336,26 @@ export function FamilyBudgetDashboard() {
             onPeriodMonthChange={setPeriodMonth}
             customFromDate={selectedHistoricalPeriod?.dateStr}
             onClearCustomPeriod={() => setSelectedHistoricalPeriod(null)}
+            statData={statData}
+            isLoading={isLoadingStatData}
+            error={statDataError}
+            onRetry={() => void loadStatData(undefined, true)}
           />
         </div>
       </div>
 
       {/* Transactions Feed */}
-      <div key={`tx-grid-${refreshKey}`} className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
         <div className="xl:col-span-12">
-          <RecentTransactionsCard defaultCurrency={defaultCurrency} periodFilter={periodFilter} />
+          <RecentTransactionsCard
+            defaultCurrency={defaultCurrency}
+            periodFilter={periodFilter}
+            initialTransactions={periodTransactions}
+            initialHasMoreData={txHasMoreData}
+            isLoading={isLoadingPeriodTx}
+            error={periodTxError}
+            onRetry={() => void loadPeriodTransactions(undefined, true)}
+          />
         </div>
       </div>
     </div>

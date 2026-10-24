@@ -13,7 +13,14 @@ export const ALLOWED_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]
  */
 export const PATH_ALLOWLIST: string[] = ["/Exchange", "/api/transaction", "/settings", "/stat"];
 
-export const REQUEST_HEADER_ALLOWLIST = ["accept", "content-type", "if-match", "if-modified-since", "if-none-match"];
+export const REQUEST_HEADER_ALLOWLIST = [
+  "accept",
+  "cache-control",
+  "content-type",
+  "if-match",
+  "if-modified-since",
+  "if-none-match",
+];
 
 export const RESPONSE_HEADER_ALLOWLIST = ["cache-control", "content-type", "etag", "last-modified", "retry-after"];
 

@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { buildProxyCacheKey, fetchWithProxyCache } from "@/server/external-provider/cache";
 import {
   ALLOWED_METHODS,
   isAllowedPath,
@@ -85,6 +86,10 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
   const target = new URL(upstreamPath, UPSTREAM_ORIGIN);
   target.search = request.nextUrl.search;
 
+  if (upstreamPath === "/stat/ping" && target.searchParams.has("ts")) {
+    target.searchParams.delete("ts");
+  }
+
   for (const name of REQUEST_HEADER_ALLOWLIST) {
     const value = request.headers.get(name);
     if (value !== null) {
@@ -97,38 +102,101 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
     requestBody = injectUserId(requestBody, webCreds.userId);
   }
 
+  const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
+  const bypassCache = cacheControl.includes("no-cache") || cacheControl.includes("max-age=0");
+  const isCacheable = method === "GET" || method === "POST";
+
   try {
-    const upstreamResponse = await fetch(target, {
-      method,
-      headers,
-      body: requestBody,
-      cache: "no-store",
-      // Never follow a redirect, so the Authorization header cannot be replayed
-      // against a different origin.
-      redirect: "error",
-    });
+    if (!isCacheable) {
+      const upstreamResponse = await fetch(target, {
+        method,
+        headers,
+        body: requestBody,
+        cache: "no-store",
+        redirect: "error",
+      });
 
-    if (!upstreamResponse.ok) {
-      const upstreamBody = await upstreamResponse.text().catch(() => "");
-      const body = buildUpstreamErrorBody(upstreamResponse.status, upstreamResponse.statusText, upstreamBody, secrets);
+      if (!upstreamResponse.ok) {
+        const upstreamBody = await upstreamResponse.text().catch(() => "");
+        const body = buildUpstreamErrorBody(
+          upstreamResponse.status,
+          upstreamResponse.statusText,
+          upstreamBody,
+          secrets,
+        );
 
-      return new NextResponse(body, {
-        headers: { "content-type": "application/json" },
+        return new NextResponse(body, {
+          headers: { "content-type": "application/json" },
+          status: upstreamResponse.status,
+        });
+      }
+
+      const responseHeaders = new Headers();
+      for (const name of RESPONSE_HEADER_ALLOWLIST) {
+        const value = upstreamResponse.headers.get(name);
+        if (value !== null) {
+          responseHeaders.set(name, value);
+        }
+      }
+
+      return new NextResponse(upstreamResponse.body, {
+        headers: responseHeaders,
         status: upstreamResponse.status,
       });
     }
 
-    const responseHeaders = new Headers();
-    for (const name of RESPONSE_HEADER_ALLOWLIST) {
-      const value = upstreamResponse.headers.get(name);
-      if (value !== null) {
-        responseHeaders.set(name, value);
-      }
-    }
+    const cacheKey = buildProxyCacheKey(method, upstreamPath, target.search, requestBody);
+    const cachedResponse = await fetchWithProxyCache(
+      cacheKey,
+      async () => {
+        const upstreamResponse = await fetch(target, {
+          method,
+          headers,
+          body: requestBody,
+          cache: "no-store",
+          redirect: "error",
+        });
 
-    return new NextResponse(upstreamResponse.body, {
+        if (!upstreamResponse.ok) {
+          const upstreamBody = await upstreamResponse.text().catch(() => "");
+          const body = buildUpstreamErrorBody(
+            upstreamResponse.status,
+            upstreamResponse.statusText,
+            upstreamBody,
+            secrets,
+          );
+
+          return {
+            status: upstreamResponse.status,
+            headers: [["content-type", "application/json"]],
+            body: new TextEncoder().encode(body),
+            expiresAt: 0,
+          };
+        }
+
+        const responseHeaders: [string, string][] = [];
+        for (const name of RESPONSE_HEADER_ALLOWLIST) {
+          const value = upstreamResponse.headers.get(name);
+          if (value !== null) {
+            responseHeaders.push([name, value]);
+          }
+        }
+
+        const bodyBuffer = await upstreamResponse.arrayBuffer();
+        return {
+          status: upstreamResponse.status,
+          headers: responseHeaders,
+          body: new Uint8Array(bodyBuffer),
+          expiresAt: 0,
+        };
+      },
+      { bypassCache },
+    );
+
+    const responseHeaders = new Headers(cachedResponse.headers);
+    return new NextResponse(Buffer.from(cachedResponse.body), {
       headers: responseHeaders,
-      status: upstreamResponse.status,
+      status: cachedResponse.status,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

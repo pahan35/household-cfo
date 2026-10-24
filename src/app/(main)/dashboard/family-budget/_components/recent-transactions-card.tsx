@@ -15,27 +15,52 @@ import { SectionShell } from "./section-shell";
 interface RecentTransactionsCardProps {
   defaultCurrency?: string;
   periodFilter?: { from?: string | null; to?: string | null };
+  initialTransactions?: ExternalProviderTransaction[];
+  initialHasMoreData?: boolean;
+  isLoading?: boolean;
+  error?: Error | null;
+  onRetry?: () => void;
 }
 
-export function RecentTransactionsCard({ defaultCurrency = "PLN", periodFilter }: RecentTransactionsCardProps) {
-  const [transactions, setTransactions] = useState<ExternalProviderTransaction[]>([]);
-  const [hasMoreData, setHasMoreData] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+export function RecentTransactionsCard({
+  defaultCurrency = "PLN",
+  periodFilter,
+  initialTransactions,
+  initialHasMoreData = false,
+  isLoading: controlledIsLoading,
+  error: controlledError,
+  onRetry: controlledOnRetry,
+}: RecentTransactionsCardProps) {
+  const [transactions, setTransactions] = useState<ExternalProviderTransaction[]>(initialTransactions ?? []);
+  const [hasMoreData, setHasMoreData] = useState(initialHasMoreData);
+  const [internalIsLoading, setInternalIsLoading] = useState(initialTransactions === undefined);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  const [internalError, setInternalError] = useState<Error | null>(null);
+
+  const isControlled = initialTransactions !== undefined;
+  const isLoading = isControlled ? (controlledIsLoading ?? false) : internalIsLoading;
+  const error = controlledError ?? internalError;
 
   const PAGE_SIZE = 20;
 
+  useEffect(() => {
+    if (initialTransactions !== undefined) {
+      setTransactions(initialTransactions);
+      setHasMoreData(initialHasMoreData);
+    }
+  }, [initialTransactions, initialHasMoreData]);
+
   const fetchInitialPage = useCallback(
-    async (signal?: AbortSignal) => {
-      setIsLoading(true);
-      setError(null);
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      setInternalIsLoading(true);
+      setInternalError(null);
       try {
         const page = await getTransactionPage({
           skip: 0,
           take: PAGE_SIZE,
           period: periodFilter,
           signal,
+          forceRefresh,
         });
         setTransactions(page.transactions ?? []);
         setHasMoreData(Boolean(page.hasMoreData));
@@ -43,21 +68,30 @@ export function RecentTransactionsCard({ defaultCurrency = "PLN", periodFilter }
         if (err instanceof Error && err.name === "AbortError") {
           return;
         }
-        setError(err instanceof Error ? err : new Error("Failed to load transactions"));
+        setInternalError(err instanceof Error ? err : new Error("Failed to load transactions"));
       } finally {
-        setIsLoading(false);
+        setInternalIsLoading(false);
       }
     },
     [periodFilter],
   );
 
   useEffect(() => {
+    if (isControlled) return;
     const controller = new AbortController();
     void fetchInitialPage(controller.signal);
     return () => {
       controller.abort();
     };
-  }, [fetchInitialPage]);
+  }, [isControlled, fetchInitialPage]);
+
+  const handleRetry = useCallback(() => {
+    if (controlledOnRetry) {
+      controlledOnRetry();
+    } else {
+      void fetchInitialPage(undefined, true);
+    }
+  }, [controlledOnRetry, fetchInitialPage]);
 
   async function handleLoadMore() {
     if (isLoadingMore || !hasMoreData) return;
@@ -76,7 +110,7 @@ export function RecentTransactionsCard({ defaultCurrency = "PLN", periodFilter }
       });
       setHasMoreData(Boolean(page.hasMoreData));
     } catch (err) {
-      setError(err instanceof Error ? err : new Error("Failed to load more transactions"));
+      setInternalError(err instanceof Error ? err : new Error("Failed to load more transactions"));
     } finally {
       setIsLoadingMore(false);
     }
@@ -125,9 +159,7 @@ export function RecentTransactionsCard({ defaultCurrency = "PLN", periodFilter }
       description="Chronological stream of household income, spending, and transfers"
       isLoading={isLoading}
       error={error}
-      onRetry={() => {
-        void fetchInitialPage();
-      }}
+      onRetry={handleRetry}
       isEmpty={sortedTransactions.length === 0}
       emptyTitle="No transactions found"
       emptyDescription="No transactions recorded for the selected period."

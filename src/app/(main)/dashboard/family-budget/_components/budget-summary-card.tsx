@@ -22,6 +22,10 @@ interface BudgetSummaryCardProps {
   onPeriodMonthChange?: (period: BudgetPeriodMonth) => void;
   customFromDate?: string | null;
   onClearCustomPeriod?: () => void;
+  statData?: StatPingData | null;
+  isLoading?: boolean;
+  error?: Error | null;
+  onRetry?: () => void;
 }
 
 export function BudgetSummaryCard({
@@ -31,13 +35,22 @@ export function BudgetSummaryCard({
   onPeriodMonthChange,
   customFromDate,
   onClearCustomPeriod,
+  statData: controlledStatData,
+  isLoading: controlledIsLoading,
+  error: controlledError,
+  onRetry: controlledOnRetry,
 }: BudgetSummaryCardProps) {
   const [internalPeriod, setInternalPeriod] = useState<BudgetPeriodMonth>("current");
   const periodMonth = controlledPeriod ?? internalPeriod;
 
-  const [statData, setStatData] = useState<StatPingData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
+  const [internalStatData, setInternalStatData] = useState<StatPingData | null>(null);
+  const [internalIsLoading, setInternalIsLoading] = useState(true);
+  const [internalError, setInternalError] = useState<Error | null>(null);
+
+  const isControlled = controlledStatData !== undefined;
+  const statData = isControlled ? controlledStatData : internalStatData;
+  const isLoading = isControlled ? (controlledIsLoading ?? false) : internalIsLoading;
+  const error = isControlled ? (controlledError ?? null) : internalError;
 
   const fromDate = useMemo(() => {
     if (customFromDate) {
@@ -51,31 +64,40 @@ export function BudgetSummaryCard({
   }, [periodMonth, customFromDate]);
 
   const fetchBudget = useCallback(
-    async (signal?: AbortSignal) => {
-      setIsLoading(true);
-      setError(null);
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      setInternalIsLoading(true);
+      setInternalError(null);
       try {
-        const data = await getBudgetSelection({ from: fromDate, signal });
-        setStatData(data);
+        const data = await getBudgetSelection({ from: fromDate, signal, forceRefresh });
+        setInternalStatData(data);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
           return;
         }
-        setError(err instanceof Error ? err : new Error("Failed to load budget data"));
+        setInternalError(err instanceof Error ? err : new Error("Failed to load budget data"));
       } finally {
-        setIsLoading(false);
+        setInternalIsLoading(false);
       }
     },
     [fromDate],
   );
 
   useEffect(() => {
+    if (isControlled) return;
     const controller = new AbortController();
     void fetchBudget(controller.signal);
     return () => {
       controller.abort();
     };
-  }, [fetchBudget]);
+  }, [isControlled, fetchBudget]);
+
+  const handleRetry = useCallback(() => {
+    if (controlledOnRetry) {
+      controlledOnRetry();
+    } else {
+      void fetchBudget(undefined, true);
+    }
+  }, [controlledOnRetry, fetchBudget]);
 
   function handlePeriodSwitch(target: BudgetPeriodMonth) {
     onClearCustomPeriod?.();
@@ -170,9 +192,7 @@ export function BudgetSummaryCard({
       }
       isLoading={isLoading}
       error={error}
-      onRetry={() => {
-        void fetchBudget();
-      }}
+      onRetry={handleRetry}
       isEmpty={budgetItems.length === 0}
       emptyTitle="No budget limits defined"
       emptyDescription="No categories with active budget limits or spending found for this period."

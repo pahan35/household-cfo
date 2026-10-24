@@ -17,9 +17,16 @@ const WEB_CREDS_CACHE_TTL_MS = 30 * 1000;
 
 export type WebCredentials = { cookie: string; userId: string | undefined };
 
-let webCredsCache: { value: WebCredentials; expiresAt: number } | undefined;
+type ExternalProviderTokenState = {
+  webCredsCache?: { value: WebCredentials; expiresAt: number };
+  cached?: { token: string; expiresAt: number };
+  inflightWebCreds?: Promise<WebCredentials | undefined>;
+  inflightToken?: Promise<string>;
+};
 
-let cached: { token: string; expiresAt: number } | undefined;
+const globalState = globalThis as unknown as { __externalProviderTokenState?: ExternalProviderTokenState };
+globalState.__externalProviderTokenState ??= {};
+const tokenState: ExternalProviderTokenState = globalState.__externalProviderTokenState;
 
 export class MissingTokenError extends Error {
   constructor() {
@@ -62,19 +69,33 @@ async function readKeychainSecret(service: string): Promise<string | undefined> 
  */
 export async function getUpstreamToken(): Promise<string> {
   const now = Date.now();
-  if (cached !== undefined && cached.expiresAt > now) {
-    return cached.token;
+  if (tokenState.cached !== undefined && tokenState.cached.expiresAt > now) {
+    return tokenState.cached.token;
   }
 
-  const fromEnv = process.env.EXTERNAL_API_TOKEN?.trim();
-  const resolved = fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : await readKeychainSecret(KEYCHAIN_SERVICE);
-
-  if (resolved === undefined || resolved.length === 0) {
-    throw new MissingTokenError();
+  if (tokenState.inflightToken !== undefined) {
+    return tokenState.inflightToken;
   }
 
-  cached = { token: resolved, expiresAt: now + TOKEN_CACHE_TTL_MS };
-  return resolved;
+  const promise = (async () => {
+    try {
+      const fromEnv = process.env.EXTERNAL_API_TOKEN?.trim();
+      const resolved =
+        fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : await readKeychainSecret(KEYCHAIN_SERVICE);
+
+      if (resolved === undefined || resolved.length === 0) {
+        throw new MissingTokenError();
+      }
+
+      tokenState.cached = { token: resolved, expiresAt: Date.now() + TOKEN_CACHE_TTL_MS };
+      return resolved;
+    } finally {
+      tokenState.inflightToken = undefined;
+    }
+  })();
+
+  tokenState.inflightToken = promise;
+  return promise;
 }
 
 /**
@@ -88,25 +109,32 @@ export async function getUpstreamToken(): Promise<string> {
  */
 export async function getWebCredentials(): Promise<WebCredentials | undefined> {
   const now = Date.now();
-  if (webCredsCache !== undefined && webCredsCache.expiresAt > now) {
-    return webCredsCache.value;
+  if (tokenState.webCredsCache !== undefined && tokenState.webCredsCache.expiresAt > now) {
+    return tokenState.webCredsCache.value;
   }
 
-  const cookie = await readKeychainSecret(WEB_COOKIE_SERVICE);
-  if (cookie === undefined) {
-    return undefined;
+  if (tokenState.inflightWebCreds !== undefined) {
+    return tokenState.inflightWebCreds;
   }
 
-  const userId = await readKeychainSecret(WEB_USER_SERVICE);
-  if (userId === undefined || userId.length === 0) {
-    // Without a user id only cookie-authenticated /api/* bodies cannot be
-    // completed, but the cookie alone is still valid for the other routes.
-    const value: WebCredentials = { cookie, userId: undefined };
-    webCredsCache = { value, expiresAt: now + WEB_CREDS_CACHE_TTL_MS };
-    return value;
-  }
+  const promise = (async () => {
+    try {
+      const cookie = await readKeychainSecret(WEB_COOKIE_SERVICE);
+      if (cookie === undefined) {
+        return undefined;
+      }
 
-  const value: WebCredentials = { cookie, userId };
-  webCredsCache = { value, expiresAt: now + WEB_CREDS_CACHE_TTL_MS };
-  return value;
+      const userId = await readKeychainSecret(WEB_USER_SERVICE);
+      const value: WebCredentials =
+        userId === undefined || userId.length === 0 ? { cookie, userId: undefined } : { cookie, userId };
+
+      tokenState.webCredsCache = { value, expiresAt: Date.now() + WEB_CREDS_CACHE_TTL_MS };
+      return value;
+    } finally {
+      tokenState.inflightWebCreds = undefined;
+    }
+  })();
+
+  tokenState.inflightWebCreds = promise;
+  return promise;
 }
