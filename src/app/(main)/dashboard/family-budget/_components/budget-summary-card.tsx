@@ -15,6 +15,7 @@ import { Progress } from "@/components/ui/progress";
 
 import { getBudgetSelection } from "./external-provider-client";
 import {
+  CategoryType,
   type ExternalProviderCategory,
   filterAndClassifyCategories,
   formatMoney,
@@ -44,8 +45,22 @@ export function computeBudgetSummaryItems(
   statData: StatPingData | null | undefined,
   fromDate: string,
   categoryNameMap: Map<string, string>,
+  categoryTypeMapOrOptions?: Map<string, number> | { includeAll?: boolean; categoryTypeMap?: Map<string, number> },
   options?: { includeAll?: boolean },
 ): BudgetSummaryItem[] {
+  let categoryTypeMap: Map<string, number> | undefined;
+  let includeAll = false;
+
+  if (categoryTypeMapOrOptions instanceof Map) {
+    categoryTypeMap = categoryTypeMapOrOptions;
+    includeAll = options?.includeAll ?? false;
+  } else if (categoryTypeMapOrOptions && typeof categoryTypeMapOrOptions === "object") {
+    categoryTypeMap = categoryTypeMapOrOptions.categoryTypeMap;
+    includeAll = categoryTypeMapOrOptions.includeAll ?? false;
+  } else {
+    includeAll = options?.includeAll ?? false;
+  }
+
   const points = statData?.selection?.points ?? [];
   if (points.length === 0) return [];
 
@@ -54,10 +69,14 @@ export function computeBudgetSummaryItems(
 
   if (!activePoint?.categories) return [];
 
-  const includeAll = options?.includeAll ?? false;
-
   return activePoint.categories
     .filter((cat: StatCategoryPoint) => {
+      if (categoryTypeMap) {
+        const type = categoryTypeMap.get(cat.id);
+        if (type !== undefined && type !== CategoryType.Expense) {
+          return false;
+        }
+      }
       if (includeAll) return true;
       const limit = Number(cat.limitAmount) || 0;
       const rawSpend = cat.value ?? cat.amount ?? cat.currentAmount;
@@ -198,12 +217,22 @@ export function BudgetSummaryCard({
     return map;
   }, [categories]);
 
+  const categoryTypeMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const c of categories) {
+      if (typeof c.categoryType === "number") {
+        map.set(c.id, c.categoryType);
+      }
+    }
+    return map;
+  }, [categories]);
+
   const currency = statData?.selection?.params?.currency ?? defaultCurrency;
 
   // Raw budget items computed from stats
   const allBudgetItems = useMemo(
-    () => computeBudgetSummaryItems(statData, fromDate, categoryNameMap, { includeAll: showArchived }),
-    [statData, fromDate, categoryNameMap, showArchived],
+    () => computeBudgetSummaryItems(statData, fromDate, categoryNameMap, categoryTypeMap, { includeAll: showArchived }),
+    [statData, fromDate, categoryNameMap, categoryTypeMap, showArchived],
   );
 
   // Filter archived items
@@ -213,13 +242,13 @@ export function BudgetSummaryCard({
 
   // Count hidden inactive archived items
   const hiddenArchivedCount = useMemo(() => {
-    const all = computeBudgetSummaryItems(statData, fromDate, categoryNameMap, { includeAll: true });
+    const all = computeBudgetSummaryItems(statData, fromDate, categoryNameMap, categoryTypeMap, { includeAll: true });
     return all.filter((it) => {
       const isArchived = typeof it.name === "string" && it.name.trim().startsWith("_");
       const isInactive = it.current === 0 && it.limit === 0;
       return isArchived && isInactive;
     }).length;
-  }, [statData, fromDate, categoryNameMap]);
+  }, [statData, fromDate, categoryNameMap, categoryTypeMap]);
 
   // Sorted items based on sortMode ("custom" vs "percent")
   const sortedItems = useMemo(() => {

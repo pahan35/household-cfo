@@ -34,6 +34,8 @@ interface RecentTransactionsCardProps {
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
+  emptyTitle?: string;
+  emptyDescription?: string;
 }
 
 const PAGE_SIZE = 20;
@@ -51,6 +53,8 @@ export function RecentTransactionsCard({
   isLoading: controlledIsLoading,
   error: controlledError,
   onRetry: controlledOnRetry,
+  emptyTitle,
+  emptyDescription,
 }: RecentTransactionsCardProps) {
   const [transactions, setTransactions] = useState<ExternalProviderTransaction[]>(initialTransactions ?? []);
   const [hasMoreData, setHasMoreData] = useState(initialHasMoreData);
@@ -184,9 +188,10 @@ export function RecentTransactionsCard({
       error={error}
       onRetry={handleRetry}
       isEmpty={rows.length === 0}
-      emptyTitle="No transactions found"
+      emptyTitle={emptyTitle ?? "No transactions found"}
       emptyDescription={
-        selectedAccountId ? "No transactions recorded for the selected account." : "No transactions recorded yet."
+        emptyDescription ??
+        (selectedAccountId ? "No transactions recorded for the selected account." : "No transactions recorded yet.")
       }
       emptyIcon={<Receipt className="size-6 text-muted-foreground" />}
       skeletonCount={5}

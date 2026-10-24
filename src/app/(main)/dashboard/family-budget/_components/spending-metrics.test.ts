@@ -370,6 +370,45 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
     expect(groceries).toBeDefined();
     expect(groceries?.current).toBe(1950);
   });
+
+  it("filters strictly by CategoryType.Expense, excluding CategoryType.Income and account types", () => {
+    const categoryTypeMap = new Map(MOEXT_CATEGORIES.map((c) => [c.id, c.categoryType]));
+    const items = computeBudgetSummaryItems(MOEXT_STAT_PING_DATA, "2026-10-01", categoryNameMap, categoryTypeMap);
+
+    // Verify cat-income-salary is excluded
+    const incomeItem = items.find((item) => item.id === "cat-income-salary");
+    expect(incomeItem).toBeUndefined();
+
+    // Verify expense categories are included
+    const dining = items.find((item) => item.id === "cat-dining");
+    expect(dining).toBeDefined();
+    const groceries = items.find((item) => item.id === "cat-groceries");
+    expect(groceries).toBeDefined();
+
+    // Verify account types are excluded if present in statData
+    const statDataWithAccount: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [
+              { id: "cat-dining", amount: 500, value: 500, limitAmount: 1000 },
+              { id: "acc-bank", amount: 10000, value: 10000, limitAmount: 0 },
+              { id: "cat-salary", amount: 20000, value: 20000, limitAmount: 0 },
+            ],
+          },
+        ],
+      },
+    };
+    const testTypeMap = new Map([
+      ["cat-dining", CategoryType.Expense],
+      ["acc-bank", CategoryType.BankAccount],
+      ["cat-salary", CategoryType.Income],
+    ]);
+    const filtered = computeBudgetSummaryItems(statDataWithAccount, "2026-10-01", categoryNameMap, testTypeMap);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].id).toBe("cat-dining");
+  });
 });
 
 describe("parsePointDate & transformYoYPoints", () => {

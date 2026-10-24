@@ -59,6 +59,7 @@ import {
 import { ExternalProviderIcon } from "./external-provider-icons";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
+import { isPfronCashbackCategory } from "./tax-transforms";
 
 export interface IncomeSourcesCardProps {
   categories?: ExternalProviderCategory[];
@@ -440,6 +441,7 @@ function SortableIncomeRow({
 
   const displayName = isArchived ? category.name.replace(/^_+/, "").trim() : category.name;
   const limitAmount = Number(category.limitAmount) || 0;
+  const isPfron = isPfronCashbackCategory(category.name);
 
   return (
     <div
@@ -492,6 +494,14 @@ function SortableIncomeRow({
                 {displayName}
               </span>
             )}
+            {isPfron && (
+              <Badge
+                variant="secondary"
+                className="bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/20 px-1.5 py-0 text-[10px] font-medium"
+              >
+                Tax Rebate / ZUS Offset
+              </Badge>
+            )}
             {isArchived && (
               <Badge variant="outline" className="text-muted-foreground px-1 py-0 text-[10px] font-normal">
                 Archived
@@ -520,7 +530,9 @@ function SortableIncomeRow({
             )}
           </div>
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-            {limitAmount > 0 ? (
+            {isPfron ? (
+              <span className="text-purple-600 dark:text-purple-400">Credited against ZUS contributions</span>
+            ) : limitAmount > 0 ? (
               <span className="flex items-center gap-1">
                 <Target className="size-3" /> Target: {formatMoney(limitAmount, currency)}
               </span>

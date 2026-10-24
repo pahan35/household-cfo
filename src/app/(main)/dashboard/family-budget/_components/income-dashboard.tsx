@@ -184,16 +184,18 @@ export function IncomeDashboard() {
       });
     }
 
-    // Default: Show all transactions relevant to income sources and tax categories
-    const incomeAndTaxTxs = transactions.filter((tx) => {
+    // Default: Show all transactions relevant to income sources, tax categories, or currency exchange transfers
+    return transactions.filter((tx) => {
       const srcCat = tx.sourceId ? categoryById.get(tx.sourceId) : undefined;
+      const destCat = tx.destinationId ? categoryById.get(tx.destinationId) : undefined;
       const isIncome =
         Number(tx.sourceType) === CategoryType.Income || Number(srcCat?.categoryType) === CategoryType.Income;
       const isTax = tx.destinationId ? taxCategoryIds.has(tx.destinationId) : false;
-      return isIncome || isTax;
+      const isCurrencyTransfer =
+        (tx.sourceCurrencyId?.toUpperCase() === "USD" && tx.destinationCurrencyId?.toUpperCase() === "PLN") ||
+        (srcCat?.currencyId?.toUpperCase() === "USD" && destCat?.currencyId?.toUpperCase() === "PLN");
+      return isIncome || isTax || isCurrencyTransfer;
     });
-
-    return incomeAndTaxTxs.length > 0 ? incomeAndTaxTxs : transactions.slice(0, 50);
   }, [transactions, selectedSourceId, selectedTaxTag, taxCategoryIds, categoryById]);
 
   // Active filter label
@@ -261,6 +263,10 @@ export function IncomeDashboard() {
       <IncomeMetricsStrip
         grossIncome={incomeMetrics.grossIncome}
         totalTaxes={incomeMetrics.totalTaxes}
+        grossZus={incomeMetrics.grossZus}
+        pfronCashback={incomeMetrics.pfronCashback}
+        netZus={incomeMetrics.netZus}
+        fxFriction={incomeMetrics.fxFriction}
         effectiveTaxRate={incomeMetrics.effectiveTaxRate}
         netDisposableIncome={incomeMetrics.netDisposableIncome}
         controllableExpenses={incomeMetrics.controllableExpenses}
@@ -294,6 +300,11 @@ export function IncomeDashboard() {
             grossIncome={incomeMetrics.grossIncome}
             netDisposableIncome={incomeMetrics.netDisposableIncome}
             effectiveTaxRate={incomeMetrics.effectiveTaxRate}
+            grossZus={incomeMetrics.grossZus}
+            pfronCashback={incomeMetrics.pfronCashback}
+            netZus={incomeMetrics.netZus}
+            passThroughVat={incomeMetrics.passThroughVat}
+            fxFriction={incomeMetrics.fxFriction}
             currency={defaultCurrency}
             selectedTagId={selectedTaxTag}
             onSelectTag={handleSelectTag}
@@ -320,6 +331,12 @@ export function IncomeDashboard() {
         isLoading={isLoading}
         error={error}
         onRetry={() => void loadData(undefined, true)}
+        emptyTitle="No income or tax transactions"
+        emptyDescription={
+          activeFilterLabel
+            ? `No transactions found matching ${activeFilterLabel}.`
+            : "No income, tax, or currency exchange transactions found for the period."
+        }
       />
     </div>
   );

@@ -18,6 +18,11 @@ export interface TaxBreakdownCardProps {
   grossIncome: number;
   netDisposableIncome: number;
   effectiveTaxRate: number;
+  grossZus?: number;
+  pfronCashback?: number;
+  netZus?: number;
+  passThroughVat?: number;
+  fxFriction?: number;
   currency?: string;
   selectedTagId?: string | null;
   onSelectTag?: (tagId: string | null) => void;
@@ -29,12 +34,20 @@ export function TaxBreakdownCard({
   grossIncome,
   netDisposableIncome,
   effectiveTaxRate,
+  grossZus = 0,
+  pfronCashback = 0,
+  netZus,
+  passThroughVat: controlledVat,
+  fxFriction = 0,
   currency = "PLN",
   selectedTagId = null,
   onSelectTag,
   isLoading = false,
 }: TaxBreakdownCardProps) {
-  const { totalTaxesConverted, byTag, untaggedCount, untaggedTotalConverted } = taxBreakdown;
+  const { totalTaxesConverted, personalTags, passThroughTags, untaggedCount, untaggedTotalConverted } = taxBreakdown;
+
+  const resolvedNetZus = netZus ?? Math.max(0, grossZus - pfronCashback);
+  const passThroughVat = controlledVat ?? taxBreakdown.totalPassThroughConverted;
 
   const tagColorMap: Record<string, { bg: string; text: string; bar: string }> = {
     pit: { bg: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400", bar: "bg-blue-500" },
@@ -45,10 +58,12 @@ export function TaxBreakdownCard({
     other: { bg: "bg-rose-500/10", text: "text-rose-600 dark:text-rose-400", bar: "bg-rose-500" },
   };
 
+  const isVatSelected = selectedTagId === "vat";
+
   return (
     <SectionShell
-      title="Tax Deductions by Tag"
-      description="Breakdown of outgoing taxes grouped by transaction tags (#pit, #zus, #health, etc.)"
+      title="Income Streams & Tax Flow"
+      description="Mapping gross revenue through currency friction, net ZUS (after PFRON), and PIT down to true net disposable income"
       action={
         !isLoading && totalTaxesConverted > 0 ? (
           <div className="flex items-center gap-2">
@@ -56,7 +71,7 @@ export function TaxBreakdownCard({
               Effective: {effectiveTaxRate.toFixed(1)}%
             </Badge>
             <div className="text-right">
-              <span className="text-muted-foreground text-xs">Total Tax: </span>
+              <span className="text-muted-foreground text-xs">Personal Tax: </span>
               <span className="text-sm font-semibold text-rose-600 dark:text-rose-400">
                 -{formatMoney(totalTaxesConverted, currency)}
               </span>
@@ -65,22 +80,109 @@ export function TaxBreakdownCard({
         ) : undefined
       }
       isLoading={isLoading}
-      isEmpty={totalTaxesConverted === 0}
+      isEmpty={totalTaxesConverted === 0 && passThroughVat === 0}
       emptyTitle="No tax payments recorded"
       emptyDescription="No outgoing tax payments found for the selected period."
       emptyIcon={<Receipt className="text-muted-foreground size-6" />}
       skeletonCount={3}
     >
       <div className="flex flex-col gap-4">
-        {/* Waterfall Progress Bar */}
+        {/* Gross-to-Net Cash Flow Stream */}
+        {grossIncome > 0 && (
+          <div className="bg-muted/40 border-border/60 rounded-lg border p-3">
+            <div className="text-muted-foreground mb-2.5 flex items-center gap-1.5 text-xs font-medium">
+              <Layers className="size-3.5" />
+              <span>Revenue-to-Net Disposable Cash Flow</span>
+            </div>
+            <div className="grid grid-cols-1 gap-2.5 text-xs sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
+              <div className="flex flex-col">
+                <span className="text-muted-foreground">True Gross Inflow</span>
+                <span className="text-foreground font-semibold tabular-nums">{formatMoney(grossIncome, currency)}</span>
+                <span className="text-muted-foreground text-[10px]">Excl. PFRON & VAT</span>
+              </div>
+              {fxFriction > 0 ? (
+                <div className="flex flex-col">
+                  <span className="text-muted-foreground">USD FX Friction</span>
+                  <span className="font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+                    -{formatMoney(fxFriction, currency)}
+                  </span>
+                  <span className="text-muted-foreground text-[10px]">Trade spread & VAT drag</span>
+                </div>
+              ) : null}
+              <div className="flex flex-col">
+                <span className="text-muted-foreground">Net ZUS Contribution</span>
+                <span className="font-semibold tabular-nums text-purple-600 dark:text-purple-400">
+                  -{formatMoney(resolvedNetZus, currency)}
+                </span>
+                <span className="text-muted-foreground text-[10px]">
+                  {pfronCashback > 0 ? `-${formatMoney(pfronCashback, currency)} PFRON rebate` : "Social Security"}
+                </span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-muted-foreground">Personal Taxes (PIT)</span>
+                <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
+                  -{formatMoney(Math.max(0, totalTaxesConverted - resolvedNetZus), currency)}
+                </span>
+                <span className="text-muted-foreground text-[10px]">Income tax & healthcare</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-muted-foreground">Net Disposable Cash</span>
+                <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+                  {formatMoney(netDisposableIncome, currency)}
+                </span>
+                <span className="text-muted-foreground text-[10px]">Actual take-home cash</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* VAT-7 Neutral Business Pass-Through Callout */}
+        {passThroughVat > 0 && (
+          <button
+            type="button"
+            onClick={() => onSelectTag?.(isVatSelected ? null : "vat")}
+            className={cn(
+              "flex w-full cursor-pointer items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-left transition-colors hover:bg-amber-500/10",
+              isVatSelected && "ring-2 ring-amber-500 border-amber-500",
+            )}
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="rounded-md bg-amber-500/10 p-1.5 text-amber-600 dark:text-amber-400">
+                <Receipt className="size-4" />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-foreground">VAT-7 Remittance</span>
+                  <Badge
+                    variant="outline"
+                    className="border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 text-[10px] font-normal px-1 py-0"
+                  >
+                    Neutral Pass-Through
+                  </Badge>
+                </div>
+                <span className="text-muted-foreground text-[11px]">
+                  Remitted to Polish tax office on behalf of clients; excluded from personal tax burden.
+                </span>
+              </div>
+            </div>
+            <div className="text-right">
+              <span className="text-sm font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+                {formatMoney(passThroughVat, currency)}
+              </span>
+              <div className="text-[10px] text-muted-foreground">#vat</div>
+            </div>
+          </button>
+        )}
+
+        {/* Personal Tax Waterfall Progress Bar */}
         {totalTaxesConverted > 0 && (
           <div className="flex flex-col gap-1.5">
             <div className="text-muted-foreground flex justify-between text-xs">
-              <span>Tax Distribution</span>
-              <span>100% of deductions</span>
+              <span>Personal Tax Distribution</span>
+              <span>100% of personal deductions</span>
             </div>
             <div className="bg-muted flex h-3 w-full overflow-hidden rounded-full">
-              {byTag.map((item) => {
+              {personalTags.map((item) => {
                 const color = tagColorMap[item.tagId] ?? { bar: "bg-primary" };
                 return (
                   <div
@@ -95,9 +197,9 @@ export function TaxBreakdownCard({
           </div>
         )}
 
-        {/* Tag Breakdown Grid */}
+        {/* Tag Breakdown Grid for Personal Taxes */}
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {byTag.map((item) => {
+          {personalTags.map((item) => {
             const isSelected = selectedTagId === item.tagId;
             const colors = tagColorMap[item.tagId] ?? {
               bg: "bg-primary/10",
@@ -149,34 +251,6 @@ export function TaxBreakdownCard({
             );
           })}
         </div>
-
-        {/* Gross-to-Net Waterfall Summary Card */}
-        {grossIncome > 0 && (
-          <div className="bg-muted/40 border-border/60 rounded-lg border p-3">
-            <div className="text-muted-foreground mb-2 flex items-center gap-1.5 text-xs font-medium">
-              <Layers className="size-3.5" />
-              <span>Gross-to-Net Cash Flow Summary</span>
-            </div>
-            <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
-              <div className="flex flex-col">
-                <span className="text-muted-foreground">Gross Inflow</span>
-                <span className="text-foreground font-semibold tabular-nums">{formatMoney(grossIncome, currency)}</span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-muted-foreground">Total Taxes Deducted</span>
-                <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
-                  -{formatMoney(totalTaxesConverted, currency)}
-                </span>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-muted-foreground">Net Disposable Income</span>
-                <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
-                  {formatMoney(netDisposableIncome, currency)}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </SectionShell>
   );
