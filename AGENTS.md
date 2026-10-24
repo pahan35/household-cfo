@@ -100,6 +100,22 @@ Keep a component inside its route until it is reused by another feature. Do not 
 - Avoid unnecessary dependencies.
 - Keep changes focused and do not refactor unrelated files.
 
+## Operational guardrails & workflow
+
+1. **Mandatory Commits on Completion & Proposal Phases**: Whenever you finish implementing, fixing, completing a requested task, or completing an OpenSpec proposal/planning phase, you **MUST** commit your work before finishing your turn. Do not ask for permission or wait for the user to prompt you to commit.
+   - Run formatting (`npm run format`) before committing.
+   - Stage modified or untracked files strictly relevant to the completed task or proposal.
+   - **Strict Scope Isolation (Parallel Sessions)**: NEVER blanket-stage files (`git add .`, `git add -A`, or directory-wide adds). In multi-agent environments, concurrent sessions or background agents may have in-progress uncommitted changes in the working tree. ONLY stage explicit files directly modified as part of your prompt. Always verify with `git diff --staged --name-only` before committing to ensure no parallel session files are swept in.
+   - Commit using a concise Conventional Commits message (e.g., `feat(...)`, `fix(...)`, `refactor(...)`, `docs(...)`).
+   - Never run `git push` unless explicitly asked.
+
+2. **Spec-Driven Planning (OpenSpec)**: For non-trivial features, refactors, or multi-step capabilities:
+   - **Propose & Specify**: Use `/opsx-propose <feature-name>` (or `openspec new change <feature-name>`). OpenSpec scaffolds `proposal.md`, `specs/`, `design.md`, and `tasks.md`.
+   - **Validate**: Check spec validity with `openspec validate <feature-name>`.
+   - **Immediate Proposal Commit**: Commit change artifacts right after proposal and planning artifacts (`proposal.md`, `specs/`, `design.md`, `tasks.md`) are drafted and validated (e.g., `docs(spec): propose <feature-name>`). Commit artifacts carefully with strict scope isolation: stage ONLY explicit files in `openspec/changes/<feature-name>/`, because other agentic sessions may be working in parallel on other non-conflicting changes in the working tree.
+   - **Implement**: Implement according to the checklist in `tasks.md` (or `/opsx-apply`). Update `tasks.md` as items complete and commit milestones progressively.
+   - **Archive & Living Specs**: On completion, run `openspec archive <feature-name>` to merge the change into living specs (`openspec/specs/`) and commit the archived change.
+
 ## Contributions
 
 - Use conventional commit prefixes such as `feat:`, `fix:`, `refactor:`, `docs:`, and `chore:`.
