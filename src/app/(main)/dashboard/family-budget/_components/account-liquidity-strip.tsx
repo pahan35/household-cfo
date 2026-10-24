@@ -5,7 +5,12 @@ import { AlertTriangle, Coins, Landmark, Scale, Wallet } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-import { type AccountLiquiditySummary, type ExternalProviderCategory, formatMoney } from "./external-provider-data";
+import {
+  type AccountLiquiditySummary,
+  type ExternalProviderCategory,
+  formatMoney,
+  getAccountBalance,
+} from "./external-provider-data";
 
 interface AccountLiquidityStripProps {
   summary: AccountLiquiditySummary;
@@ -30,7 +35,7 @@ export function AccountLiquidityStrip({
     );
   }
 
-  const selectedBalance = Number(selectedAccount?.currentAmount ?? selectedAccount?.amount) || 0;
+  const selectedBalance = getAccountBalance(selectedAccount);
   const selectedCurrency = selectedAccount?.currencyId?.length ? selectedAccount.currencyId : currency;
 
   return (

@@ -21,6 +21,7 @@ import {
   findAccountsBelowArchived,
   findIncomeSourcesBelowArchived,
   formatThrowawayDebtAccountName,
+  getAccountBalance,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
   isThrowawayDebtAccount,
@@ -329,6 +330,65 @@ describe("resolveTransactionEndpoints", () => {
   });
 });
 
+describe("getAccountBalance", () => {
+  it("returns 0 for null or undefined", () => {
+    expect(getAccountBalance(null)).toBe(0);
+    expect(getAccountBalance(undefined)).toBe(0);
+  });
+
+  it("prioritizes amount over currentAmount: 0.0 from upstream ExternalProvider payloads", () => {
+    const upstreamCategory = {
+      id: "acc-1",
+      name: "Main Bank",
+      categoryType: CategoryType.BankAccount,
+      amount: 814.05,
+      currentAmount: 0.0,
+    } as ExternalProviderCategory;
+    expect(getAccountBalance(upstreamCategory)).toBe(814.05);
+  });
+
+  it("preserves negative balances for debt accounts or overdrawn checking", () => {
+    const debtCategory = {
+      id: "debt-1",
+      name: "Credit Card",
+      categoryType: CategoryType.DebtAccount,
+      amount: -450.25,
+      currentAmount: 0.0,
+    } as ExternalProviderCategory;
+    expect(getAccountBalance(debtCategory)).toBe(-450.25);
+  });
+
+  it("returns 0 when amount is 0 even if currentAmount is present", () => {
+    const zeroCategory = {
+      id: "acc-0",
+      name: "Empty Checking",
+      categoryType: CategoryType.BankAccount,
+      amount: 0,
+      currentAmount: 100,
+    } as ExternalProviderCategory;
+    expect(getAccountBalance(zeroCategory)).toBe(0);
+  });
+
+  it("falls back to currentAmount when amount is undefined", () => {
+    const fallbackCategory = {
+      id: "acc-fallback",
+      name: "Legacy Account",
+      categoryType: CategoryType.Account,
+      currentAmount: 123.45,
+    } as ExternalProviderCategory;
+    expect(getAccountBalance(fallbackCategory)).toBe(123.45);
+  });
+
+  it("returns 0 when neither amount nor currentAmount is defined", () => {
+    const emptyCategory = {
+      id: "acc-none",
+      name: "Blank Account",
+      categoryType: CategoryType.Account,
+    } as ExternalProviderCategory;
+    expect(getAccountBalance(emptyCategory)).toBe(0);
+  });
+});
+
 describe("computeTransactionsWithRunningBalance", () => {
   it("walks backwards from live balance", () => {
     const cats = [
@@ -345,6 +405,69 @@ describe("computeTransactionsWithRunningBalance", () => {
     expect(first.sourceBalanceAfter).toBe(70);
     expect(second.direction).toBe("income");
     expect(second.destinationBalanceAfter).toBe(100);
+  });
+
+  it("anchors running balance to amount when upstream category includes currentAmount: 0.0", () => {
+    const cats = [
+      {
+        id: "bank-1",
+        name: "Checking",
+        categoryType: CategoryType.BankAccount,
+        amount: 814.05,
+        currentAmount: 0.0,
+        currencyId: "PLN",
+      },
+      { id: "groceries", name: "Groceries", categoryType: CategoryType.Expense },
+      { id: "salary", name: "Work", categoryType: CategoryType.Income },
+    ] as ExternalProviderCategory[];
+
+    const txs = [
+      { id: "t2", sourceId: "bank-1", destinationId: "groceries", sourceAmount: 14.05, dateTimestamp: 2000 },
+      { id: "t1", sourceId: "salary", destinationId: "bank-1", destinationAmount: 300, dateTimestamp: 1000 },
+    ] as ExternalProviderTransaction[];
+
+    const [first, second] = computeTransactionsWithRunningBalance(txs, cats, "PLN");
+    expect(first.direction).toBe("expense");
+    expect(first.sourceBalanceAfter).toBeCloseTo(814.05);
+    expect(second.direction).toBe("income");
+    expect(second.destinationBalanceAfter).toBeCloseTo(828.1);
+  });
+
+  it("tracks running balance across account-to-account transfers with currentAmount: 0.0", () => {
+    const cats = [
+      {
+        id: "acc-source",
+        name: "Checking",
+        categoryType: CategoryType.BankAccount,
+        amount: 500,
+        currentAmount: 0.0,
+        currencyId: "EUR",
+      },
+      {
+        id: "acc-dest",
+        name: "Savings",
+        categoryType: CategoryType.Account,
+        amount: 1500,
+        currentAmount: 0.0,
+        currencyId: "EUR",
+      },
+    ] as ExternalProviderCategory[];
+
+    const txs = [
+      {
+        id: "tx-transfer",
+        sourceId: "acc-source",
+        destinationId: "acc-dest",
+        sourceAmount: 200,
+        destinationAmount: 200,
+        dateTimestamp: 5000,
+      },
+    ] as ExternalProviderTransaction[];
+
+    const [result] = computeTransactionsWithRunningBalance(txs, cats, "EUR");
+    expect(result.direction).toBe("transfer");
+    expect(result.sourceBalanceAfter).toBe(500);
+    expect(result.destinationBalanceAfter).toBe(1500);
   });
 });
 

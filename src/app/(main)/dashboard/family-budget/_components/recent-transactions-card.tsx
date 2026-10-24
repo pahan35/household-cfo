@@ -16,6 +16,7 @@ import {
   computeTransactionsWithRunningBalance,
   formatMoney,
   formatTransactionDate,
+  getAccountBalance,
 } from "./external-provider-data";
 import { ExternalProviderIcon } from "./external-provider-icons";
 import { SectionShell } from "./section-shell";
@@ -171,10 +172,7 @@ export function RecentTransactionsCard({
             <span className="max-w-[140px] truncate">{activeFilterLabel}</span>
             {selectedAccount && !filterLabel && (
               <span className="text-muted-foreground tabular-nums">
-                {formatMoney(
-                  Number(selectedAccount.currentAmount ?? selectedAccount.amount) || 0,
-                  selectedAccount.currencyId || defaultCurrency,
-                )}
+                {formatMoney(getAccountBalance(selectedAccount), selectedAccount.currencyId || defaultCurrency)}
               </span>
             )}
             <X className="size-3" />

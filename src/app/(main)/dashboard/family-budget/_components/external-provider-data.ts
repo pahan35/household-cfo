@@ -88,6 +88,7 @@ export interface ExternalProviderCategory {
   currencyId?: string;
   limitAmount?: number;
   amount?: number;
+  currentAmount?: number;
   periodizedLimitAmount?: number;
   deleted?: boolean;
   categoryType: CategoryType | number;
@@ -102,6 +103,17 @@ export interface ExternalProviderCategory {
   goalClosedDate?: string | null;
   free?: boolean;
   [key: string]: unknown;
+}
+
+/**
+ * Resolves the live account balance from a ExternalProvider category entity.
+ * Prioritizes `amount` over `currentAmount` because upstream ExternalProvider servers
+ * populate `currentAmount: 0.0` while placing the actual account balance in `amount`.
+ */
+export function getAccountBalance(account: ExternalProviderCategory | null | undefined): number {
+  if (!account) return 0;
+  const raw = account.amount ?? account.currentAmount;
+  return Number(raw) || 0;
 }
 
 export interface ExternalProviderTransaction {
@@ -1097,7 +1109,7 @@ export function filterAndClassifyAccounts(
 
   for (const account of sorted) {
     const isArchived = isArchivedCategoryName(account.name);
-    const balance = Number(account.amount) || 0;
+    const balance = getAccountBalance(account);
     const isZeroBalance = Math.abs(balance) < 0.005;
     const hasUnreconciledBalance = isArchived && !isZeroBalance;
 
@@ -1410,7 +1422,7 @@ export function computeAccountLiquiditySummary(
 
   for (const account of categories) {
     if (account.deleted || !isAccountType(account.categoryType)) continue;
-    const balance = Number(account.amount) || 0;
+    const balance = getAccountBalance(account);
     const currency = (firstNonEmpty(account.currencyId, defaultCurrency) ?? defaultCurrency).toUpperCase();
 
     byCurrencyMap.set(currency, (byCurrencyMap.get(currency) ?? 0) + balance);
@@ -1520,7 +1532,7 @@ export function computeTransactionsWithRunningBalance(
   const balances = new Map<string, number>();
   for (const c of categories) {
     if (!c.deleted && isAccountType(c.categoryType)) {
-      balances.set(c.id, Number(c.currentAmount ?? c.amount) || 0);
+      balances.set(c.id, getAccountBalance(c));
     }
   }
 
