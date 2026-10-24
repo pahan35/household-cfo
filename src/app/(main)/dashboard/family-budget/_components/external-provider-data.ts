@@ -467,6 +467,7 @@ export interface LastTransactionSummary {
 export function getLastTransactionSummaryForCategory(
   categoryId: string,
   tx: ExternalProviderTransaction,
+  categoryById?: Map<string, ExternalProviderCategory>,
 ): LastTransactionSummary | null {
   if (!categoryId || !tx) return null;
 
@@ -507,7 +508,8 @@ export function getLastTransactionSummaryForCategory(
       formattedDate,
       direction: isTransfer ? "transfer" : "expense",
       counterpartLabel: "To",
-      counterpartName: tx.destinationName ?? "Unknown",
+      counterpartName:
+        tx.destinationName ?? (tx.destinationId ? categoryById?.get(tx.destinationId)?.name : undefined) ?? "Unknown",
       counterpartId: tx.destinationId,
       amount,
       currency,
@@ -548,7 +550,7 @@ export function getLastTransactionSummaryForCategory(
     formattedDate,
     direction,
     counterpartLabel: "From",
-    counterpartName: tx.sourceName ?? "Unknown",
+    counterpartName: tx.sourceName ?? (tx.sourceId ? categoryById?.get(tx.sourceId)?.name : undefined) ?? "Unknown",
     counterpartId: tx.sourceId,
     amount,
     currency,
@@ -560,7 +562,11 @@ export function getLastTransactionSummaryForCategory(
 /**
  * Builds a fast lookup map from categoryId -> newest LastTransactionSummary across transactions.
  */
-export function buildLastTransactionMap(transactions: ExternalProviderTransaction[]): Map<string, LastTransactionSummary> {
+export function buildLastTransactionMap(
+  transactions: ExternalProviderTransaction[],
+  categories?: ExternalProviderCategory[],
+): Map<string, LastTransactionSummary> {
+  const categoryById = categories ? new Map(categories.map((c) => [c.id, c])) : undefined;
   const map = new Map<string, LastTransactionSummary>();
   if (!Array.isArray(transactions) || transactions.length === 0) {
     return map;
@@ -576,13 +582,13 @@ export function buildLastTransactionMap(transactions: ExternalProviderTransactio
 
   for (const tx of sorted) {
     if (tx.sourceId && !map.has(tx.sourceId)) {
-      const summary = getLastTransactionSummaryForCategory(tx.sourceId, tx);
+      const summary = getLastTransactionSummaryForCategory(tx.sourceId, tx, categoryById);
       if (summary) {
         map.set(tx.sourceId, summary);
       }
     }
     if (tx.destinationId && !map.has(tx.destinationId)) {
-      const summary = getLastTransactionSummaryForCategory(tx.destinationId, tx);
+      const summary = getLastTransactionSummaryForCategory(tx.destinationId, tx, categoryById);
       if (summary) {
         map.set(tx.destinationId, summary);
       }
@@ -590,4 +596,229 @@ export function buildLastTransactionMap(transactions: ExternalProviderTransactio
   }
 
   return map;
+}
+
+export interface ExternalProviderCurrency {
+  id: string;
+  /** Units of this currency per 1 unit of the base currency (USD). */
+  rate?: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Converts an amount between currencies using ExternalProvider's `ExchangeKey.Currency` rates
+ * (expressed as units of currency per 1 USD). Returns `null` when a required rate is unknown.
+ */
+export function convertCurrencyAmount(
+  amount: number,
+  fromCurrency: string | undefined,
+  toCurrency: string | undefined,
+  currencies: ExternalProviderCurrency[],
+): number | null {
+  const from = firstNonEmpty(fromCurrency)?.trim().toUpperCase();
+  const to = firstNonEmpty(toCurrency)?.trim().toUpperCase();
+  if (!from || !to || from === to) {
+    return amount;
+  }
+  const rateOf = (code: string): number | null => {
+    if (code === "USD") {
+      const usd = currencies.find((c) => c.id?.toUpperCase() === "USD");
+      return typeof usd?.rate === "number" && usd.rate > 0 ? usd.rate : 1;
+    }
+    const entry = currencies.find((c) => c.id?.toUpperCase() === code);
+    return typeof entry?.rate === "number" && entry.rate > 0 ? entry.rate : null;
+  };
+  const fromRate = rateOf(from);
+  const toRate = rateOf(to);
+  if (fromRate === null || toRate === null) {
+    return null;
+  }
+  return (amount / fromRate) * toRate;
+}
+
+function firstNonEmpty(...values: (string | null | undefined)[]): string | undefined {
+  return values.find((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+function isAccountType(type: number | undefined | null): boolean {
+  const t = Number(type);
+  return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
+}
+
+export interface AccountLiquiditySummary {
+  /** Net balance of liquid accounts converted into the default currency. */
+  totalNetLiquid: number;
+  /** Native-currency subtotals of all non-deleted accounts. */
+  byCurrency: { currency: string; balance: number }[];
+  /** Currencies lacking a rate (their balances are excluded from `totalNetLiquid`). */
+  unconvertedCurrencies: string[];
+  debtBalance: number;
+  unreconciledCount: number;
+}
+
+/**
+ * Aggregates account balances: converted net liquid total (excluding `exceptFromBalance` accounts),
+ * per-currency native subtotals, debt total and count of unreconciled archived accounts.
+ */
+export function computeAccountLiquiditySummary(
+  categories: ExternalProviderCategory[],
+  currencies: ExternalProviderCurrency[],
+  defaultCurrency: string,
+): AccountLiquiditySummary {
+  const byCurrencyMap = new Map<string, number>();
+  const unconverted = new Set<string>();
+  let totalNetLiquid = 0;
+  let debtBalance = 0;
+  let unreconciledCount = 0;
+
+  for (const account of categories) {
+    if (account.deleted || !isAccountType(account.categoryType)) continue;
+    const balance = Number(account.amount) || 0;
+    const currency = (firstNonEmpty(account.currencyId, defaultCurrency) ?? defaultCurrency).toUpperCase();
+
+    byCurrencyMap.set(currency, (byCurrencyMap.get(currency) ?? 0) + balance);
+
+    if (Number(account.categoryType) === CategoryType.DebtAccount) {
+      const converted = convertCurrencyAmount(balance, currency, defaultCurrency, currencies);
+      debtBalance += converted ?? 0;
+    }
+    if (isArchivedCategoryName(account.name) && Math.abs(balance) >= 0.005) {
+      unreconciledCount += 1;
+    }
+    if (account.exceptFromBalance) continue;
+
+    const converted = convertCurrencyAmount(balance, currency, defaultCurrency, currencies);
+    if (converted === null) {
+      unconverted.add(currency);
+    } else {
+      totalNetLiquid += converted;
+    }
+  }
+
+  const byCurrency = [...byCurrencyMap.entries()]
+    .map(([currency, balance]) => ({ currency, balance }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+
+  return {
+    totalNetLiquid,
+    byCurrency,
+    unconvertedCurrencies: [...unconverted],
+    debtBalance,
+    unreconciledCount,
+  };
+}
+
+export interface ResolvedTransactionEndpoints {
+  sourceName: string;
+  destinationName: string;
+  sourceType?: number;
+  destinationType?: number;
+  sourceCurrency: string;
+  destinationCurrency: string;
+  isSourceAccount: boolean;
+  isDestinationAccount: boolean;
+}
+
+/**
+ * Resolves source/target names, types and currencies of a transaction from the categories lookup
+ * whenever the raw payload omits them.
+ */
+export function resolveTransactionEndpoints(
+  tx: ExternalProviderTransaction,
+  categoryById: Map<string, ExternalProviderCategory>,
+  defaultCurrency: string,
+): ResolvedTransactionEndpoints {
+  const sourceCategory = tx.sourceId ? categoryById.get(tx.sourceId) : undefined;
+  const destCategory = tx.destinationId ? categoryById.get(tx.destinationId) : undefined;
+
+  const sourceType = tx.sourceType ?? sourceCategory?.categoryType;
+  const destinationType = tx.destinationType ?? destCategory?.categoryType;
+
+  return {
+    sourceName: firstNonEmpty(tx.sourceName, sourceCategory?.name) ?? "Unknown Source",
+    destinationName: firstNonEmpty(tx.destinationName, destCategory?.name) ?? "Unknown Target",
+    sourceType: sourceType === undefined ? undefined : Number(sourceType),
+    destinationType: destinationType === undefined ? undefined : Number(destinationType),
+    sourceCurrency: firstNonEmpty(tx.sourceCurrencyId, sourceCategory?.currencyId, defaultCurrency) ?? defaultCurrency,
+    destinationCurrency:
+      firstNonEmpty(tx.destinationCurrencyId, destCategory?.currencyId, defaultCurrency) ?? defaultCurrency,
+    isSourceAccount: isAccountType(sourceType),
+    isDestinationAccount: isAccountType(destinationType),
+  };
+}
+
+export interface TransactionWithBalance {
+  tx: ExternalProviderTransaction;
+  endpoints: ResolvedTransactionEndpoints;
+  direction: "income" | "expense" | "transfer";
+  /** Absolute amount leaving the source (in source currency). */
+  sourceAmount: number;
+  /** Absolute amount arriving at the destination (in destination currency). */
+  destinationAmount: number;
+  /** Balance of the source account right after the transaction (only if source is a known account). */
+  sourceBalanceAfter?: number;
+  /** Balance of the destination account right after the transaction (only if destination is a known account). */
+  destinationBalanceAfter?: number;
+}
+
+function transactionTime(tx: ExternalProviderTransaction): number {
+  if (typeof tx.dateTimestamp === "number") return tx.dateTimestamp;
+  if (tx.dateTimestampISO) {
+    const parsed = Date.parse(tx.dateTimestampISO);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
+/**
+ * Walks the newest-first transaction stream backwards from each account's live balance to compute
+ * the balance of the involved account(s) immediately after each transaction.
+ */
+export function computeTransactionsWithRunningBalance(
+  transactions: ExternalProviderTransaction[],
+  categories: ExternalProviderCategory[],
+  defaultCurrency: string,
+): TransactionWithBalance[] {
+  const categoryById = new Map(categories.map((c) => [c.id, c]));
+  const balances = new Map<string, number>();
+  for (const c of categories) {
+    if (!c.deleted && isAccountType(c.categoryType)) {
+      balances.set(c.id, Number(c.currentAmount ?? c.amount) || 0);
+    }
+  }
+
+  const sorted = transactions
+    .map((tx, index) => ({ tx, index }))
+    .filter(({ tx }) => !tx.deleted)
+    .sort((a, b) => transactionTime(b.tx) - transactionTime(a.tx) || a.index - b.index)
+    .map(({ tx }) => tx);
+
+  return sorted.map((tx) => {
+    const endpoints = resolveTransactionEndpoints(tx, categoryById, defaultCurrency);
+    const sourceAmount = Math.abs(Number(tx.sourceAmount ?? tx.defaultAmount) || 0);
+    const destinationAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+
+    let direction: TransactionWithBalance["direction"];
+    if (endpoints.isSourceAccount && endpoints.isDestinationAccount) {
+      direction = "transfer";
+    } else if (endpoints.isDestinationAccount) {
+      direction = "income";
+    } else {
+      direction = "expense";
+    }
+
+    const result: TransactionWithBalance = { tx, endpoints, direction, sourceAmount, destinationAmount };
+
+    if (tx.sourceId && balances.has(tx.sourceId)) {
+      const current = balances.get(tx.sourceId) ?? 0;
+      result.sourceBalanceAfter = current;
+      balances.set(tx.sourceId, current + sourceAmount);
+    }
+    if (tx.destinationId && balances.has(tx.destinationId)) {
+      const current = balances.get(tx.destinationId) ?? 0;
+      result.destinationBalanceAfter = current;
+      balances.set(tx.destinationId, current - destinationAmount);
+    }
+    return result;
+  });
 }

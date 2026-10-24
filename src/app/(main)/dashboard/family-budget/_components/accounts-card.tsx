@@ -16,6 +16,8 @@ import { getCategories } from "./external-provider-client";
 import {
   CategoryType,
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  computeAccountLiquiditySummary,
   filterAndClassifyAccounts,
   formatMoney,
   type LastTransactionSummary,
@@ -31,6 +33,9 @@ interface AccountsCardProps {
   onRetry?: () => void;
   onReorderCategories?: (reorderedVisibleIds: string[]) => Promise<void>;
   lastTransactionByCategoryId?: Map<string, LastTransactionSummary>;
+  currencies?: ExternalProviderCurrency[];
+  selectedAccountId?: string | null;
+  onSelectAccount?: (accountId: string | null) => void;
 }
 
 export function AccountsCard({
@@ -41,6 +46,9 @@ export function AccountsCard({
   onRetry: controlledOnRetry,
   onReorderCategories,
   lastTransactionByCategoryId,
+  currencies = [],
+  selectedAccountId = null,
+  onSelectAccount,
 }: AccountsCardProps) {
   const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -90,16 +98,10 @@ export function AccountsCard({
     return filterAndClassifyAccounts(categories, { showArchived });
   }, [categories, showArchived]);
 
-  // Total balance of ALL non-deleted accounts (including hidden ones)
+  // Total balance of all non-deleted accounts, converted into the default currency
   const totalBalance = useMemo(() => {
-    return categories
-      .filter((c) => {
-        if (c.deleted) return false;
-        const t = Number(c.categoryType);
-        return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
-      })
-      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-  }, [categories]);
+    return computeAccountLiquiditySummary(categories, currencies, currency).totalNetLiquid;
+  }, [categories, currencies, currency]);
 
   // Count hidden archived accounts with zero balance
   const hiddenArchivedCount = useMemo(() => {
@@ -167,7 +169,7 @@ export function AccountsCard({
         skeletonCount={4}
       >
         <DragDropProvider onDragEnd={handleDragEnd}>
-          <div className="divide-border/60 flex flex-col divide-y">
+          <div className="flex flex-col gap-0.5">
             {classifiedAccounts.map(({ account, isArchived, hasUnreconciledBalance, balance }, index) => {
               const lastTx = lastTransactionByCategoryId?.get(account.id);
 
@@ -183,6 +185,12 @@ export function AccountsCard({
                   hasUnreconciledBalance={hasUnreconciledBalance}
                   lastTx={lastTx}
                   canReorder={Boolean(onReorderCategories)}
+                  isSelected={selectedAccountId === account.id}
+                  onSelect={
+                    onSelectAccount
+                      ? () => onSelectAccount(selectedAccountId === account.id ? null : account.id)
+                      : undefined
+                  }
                 />
               );
             })}
@@ -227,6 +235,8 @@ interface SortableAccountRowProps {
   hasUnreconciledBalance: boolean;
   lastTx?: LastTransactionSummary | null;
   canReorder: boolean;
+  isSelected?: boolean;
+  onSelect?: () => void;
 }
 
 function SortableAccountRow({
@@ -239,6 +249,8 @@ function SortableAccountRow({
   hasUnreconciledBalance,
   lastTx,
   canReorder,
+  isSelected = false,
+  onSelect,
 }: SortableAccountRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -256,7 +268,8 @@ function SortableAccountRow({
     <div
       ref={ref}
       className={cn(
-        "group/row flex items-center justify-between py-3 transition-opacity first:pt-0 last:pb-0",
+        "group/row relative flex items-center justify-between px-2 py-3 transition-opacity",
+        isSelected && "bg-primary/5 ring-primary/40 rounded-lg ring-1",
         isDragging && "bg-muted/40 relative z-10 rounded-lg opacity-50",
         isArchived && !hasUnreconciledBalance && "opacity-60",
       )}
@@ -268,7 +281,7 @@ function SortableAccountRow({
             type="button"
             variant="ghost"
             size="icon-xs"
-            className="text-muted-foreground/40 hover:text-foreground -ml-1 cursor-grab opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 active:cursor-grabbing"
+            className="text-muted-foreground/40 hover:text-foreground relative z-10 -ml-1 cursor-grab opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 active:cursor-grabbing"
             aria-label={`Reorder ${account.name}`}
           >
             <GripVertical className="size-3.5" />
@@ -281,12 +294,24 @@ function SortableAccountRow({
 
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-1.5">
-            <span className="truncate text-sm leading-none font-medium">{account.name}</span>
+            {onSelect ? (
+              <button
+                type="button"
+                onClick={onSelect}
+                aria-pressed={isSelected}
+                aria-label={`Filter transactions by ${account.name}`}
+                className="focus-visible:ring-ring cursor-pointer truncate rounded-sm text-left text-sm leading-none font-medium outline-none after:absolute after:inset-0 focus-visible:ring-2"
+              >
+                {account.name}
+              </button>
+            ) : (
+              <span className="truncate text-sm leading-none font-medium">{account.name}</span>
+            )}
 
             {hasUnreconciledBalance && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <span className="inline-flex cursor-help items-center text-amber-500 transition-colors hover:text-amber-600">
+                  <span className="relative z-10 inline-flex cursor-help items-center text-amber-500 transition-colors hover:text-amber-600">
                     <AlertTriangle className="size-3.5" />
                   </span>
                 </TooltipTrigger>
@@ -313,7 +338,11 @@ function SortableAccountRow({
               {getCategoryTypeName(typeNum)}
             </Badge>
 
-            {lastTx && <LastTransactionBadge summary={lastTx} />}
+            {lastTx && (
+              <span className="relative z-10">
+                <LastTransactionBadge summary={lastTx} />
+              </span>
+            )}
           </div>
         </div>
       </div>

@@ -5,11 +5,15 @@ import {
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
+  computeAccountLiquiditySummary,
+  computeTransactionsWithRunningBalance,
+  convertCurrencyAmount,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
   reorderCategoriesSubset,
+  resolveTransactionEndpoints,
   sortCategoriesByOrder,
 } from "../external-provider-data";
 
@@ -241,5 +245,88 @@ describe("last transaction indexing & summary", () => {
     expect(groceriesSummary?.direction).toBe("expense");
     expect(groceriesSummary?.comment).toBe("Weekly supermarket run");
     expect(groceriesSummary?.tags).toEqual(["food", "groceries"]);
+  });
+});
+
+describe("convertCurrencyAmount", () => {
+  const rates = [
+    { id: "USD", rate: 1 },
+    { id: "PLN", rate: 4 },
+    { id: "EUR", rate: 0.5 },
+  ];
+  it("converts through USD base", () => {
+    expect(convertCurrencyAmount(8, "PLN", "USD", rates)).toBeCloseTo(2);
+    expect(convertCurrencyAmount(8, "PLN", "EUR", rates)).toBeCloseTo(1);
+  });
+  it("returns amount for same currency and null for unknown rate", () => {
+    expect(convertCurrencyAmount(5, "PLN", "PLN", [])).toBe(5);
+    expect(convertCurrencyAmount(5, "GBP", "PLN", rates)).toBeNull();
+  });
+});
+
+describe("computeAccountLiquiditySummary", () => {
+  it("converts, groups by currency and respects exceptFromBalance", () => {
+    const cats = [
+      { id: "a", name: "A", categoryType: CategoryType.Account, amount: 100, currencyId: "PLN" },
+      { id: "b", name: "B", categoryType: CategoryType.BankAccount, amount: 10, currencyId: "USD" },
+      {
+        id: "c",
+        name: "C",
+        categoryType: CategoryType.Account,
+        amount: 999,
+        currencyId: "PLN",
+        exceptFromBalance: true,
+      },
+      {
+        id: "d",
+        name: "_old",
+        categoryType: CategoryType.Account,
+        amount: 5,
+        currencyId: "PLN",
+        exceptFromBalance: true,
+      },
+    ] as ExternalProviderCategory[];
+    const summary = computeAccountLiquiditySummary(cats, [{ id: "PLN", rate: 4 }], "PLN");
+    expect(summary.totalNetLiquid).toBeCloseTo(140);
+    expect(summary.byCurrency).toEqual([
+      { currency: "PLN", balance: 1104 },
+      { currency: "USD", balance: 10 },
+    ]);
+    expect(summary.unreconciledCount).toBe(1);
+  });
+});
+
+describe("resolveTransactionEndpoints", () => {
+  it("falls back to category lookup", () => {
+    const map = new Map([
+      ["s", { id: "s", name: "Bank", categoryType: CategoryType.BankAccount, currencyId: "EUR" }],
+      ["d", { id: "d", name: "Food", categoryType: CategoryType.Expense }],
+    ] as [string, ExternalProviderCategory][]);
+    const r = resolveTransactionEndpoints({ id: "t", sourceId: "s", destinationId: "d" }, map, "PLN");
+    expect(r.sourceName).toBe("Bank");
+    expect(r.destinationName).toBe("Food");
+    expect(r.sourceCurrency).toBe("EUR");
+    expect(r.destinationCurrency).toBe("PLN");
+    expect(r.isSourceAccount).toBe(true);
+    expect(r.isDestinationAccount).toBe(false);
+  });
+});
+
+describe("computeTransactionsWithRunningBalance", () => {
+  it("walks backwards from live balance", () => {
+    const cats = [
+      { id: "acc", name: "Acc", categoryType: CategoryType.Account, amount: 70, currencyId: "PLN" },
+      { id: "inc", name: "Salary", categoryType: CategoryType.Income },
+      { id: "exp", name: "Food", categoryType: CategoryType.Expense },
+    ] as ExternalProviderCategory[];
+    const txs = [
+      { id: "t2", sourceId: "acc", destinationId: "exp", sourceAmount: 30, dateTimestamp: 2000 },
+      { id: "t1", sourceId: "inc", destinationId: "acc", destinationAmount: 100, dateTimestamp: 1000 },
+    ] as ExternalProviderTransaction[];
+    const [first, second] = computeTransactionsWithRunningBalance(txs, cats, "PLN");
+    expect(first.direction).toBe("expense");
+    expect(first.sourceBalanceAfter).toBe(70);
+    expect(second.direction).toBe("income");
+    expect(second.destinationBalanceAfter).toBe(100);
   });
 });

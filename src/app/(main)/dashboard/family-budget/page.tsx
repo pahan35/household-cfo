@@ -4,9 +4,9 @@ import type { Metadata } from "next";
 import { FamilyBudgetDashboard } from "./_components/family-budget-dashboard";
 
 export const metadata: Metadata = {
-  title: "Family Budget | Studio Admin",
+  title: "Accounts & Transactions | Studio Admin",
   description:
-    "Live household budget overview powered by ExternalProvider with accounts, category spending limits, and recent transactions.",
+    "Live household accounts, multi-currency liquidity, and all-time transaction review powered by ExternalProvider.",
   alternates: {
     canonical: "/dashboard/family-budget",
   },
@@ -18,7 +18,7 @@ export default function Page() {
   return (
     <div className="flex flex-col gap-4">
       <div className="space-y-1">
-        <h1 className="text-3xl tracking-tight">Family Budget</h1>
+        <h1 className="text-3xl tracking-tight">Accounts &amp; Transactions</h1>
         <p className="text-muted-foreground text-sm">{formattedDate}</p>
       </div>
 

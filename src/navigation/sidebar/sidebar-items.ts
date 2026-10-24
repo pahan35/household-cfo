@@ -25,6 +25,7 @@ import {
   SquareArrowUpRight,
   UserRound,
   Users,
+  Wallet,
 } from "lucide-react";
 
 export type NavBadge = "new" | "updated" | "soon";
@@ -71,9 +72,15 @@ export const sidebarItems: NavGroup[] = [
     label: "Family Budget",
     items: [
       {
-        id: "family-budget-overview",
-        title: "Overview",
+        id: "family-budget-accounts",
+        title: "Accounts & Transactions",
         url: "/dashboard/family-budget",
+        icon: Wallet,
+      },
+      {
+        id: "family-budget-overview",
+        title: "Budget Overview",
+        url: "/dashboard/family-budget/budget-overview",
         icon: PiggyBank,
       },
       {

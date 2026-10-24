@@ -1,5 +1,6 @@
 import {
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
   type ExternalProviderSettings,
   ExchangeKey,
   type ExchangePingResponseEnvelope,
@@ -213,6 +214,41 @@ export async function getCategories(options?: {
   );
 }
 
+export async function getCurrencies(options?: {
+  signal?: AbortSignal;
+  forceRefresh?: boolean;
+}): Promise<ExternalProviderCurrency[]> {
+  return cachedClientFetch(
+    "currencies",
+    async () => {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      };
+      if (options?.forceRefresh) {
+        headers["Cache-Control"] = "no-cache";
+      }
+
+      const response = await fetch("/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          items: [
+            {
+              key: ExchangeKey.Currency,
+              entityJson: null,
+            },
+          ],
+        }),
+      });
+
+      const body = await handleResponse<ExchangePingResponseEnvelope>(response);
+      return extractExchangeEntities<ExternalProviderCurrency>(body.data?.items ?? [], ExchangeKey.Currency);
+    },
+    options,
+  );
+}
+
 /**
  * Pushes updated categories upstream to ExternalProvider via POST /api/external-provider/Exchange/Ping
  * under ExchangeKey.Category (key: 2), bypassing cache with Cache-Control: no-cache,
@@ -265,6 +301,7 @@ export async function getTransactionPage(options?: {
   skip?: number;
   take?: number;
   period?: { from?: string | null; to?: string | null };
+  categoryIds?: string[];
   signal?: AbortSignal;
   forceRefresh?: boolean;
 }): Promise<TransactionPageResponse> {
@@ -272,7 +309,9 @@ export async function getTransactionPage(options?: {
   const take = options?.take ?? 20;
   const from = options?.period?.from ?? "";
   const to = options?.period?.to ?? "";
-  const cacheKey = `tx:${skip}:${take}:${from}:${to}`;
+  const categoryIds = options?.categoryIds?.filter(Boolean) ?? [];
+  const categoryIdsKey = [...categoryIds].sort().join(",");
+  const cacheKey = `tx:${skip}:${take}:${from}:${to}:${categoryIdsKey}`;
 
   return cachedClientFetch(
     cacheKey,
@@ -283,6 +322,9 @@ export async function getTransactionPage(options?: {
       };
       if (options?.period) {
         payload.period = options.period;
+      }
+      if (categoryIds.length > 0) {
+        payload.categoryIds = categoryIds;
       }
 
       const headers: Record<string, string> = {

@@ -3,17 +3,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "cn";
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Loader2, Receipt } from "lucide-react";
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Loader2, Receipt, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { getTransactionPage } from "./external-provider-client";
-import { CategoryType, type ExternalProviderTransaction, formatMoney, formatTransactionDate } from "./external-provider-data";
+import {
+  type ExternalProviderCategory,
+  type ExternalProviderTransaction,
+  computeTransactionsWithRunningBalance,
+  formatMoney,
+  formatTransactionDate,
+} from "./external-provider-data";
 import { SectionShell } from "./section-shell";
 
 interface RecentTransactionsCardProps {
   defaultCurrency?: string;
+  categories?: ExternalProviderCategory[];
+  selectedAccountId?: string | null;
+  onClearAccountFilter?: () => void;
   periodFilter?: { from?: string | null; to?: string | null };
   initialTransactions?: ExternalProviderTransaction[];
   initialHasMoreData?: boolean;
@@ -22,8 +31,13 @@ interface RecentTransactionsCardProps {
   onRetry?: () => void;
 }
 
+const PAGE_SIZE = 20;
+
 export function RecentTransactionsCard({
   defaultCurrency = "PLN",
+  categories = [],
+  selectedAccountId = null,
+  onClearAccountFilter,
   periodFilter,
   initialTransactions,
   initialHasMoreData = false,
@@ -41,7 +55,10 @@ export function RecentTransactionsCard({
   const isLoading = isControlled ? (controlledIsLoading ?? false) : internalIsLoading;
   const error = controlledError ?? internalError;
 
-  const PAGE_SIZE = 20;
+  const selectedAccount = useMemo(
+    () => (selectedAccountId ? categories.find((c) => c.id === selectedAccountId) : undefined),
+    [categories, selectedAccountId],
+  );
 
   useEffect(() => {
     if (initialTransactions !== undefined) {
@@ -59,21 +76,22 @@ export function RecentTransactionsCard({
           skip: 0,
           take: PAGE_SIZE,
           period: periodFilter,
+          categoryIds: selectedAccountId ? [selectedAccountId] : undefined,
           signal,
           forceRefresh,
         });
         setTransactions(page.transactions ?? []);
         setHasMoreData(Boolean(page.hasMoreData));
+        setInternalIsLoading(false);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
           return;
         }
         setInternalError(err instanceof Error ? err : new Error("Failed to load transactions"));
-      } finally {
         setInternalIsLoading(false);
       }
     },
-    [periodFilter],
+    [periodFilter, selectedAccountId],
   );
 
   useEffect(() => {
@@ -101,6 +119,7 @@ export function RecentTransactionsCard({
         skip: transactions.length,
         take: PAGE_SIZE,
         period: periodFilter,
+        categoryIds: selectedAccountId ? [selectedAccountId] : undefined,
       });
 
       setTransactions((prev) => {
@@ -116,74 +135,92 @@ export function RecentTransactionsCard({
     }
   }
 
-  function getDirection(tx: ExternalProviderTransaction): "income" | "expense" | "transfer" {
-    const src = Number(tx.sourceType);
-    const dst = Number(tx.destinationType);
-
-    const isSrcAccount = src === CategoryType.Account || src === CategoryType.BankAccount;
-    const isDstAccount = dst === CategoryType.Account || dst === CategoryType.BankAccount;
-
-    if (src === CategoryType.Income) {
-      return "income";
-    }
-    if (dst === CategoryType.Expense) {
-      return "expense";
-    }
-    if (isSrcAccount && isDstAccount) {
-      return "transfer";
-    }
-    if (isDstAccount && !isSrcAccount) {
-      return "income";
-    }
-    return "expense";
-  }
-
-  function getDirectionPrefix(dir: "income" | "expense" | "transfer"): string {
-    if (dir === "income") return "+";
-    if (dir === "expense") return "-";
-    return "";
-  }
-
-  const sortedTransactions = useMemo(() => {
-    // Already newest-first from ExternalProvider, but sort by dateTimestampISO descending as safety
-    return [...transactions].sort((a, b) => {
-      const dateA = a.dateTimestampISO ? new Date(a.dateTimestampISO).getTime() : 0;
-      const dateB = b.dateTimestampISO ? new Date(b.dateTimestampISO).getTime() : 0;
-      return dateB - dateA;
-    });
-  }, [transactions]);
+  const rows = useMemo(
+    () => computeTransactionsWithRunningBalance(transactions, categories, defaultCurrency),
+    [transactions, categories, defaultCurrency],
+  );
 
   return (
     <SectionShell
-      title="Recent Transactions"
-      description="Chronological stream of household income, spending, and transfers"
+      title="Transactions"
+      description={
+        selectedAccount
+          ? `All-time history for ${selectedAccount.name}`
+          : "All-time stream of household income, spending, and transfers"
+      }
+      action={
+        selectedAccountId ? (
+          <Button
+            type="button"
+            variant="secondary"
+            size="xs"
+            onClick={onClearAccountFilter}
+            className="h-6 gap-1 px-2 text-[11px]"
+          >
+            <span className="max-w-[140px] truncate">{selectedAccount?.name ?? "Account"}</span>
+            {selectedAccount && (
+              <span className="text-muted-foreground tabular-nums">
+                {formatMoney(
+                  Number(selectedAccount.currentAmount ?? selectedAccount.amount) || 0,
+                  selectedAccount.currencyId || defaultCurrency,
+                )}
+              </span>
+            )}
+            <X className="size-3" />
+            <span className="sr-only">Clear filter</span>
+          </Button>
+        ) : undefined
+      }
       isLoading={isLoading}
       error={error}
       onRetry={handleRetry}
-      isEmpty={sortedTransactions.length === 0}
+      isEmpty={rows.length === 0}
       emptyTitle="No transactions found"
-      emptyDescription="No transactions recorded for the selected period."
+      emptyDescription={
+        selectedAccountId ? "No transactions recorded for the selected account." : "No transactions recorded yet."
+      }
       emptyIcon={<Receipt className="size-6 text-muted-foreground" />}
       skeletonCount={5}
       skeletonHeight="h-12"
     >
       <div className="flex flex-col divide-y divide-border/60">
-        {sortedTransactions.map((tx) => {
-          const direction = getDirection(tx);
-          const rawAmount = Math.abs(Number(tx.defaultAmount ?? tx.destinationAmount ?? tx.sourceAmount ?? 0));
-          const currency = tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? defaultCurrency;
+        {rows.map((row) => {
+          const { tx, endpoints, direction } = row;
 
-          let counterpartTitle = tx.destinationName ?? tx.sourceName ?? "Transaction";
-          let counterpartSubtitle = tx.sourceName;
-          if (direction === "income") {
-            counterpartTitle = tx.sourceName ?? "Income";
-            counterpartSubtitle = tx.destinationName ? `To: ${tx.destinationName}` : undefined;
-          } else if (direction === "transfer") {
-            counterpartTitle = `${tx.sourceName ?? "Account"} → ${tx.destinationName ?? "Account"}`;
-            counterpartSubtitle = "Internal transfer";
-          } else if (tx.sourceName && tx.destinationName) {
-            counterpartSubtitle = `From: ${tx.sourceName}`;
+          // Resolve the amount and balance shown for this row (account-aware).
+          let amountText: string;
+          let balanceText: string | null = null;
+          const isSelectedSource = selectedAccountId !== null && tx.sourceId === selectedAccountId;
+          const isSelectedDest = selectedAccountId !== null && tx.destinationId === selectedAccountId;
+
+          if (isSelectedSource || (!isSelectedDest && direction === "expense")) {
+            amountText = `-${formatMoney(row.sourceAmount, endpoints.sourceCurrency)}`;
+            if (row.sourceBalanceAfter !== undefined) {
+              balanceText = formatMoney(row.sourceBalanceAfter, endpoints.sourceCurrency);
+            }
+          } else if (isSelectedDest || direction === "income") {
+            amountText = `+${formatMoney(row.destinationAmount, endpoints.destinationCurrency)}`;
+            if (row.destinationBalanceAfter !== undefined) {
+              balanceText = formatMoney(row.destinationBalanceAfter, endpoints.destinationCurrency);
+            }
+          } else {
+            amountText =
+              endpoints.sourceCurrency === endpoints.destinationCurrency
+                ? formatMoney(row.sourceAmount, endpoints.sourceCurrency)
+                : `${formatMoney(row.sourceAmount, endpoints.sourceCurrency)} → ${formatMoney(row.destinationAmount, endpoints.destinationCurrency)}`;
+            const parts = [
+              row.sourceBalanceAfter !== undefined
+                ? formatMoney(row.sourceBalanceAfter, endpoints.sourceCurrency)
+                : null,
+              row.destinationBalanceAfter !== undefined
+                ? formatMoney(row.destinationBalanceAfter, endpoints.destinationCurrency)
+                : null,
+            ].filter((part): part is string => part !== null);
+            balanceText = parts.length > 0 ? parts.join(" → ") : null;
           }
+
+          const isOutflowRow = amountText.startsWith("-");
+          const isInflowRow = amountText.startsWith("+");
 
           return (
             <div key={tx.id} className="flex items-center justify-between py-3 first:pt-0 last:pb-0">
@@ -203,19 +240,21 @@ export function RecentTransactionsCard({
 
                 <div className="flex min-w-0 flex-col gap-0.5">
                   <div className="flex items-center gap-2">
-                    <span className="truncate font-medium text-sm">{counterpartTitle}</span>
-                    {tx.comment && (
-                      <span className="max-w-[160px] truncate text-muted-foreground text-xs md:max-w-[240px]">
-                        • {tx.comment}
-                      </span>
+                    <span className="truncate font-medium text-sm">
+                      {endpoints.sourceName} → {endpoints.destinationName}
+                    </span>
+                    {direction === "transfer" && (
+                      <Badge variant="outline" className="px-1 py-0 font-normal text-[10px]">
+                        Transfer
+                      </Badge>
                     )}
                   </div>
                   <div className="flex items-center gap-2 text-muted-foreground text-xs">
                     <span>{formatTransactionDate(tx.dateTimestampISO)}</span>
-                    {counterpartSubtitle && (
+                    {tx.comment && (
                       <>
                         <span>•</span>
-                        <span className="truncate">{counterpartSubtitle}</span>
+                        <span className="max-w-[160px] truncate md:max-w-[240px]">{tx.comment}</span>
                       </>
                     )}
                   </div>
@@ -225,21 +264,16 @@ export function RecentTransactionsCard({
               <div className="ml-3 shrink-0 text-right">
                 <span
                   className={cn(
-                    "font-semibold text-sm",
-                    direction === "income" && "text-emerald-600 dark:text-emerald-400",
-                    direction === "expense" && "text-foreground",
-                    direction === "transfer" && "text-muted-foreground",
+                    "font-semibold text-sm tabular-nums",
+                    isInflowRow && "text-emerald-600 dark:text-emerald-400",
+                    isOutflowRow && "text-foreground",
+                    !isInflowRow && !isOutflowRow && "text-muted-foreground",
                   )}
                 >
-                  {getDirectionPrefix(direction)}
-                  {formatMoney(rawAmount, currency)}
+                  {amountText}
                 </span>
-                {direction === "transfer" && (
-                  <div>
-                    <Badge variant="outline" className="px-1 py-0 font-normal text-[10px]">
-                      Transfer
-                    </Badge>
-                  </div>
+                {balanceText && (
+                  <div className="text-muted-foreground text-[11px] tabular-nums">Bal: {balanceText}</div>
                 )}
               </div>
             </div>
@@ -263,7 +297,7 @@ export function RecentTransactionsCard({
                   <span>Loading more...</span>
                 </>
               ) : (
-                <span>Load older transactions</span>
+                <span>Load more transactions</span>
               )}
             </Button>
           </div>
