@@ -122,3 +122,47 @@ Keep a component inside its route until it is reused by another feature. Do not 
 - Include screenshots for new screens and material visual changes. Include mobile and dark-theme states when relevant.
 - Explain new reusable patterns or dependencies in the pull request.
 - Follow `CONTRIBUTING.md` for the contribution workflow.
+
+# Shared Agent Work Protocol (Beads)
+
+This repository uses Beads (`bd`) for cross-harness task and context management.
+Every agentic harness (Antigravity, OpenCode, Junie, etc.) must adhere to these rules:
+
+## Session Start & Context Recovery
+
+1. Never guess the current state or rely on memory summaries. Always inspect the active task graph:
+   ```bash
+   bd prime
+   bd ready
+   ```
+2. Select the top actionable task from `bd ready`. Inspect its requirements and context:
+   ```bash
+   bd show <task-id>
+   ```
+3. Claim the task before making code changes to establish ownership:
+   ```bash
+   bd update <task-id> --claim
+   ```
+
+## During Execution & Handoffs
+
+- If blocked or making architectural decisions that incoming agents must know, record brief notes:
+  ```bash
+  bd update <task-id> --notes "Decided approach X; blocked on Y"
+  ```
+- If creating subtasks or dependencies:
+  ```bash
+  bd create --title "Subtask name" --parent <parent-id>
+  bd dep add <blocked-id> <prerequisite-id>
+  ```
+
+## Session Close / Quota Exhaustion / Task Completion
+
+- If finished with a task:
+  ```bash
+  bd close <task-id>
+  ```
+- If your quota runs out or session ends mid-task:
+  1. Stash or commit clean working changes in git.
+  2. Update the claimed task with progress notes (`bd update <task-id> --notes "Stopped at step N: ..."`).
+  3. Leave the task open so the next harness can immediately pick it up via `bd ready`.
