@@ -1,4 +1,5 @@
 import {
+  ArrowLeftRight,
   Banknote,
   Calendar,
   ChartBar,
@@ -67,6 +68,24 @@ export interface NavGroup {
 export const sidebarItems: NavGroup[] = [
   {
     id: 1,
+    label: "Family Budget",
+    items: [
+      {
+        id: "family-budget-overview",
+        title: "Overview",
+        url: "/dashboard/family-budget",
+        icon: PiggyBank,
+      },
+      {
+        id: "family-budget-fx-inflation",
+        title: "FX & Inflation",
+        url: "/dashboard/family-budget/fx-inflation",
+        icon: ArrowLeftRight,
+      },
+    ],
+  },
+  {
+    id: 2,
     label: "Dashboards",
     items: [
       {
@@ -86,12 +105,6 @@ export const sidebarItems: NavGroup[] = [
         title: "Finance",
         url: "/dashboard/finance",
         icon: Banknote,
-      },
-      {
-        id: "family-budget",
-        title: "Family Budget",
-        url: "/dashboard/family-budget",
-        icon: PiggyBank,
       },
       {
         id: "analytics",
@@ -144,7 +157,7 @@ export const sidebarItems: NavGroup[] = [
     ],
   },
   {
-    id: 2,
+    id: 3,
     label: "Pages",
     items: [
       {
@@ -223,7 +236,7 @@ export const sidebarItems: NavGroup[] = [
     ],
   },
   {
-    id: 3,
+    id: 4,
     label: "Legacy",
     items: [
       {
@@ -239,7 +252,7 @@ export const sidebarItems: NavGroup[] = [
     ],
   },
   {
-    id: 4,
+    id: 5,
     label: "Misc",
     items: [
       {
