@@ -129,6 +129,12 @@ Keep a component inside its route until it is reused by another feature. Do not 
 This repository uses Beads (`bd`) for cross-harness task and context management.
 Every agentic harness (Antigravity, OpenCode, Junie, etc.) must adhere to these rules:
 
+## Sandbox & Execution Environment
+
+In sandboxed agent environments (such as Antigravity), **always execute all `bd` commands outside the sandbox (`BypassSandbox: true`)**.
+- `bd` requires access to Dolt configuration (`~/.dolt/config_global.json`) and external planning paths (such as `~/.beads-planning`), which reside outside the workspace sandbox.
+- Never attempt to run `bd` in sandboxed mode; always bypass sandbox isolation for any `bd` invocation.
+
 ## Session Start & Context Recovery
 
 1. Never guess the current state or rely on memory summaries. Always inspect the active task graph:
