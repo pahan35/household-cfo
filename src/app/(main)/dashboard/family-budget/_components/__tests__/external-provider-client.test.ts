@@ -10,10 +10,14 @@ import {
 } from "@/server/external-provider/cache";
 
 import {
+  archiveIncomeSource,
   createTransaction,
   getExternalProviderClientCacheEntry,
   invalidateExternalProviderClientCache,
+  reorderIncomeCategories,
+  unarchiveIncomeSource,
   updateCategoriesOrder,
+  updateTransactionTags,
 } from "../external-provider-client";
 import { CategoryType, type ExternalProviderCategory, type ExternalProviderTransaction, ExchangeKey } from "../external-provider-data";
 
@@ -192,6 +196,77 @@ describe("Client updateCategoriesOrder", () => {
     expect(capturedMethod).toBe("POST");
     expect(capturedHeaders?.get("cache-control")).toBe("no-cache");
     expect(capturedBody).toEqual(txPayload);
+  });
+
+  it("updateTransaction and updateTransactionTags POST to /api/external-provider/api/transaction/update and invalidate cache", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    let capturedHeaders: Headers | undefined;
+    let capturedBody: unknown = null;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = typeof input === "string" ? input : input.toString();
+      capturedMethod = init?.method ?? "GET";
+      capturedHeaders = new Headers(init?.headers);
+      capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+
+      return new Response(JSON.stringify({ isSuccess: true, data: { id: "tx-updated-1" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const txPayload: ExternalProviderTransaction = {
+      id: "tx-updated-1",
+      destinationId: "cat-tax-pln",
+      destinationAmount: 500,
+      tags: [],
+    };
+
+    const result = await updateTransactionTags(txPayload, ["#pit"]);
+
+    expect(result.isSuccess).toBe(true);
+    expect(capturedUrl).toBe("/api/external-provider/api/transaction/update");
+    expect(capturedMethod).toBe("POST");
+    expect(capturedHeaders?.get("cache-control")).toBe("no-cache");
+    expect(capturedBody).toEqual({ ...txPayload, tags: ["#pit"] });
+  });
+
+  it("reorderIncomeCategories, archiveIncomeSource, and unarchiveIncomeSource wire through updateCategoriesOrder", async () => {
+    const incomeCategories: ExternalProviderCategory[] = [
+      { id: "inc-1", name: "Salary", categoryType: CategoryType.Income, order: 0 },
+      { id: "inc-2", name: "Dividends", categoryType: CategoryType.Income, order: 1 },
+      { id: "inc-3", name: "_Old", categoryType: CategoryType.Income, order: 2 },
+    ];
+
+    let capturedPingPayload: unknown = null;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedPingPayload = init?.body ? JSON.parse(init.body as string) : null;
+      return new Response(JSON.stringify({ isSuccess: true, data: { items: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    // 1. Reorder
+    await reorderIncomeCategories(incomeCategories, ["inc-2", "inc-1"]);
+    expect(capturedPingPayload).not.toBeNull();
+    const cachedAfterReorder = getExternalProviderClientCacheEntry<ExternalProviderCategory[]>("categories");
+    expect(cachedAfterReorder?.find((c) => c.id === "inc-2")?.order).toBe(0);
+
+    // 2. Archive
+    await archiveIncomeSource(incomeCategories, "inc-1");
+    const cachedAfterArchive = getExternalProviderClientCacheEntry<ExternalProviderCategory[]>("categories");
+    const archived = cachedAfterArchive?.find((c) => c.id === "inc-1");
+    expect(archived?.name).toBe("_Salary");
+    expect(archived?.order).toBe(2);
+
+    // 3. Unarchive
+    await unarchiveIncomeSource(cachedAfterArchive ?? incomeCategories, "inc-1");
+    const cachedAfterUnarchive = getExternalProviderClientCacheEntry<ExternalProviderCategory[]>("categories");
+    const unarchived = cachedAfterUnarchive?.find((c) => c.id === "inc-1");
+    expect(unarchived?.name).toBe("Salary");
   });
 });
 

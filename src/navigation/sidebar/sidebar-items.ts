@@ -84,6 +84,12 @@ export const sidebarItems: NavGroup[] = [
         icon: PiggyBank,
       },
       {
+        id: "family-budget-income",
+        title: "Income & Taxes",
+        url: "/dashboard/family-budget/income",
+        icon: Banknote,
+      },
+      {
         id: "family-budget-fx-inflation",
         title: "FX & Inflation",
         url: "/dashboard/family-budget/fx-inflation",

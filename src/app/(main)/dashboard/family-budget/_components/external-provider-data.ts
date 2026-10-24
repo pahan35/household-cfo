@@ -316,6 +316,8 @@ export function reorderCategoriesSubset(
             type === CategoryType.Account || type === CategoryType.BankAccount || type === CategoryType.DebtAccount
           );
         };
+      } else if (t === CategoryType.Income) {
+        groupFilter = (c) => Number(c.categoryType) === CategoryType.Income;
       } else {
         groupFilter = (c) => {
           const type = Number(c.categoryType);
@@ -391,14 +393,15 @@ export function reorderCategoriesSubset(
   };
 }
 
-function applyAccountGroupUpdates(
+export function applyCategoryGroupUpdates(
   allCategories: ExternalProviderCategory[],
-  newAccountGroup: ExternalProviderCategory[],
+  newGroup: ExternalProviderCategory[],
+  groupPredicate: (c: ExternalProviderCategory) => boolean,
 ): ReorderCategoriesResult {
   const groupIndices: number[] = [];
   for (let i = 0; i < allCategories.length; i++) {
     const c = allCategories[i];
-    if (!c.deleted && isAccountType(c.categoryType)) {
+    if (!c.deleted && groupPredicate(c)) {
       groupIndices.push(i);
     }
   }
@@ -407,8 +410,8 @@ function applyAccountGroupUpdates(
   const modifiedCategories: ExternalProviderCategory[] = [];
   const updatedGroupMap = new Map<string, ExternalProviderCategory>();
 
-  for (let idx = 0; idx < newAccountGroup.length; idx++) {
-    const cat = newAccountGroup[idx];
+  for (let idx = 0; idx < newGroup.length; idx++) {
+    const cat = newGroup[idx];
     const orig = originalMap.get(cat.id);
     const updatedCat: ExternalProviderCategory = { ...cat, order: idx };
     updatedGroupMap.set(cat.id, updatedCat);
@@ -424,8 +427,8 @@ function applyAccountGroupUpdates(
   }
 
   const updatedCategories = [...allCategories];
-  for (let k = 0; k < groupIndices.length && k < newAccountGroup.length; k++) {
-    const cat = newAccountGroup[k];
+  for (let k = 0; k < groupIndices.length && k < newGroup.length; k++) {
+    const cat = newGroup[k];
     const updated = updatedGroupMap.get(cat.id) ?? { ...cat, order: k };
     updatedCategories[groupIndices[k]] = updated;
   }
@@ -434,6 +437,24 @@ function applyAccountGroupUpdates(
     updatedCategories,
     modifiedCategories,
   };
+}
+
+function applyAccountGroupUpdates(
+  allCategories: ExternalProviderCategory[],
+  newAccountGroup: ExternalProviderCategory[],
+): ReorderCategoriesResult {
+  return applyCategoryGroupUpdates(allCategories, newAccountGroup, (c) => isAccountType(c.categoryType));
+}
+
+export function applyIncomeGroupUpdates(
+  allCategories: ExternalProviderCategory[],
+  newIncomeGroup: ExternalProviderCategory[],
+): ReorderCategoriesResult {
+  return applyCategoryGroupUpdates(
+    allCategories,
+    newIncomeGroup,
+    (c) => Number(c.categoryType) === CategoryType.Income,
+  );
 }
 
 /**
@@ -545,6 +566,41 @@ export function archiveAccountCategory(
   const newGroup = [...remaining, updatedTarget];
 
   return applyAccountGroupUpdates(allCategories, newGroup);
+}
+
+/**
+ * Archives an income category:
+ * - Prefixes its name with "_"
+ * - Moves it to the end of the income categories group
+ * - Re-indexes sequential integer orders (0, 1, 2, ...)
+ * - Returns updated and modified categories
+ */
+export function archiveIncomeCategory(
+  allCategories: ExternalProviderCategory[],
+  categoryId: string,
+): ReorderCategoriesResult {
+  const target = allCategories.find(
+    (c) => c.id === categoryId && !c.deleted && Number(c.categoryType) === CategoryType.Income,
+  );
+  if (!target) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const cleanName = target.name.replace(/^_+/, "").trim();
+  const newName = cleanName.length > 0 ? `_${cleanName}` : "_";
+  const updatedTarget: ExternalProviderCategory = {
+    ...target,
+    name: newName,
+  };
+
+  const incomeCategories = sortCategoriesByOrder(
+    allCategories.filter((c) => !c.deleted && Number(c.categoryType) === CategoryType.Income),
+  );
+
+  const remaining = incomeCategories.filter((c) => c.id !== categoryId);
+  const newGroup = [...remaining, updatedTarget];
+
+  return applyIncomeGroupUpdates(allCategories, newGroup);
 }
 
 export interface PrincipalOutflowParams {
@@ -800,6 +856,41 @@ export function unarchiveAccountCategory(
 }
 
 /**
+ * Unarchives an income category:
+ * - Strips leading "_" prefix from name
+ * - Places it as the last non-archived income category (immediately preceding the first archived income category)
+ * - Re-indexes sequential integer orders (0, 1, 2, ...)
+ * - Returns updated and modified categories
+ */
+export function unarchiveIncomeCategory(
+  allCategories: ExternalProviderCategory[],
+  categoryId: string,
+): ReorderCategoriesResult {
+  const target = allCategories.find(
+    (c) => c.id === categoryId && !c.deleted && Number(c.categoryType) === CategoryType.Income,
+  );
+  if (!target) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const cleanName = target.name.replace(/^_+/, "").trim();
+  const newName = cleanName.length > 0 ? cleanName : target.name;
+  const updatedTarget: ExternalProviderCategory = { ...target, name: newName };
+
+  const incomeCategories = sortCategoriesByOrder(
+    allCategories.filter((c) => !c.deleted && Number(c.categoryType) === CategoryType.Income),
+  );
+
+  const remaining = incomeCategories.filter((c) => c.id !== categoryId);
+  const firstArchivedIdx = remaining.findIndex((c) => isArchivedCategoryName(c.name));
+  const insertIdx = firstArchivedIdx === -1 ? remaining.length : firstArchivedIdx;
+
+  const newGroup = [...remaining.slice(0, insertIdx), updatedTarget, ...remaining.slice(insertIdx)];
+
+  return applyIncomeGroupUpdates(allCategories, newGroup);
+}
+
+/**
  * Finds all active (non-archived) accounts that are positioned below any archived account.
  */
 export function findAccountsBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
@@ -850,6 +941,61 @@ export function moveAccountsAboveArchived(
   return applyAccountGroupUpdates(allCategories, newGroup);
 }
 
+/**
+ * Finds all active (non-archived) income sources that are positioned below any archived income source.
+ */
+export function findIncomeSourcesBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+  const sources = sortCategoriesByOrder(
+    allCategories.filter((c) => !c.deleted && Number(c.categoryType) === CategoryType.Income),
+  );
+
+  const firstArchivedIdx = sources.findIndex((c) => isArchivedCategoryName(c.name));
+  if (firstArchivedIdx === -1) {
+    return [];
+  }
+
+  return sources.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+}
+
+/**
+ * Moves specified or all active income sources that are positioned below archived income sources
+ * to immediately preceding the first archived income source, preserving their relative order.
+ */
+export function moveIncomeSourcesAboveArchived(
+  allCategories: ExternalProviderCategory[],
+  sourceIds?: string[],
+): ReorderCategoriesResult {
+  const sources = sortCategoriesByOrder(
+    allCategories.filter((c) => !c.deleted && Number(c.categoryType) === CategoryType.Income),
+  );
+
+  const firstArchivedIdx = sources.findIndex((c) => isArchivedCategoryName(c.name));
+  if (firstArchivedIdx === -1) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const sourcesBelow = sources.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+  if (sourcesBelow.length === 0) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const targetIdSet = sourceIds ? new Set(sourceIds) : null;
+  const toMove = targetIdSet ? sourcesBelow.filter((c) => targetIdSet.has(c.id)) : sourcesBelow;
+
+  if (toMove.length === 0) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const toMoveIdSet = new Set(toMove.map((c) => c.id));
+  const remaining = sources.filter((c) => !toMoveIdSet.has(c.id));
+  const insertIdx = remaining.findIndex((c) => isArchivedCategoryName(c.name));
+  const targetInsertIdx = insertIdx === -1 ? remaining.length : insertIdx;
+
+  const newGroup = [...remaining.slice(0, targetInsertIdx), ...toMove, ...remaining.slice(targetInsertIdx)];
+
+  return applyIncomeGroupUpdates(allCategories, newGroup);
+}
+
 export interface ClassifiedAccount {
   account: ExternalProviderCategory;
   isArchived: boolean;
@@ -893,6 +1039,45 @@ export function filterAndClassifyAccounts(
         isZeroBalance,
         hasUnreconciledBalance,
         balance,
+      });
+    }
+  }
+
+  return classified;
+}
+
+export interface ClassifiedIncomeSource {
+  source: ExternalProviderCategory;
+  category: ExternalProviderCategory;
+  isArchived: boolean;
+}
+
+/**
+ * Filters, sorts, and classifies income sources (CategoryType.Income).
+ * Non-archived sources are sorted in ascending order.
+ * Archived sources (names starting with "_") are excluded unless `showArchived` is true.
+ */
+export function filterAndClassifyIncomeSources(
+  categories: ExternalProviderCategory[],
+  options?: { showArchived?: boolean },
+): ClassifiedIncomeSource[] {
+  const showArchived = options?.showArchived ?? false;
+
+  const incomeCategories = categories.filter((c) => {
+    if (c.deleted) return false;
+    return Number(c.categoryType) === CategoryType.Income;
+  });
+
+  const sorted = sortCategoriesByOrder(incomeCategories);
+  const classified: ClassifiedIncomeSource[] = [];
+
+  for (const cat of sorted) {
+    const isArchived = isArchivedCategoryName(cat.name);
+    if (!isArchived || showArchived) {
+      classified.push({
+        source: cat,
+        category: cat,
+        isArchived,
       });
     }
   }

@@ -1,4 +1,5 @@
 import {
+  archiveIncomeCategory,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
@@ -6,10 +7,12 @@ import {
   ExchangeKey,
   type ExchangePingResponseEnvelope,
   extractExchangeEntities,
+  reorderCategoriesSubset,
   type SettingsResponseEnvelope,
   type StatPingData,
   type StatPingResponseEnvelope,
   type TransactionPageResponse,
+  unarchiveIncomeCategory,
 } from "./external-provider-data";
 
 export const CLIENT_CACHE_TTL_MS = 5 * 60 * 60 * 1000; // 5 hours
@@ -299,6 +302,51 @@ export async function updateCategoriesOrder(
 }
 
 /**
+ * Reorders income categories and pushes changes upstream via updateCategoriesOrder.
+ */
+export async function reorderIncomeCategories(
+  allCategories: ExternalProviderCategory[],
+  reorderedIncomeIds: string[],
+  options?: { signal?: AbortSignal },
+): Promise<ExchangePingResponseEnvelope> {
+  const result = reorderCategoriesSubset(allCategories, reorderedIncomeIds);
+  return updateCategoriesOrder(result.modifiedCategories, {
+    signal: options?.signal,
+    allUpdatedCategories: result.updatedCategories,
+  });
+}
+
+/**
+ * Archives an income category and pushes changes upstream via updateCategoriesOrder.
+ */
+export async function archiveIncomeSource(
+  allCategories: ExternalProviderCategory[],
+  categoryId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ExchangePingResponseEnvelope> {
+  const result = archiveIncomeCategory(allCategories, categoryId);
+  return updateCategoriesOrder(result.modifiedCategories, {
+    signal: options?.signal,
+    allUpdatedCategories: result.updatedCategories,
+  });
+}
+
+/**
+ * Unarchives an income category and pushes changes upstream via updateCategoriesOrder.
+ */
+export async function unarchiveIncomeSource(
+  allCategories: ExternalProviderCategory[],
+  categoryId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ExchangePingResponseEnvelope> {
+  const result = unarchiveIncomeCategory(allCategories, categoryId);
+  return updateCategoriesOrder(result.modifiedCategories, {
+    signal: options?.signal,
+    allUpdatedCategories: result.updatedCategories,
+  });
+}
+
+/**
  * Creates a double-entry ExternalProvider transaction via POST /api/external-provider/api/transaction/create
  * bypassing cache with Cache-Control: no-cache, and invalidates client cache entries
  * for categories and transactions.
@@ -332,6 +380,55 @@ export async function createTransaction(
   }
 
   return body;
+}
+
+/**
+ * Updates a ExternalProvider transaction via POST /api/external-provider/api/transaction/update
+ * bypassing cache with Cache-Control: no-cache, and invalidates client cache entries
+ * for categories and transactions.
+ */
+export async function updateTransaction(
+  tx: ExternalProviderTransaction,
+  options?: {
+    signal?: AbortSignal;
+  },
+): Promise<{ isSuccess?: boolean; data?: unknown; [key: string]: unknown }> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "Cache-Control": "no-cache",
+  };
+
+  const response = await fetch("/api/external-provider/api/transaction/update", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(tx),
+    signal: options?.signal,
+  });
+
+  const body = await handleResponse<{ isSuccess?: boolean; data?: unknown }>(response);
+
+  invalidateExternalProviderClientCache("categories");
+  for (const key of Array.from(clientCacheState.entries.keys())) {
+    if (key.startsWith("tx:") || key.startsWith("stat:")) {
+      clientCacheState.entries.delete(key);
+    }
+  }
+
+  return body;
+}
+
+/**
+ * Convenience helper to update the tags array on a transaction and persist upstream.
+ */
+export async function updateTransactionTags(
+  tx: ExternalProviderTransaction,
+  tags: string[],
+  options?: {
+    signal?: AbortSignal;
+  },
+): Promise<{ isSuccess?: boolean; data?: unknown; [key: string]: unknown }> {
+  return updateTransaction({ ...tx, tags }, options);
 }
 
 export async function getTransactionPage(options?: {

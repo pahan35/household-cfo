@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   archiveAccountCategory,
+  archiveIncomeCategory,
   buildFeeTransaction,
   buildFxReconciliationTransaction,
   buildLastTransactionMap,
@@ -16,17 +17,21 @@ import {
   convertCurrencyAmount,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
+  filterAndClassifyIncomeSources,
   findAccountsBelowArchived,
+  findIncomeSourcesBelowArchived,
   formatThrowawayDebtAccountName,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
   isThrowawayDebtAccount,
   moveAccountsAboveArchived,
+  moveIncomeSourcesAboveArchived,
   reorderCategoriesSubset,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
   toDotNetTicks,
   unarchiveAccountCategory,
+  unarchiveIncomeCategory,
 } from "../external-provider-data";
 
 describe("sortCategoriesByOrder", () => {
@@ -893,6 +898,98 @@ describe("Clearing Transaction Builders", () => {
       expect(tx?.destinationType).toBe(CategoryType.Account);
       expect(tx?.sourceAmount).toBe(2.1);
       expect(tx?.destinationAmount).toBe(2.1);
+    });
+  });
+
+  describe("Income Source Category Operations", () => {
+    const incomeCategories: ExternalProviderCategory[] = [
+      { id: "inc-1", name: "Salary", categoryType: CategoryType.Income, order: 0, limitAmount: 20000 },
+      { id: "inc-2", name: "Consulting", categoryType: CategoryType.Income, order: 1, limitAmount: 5000 },
+      { id: "inc-3", name: "_Old Project", categoryType: CategoryType.Income, order: 2, limitAmount: 0 },
+      { id: "inc-4", name: "Dividends", categoryType: CategoryType.Income, order: 3, limitAmount: 1000 },
+    ];
+
+    it("reorderCategoriesSubset automatically isolates and reorders CategoryType.Income", () => {
+      // Reorder Salary and Consulting and Dividends: [Dividends, Salary, Consulting]
+      const mixedCategories: ExternalProviderCategory[] = [
+        { id: "acc-1", name: "Bank", categoryType: CategoryType.BankAccount, order: 0 },
+        ...incomeCategories,
+        { id: "exp-1", name: "Food", categoryType: CategoryType.Expense, order: 0 },
+      ];
+
+      const result = reorderCategoriesSubset(mixedCategories, ["inc-4", "inc-1", "inc-2"]);
+      const incomeSubset = result.updatedCategories.filter((c) => Number(c.categoryType) === CategoryType.Income);
+
+      expect(incomeSubset.map((c) => ({ id: c.id, order: c.order }))).toEqual([
+        { id: "inc-4", order: 0 },
+        { id: "inc-1", order: 1 },
+        { id: "inc-3", order: 2 }, // preserved slot
+        { id: "inc-2", order: 3 },
+      ]);
+    });
+
+    it("filterAndClassifyIncomeSources hides archived items unless showArchived is true", () => {
+      const activeOnly = filterAndClassifyIncomeSources(incomeCategories);
+      expect(activeOnly.map((c) => c.source.id)).toEqual(["inc-1", "inc-2", "inc-4"]);
+      expect(activeOnly.every((c) => !c.isArchived)).toBe(true);
+
+      const withArchived = filterAndClassifyIncomeSources(incomeCategories, { showArchived: true });
+      expect(withArchived.map((c) => c.source.id)).toEqual(["inc-1", "inc-2", "inc-3", "inc-4"]);
+      const archivedItem = withArchived.find((c) => c.source.id === "inc-3");
+      expect(archivedItem?.isArchived).toBe(true);
+    });
+
+    it("archiveIncomeCategory prefixes name with _ and places at end of income group", () => {
+      const result = archiveIncomeCategory(incomeCategories, "inc-2");
+      const incomeSubset = result.updatedCategories.filter((c) => Number(c.categoryType) === CategoryType.Income);
+
+      expect(incomeSubset.map((c) => ({ id: c.id, name: c.name, order: c.order }))).toEqual([
+        { id: "inc-1", name: "Salary", order: 0 },
+        { id: "inc-3", name: "_Old Project", order: 1 },
+        { id: "inc-4", name: "Dividends", order: 2 },
+        { id: "inc-2", name: "_Consulting", order: 3 },
+      ]);
+      expect(result.modifiedCategories.some((c) => c.id === "inc-2" && c.name === "_Consulting")).toBe(true);
+    });
+
+    it("unarchiveIncomeCategory strips leading _ and positions before first archived income source", () => {
+      const categoriesWithArchived: ExternalProviderCategory[] = [
+        { id: "inc-1", name: "Salary", categoryType: CategoryType.Income, order: 0 },
+        { id: "inc-2", name: "Dividends", categoryType: CategoryType.Income, order: 1 },
+        { id: "inc-3", name: "_Old Client", categoryType: CategoryType.Income, order: 2 },
+        { id: "inc-4", name: "_Inactive Freelance", categoryType: CategoryType.Income, order: 3 },
+      ];
+
+      // Unarchive inc-4
+      const result = unarchiveIncomeCategory(categoriesWithArchived, "inc-4");
+      const incomeSubset = result.updatedCategories.filter((c) => Number(c.categoryType) === CategoryType.Income);
+
+      expect(incomeSubset.map((c) => ({ id: c.id, name: c.name, order: c.order }))).toEqual([
+        { id: "inc-1", name: "Salary", order: 0 },
+        { id: "inc-2", name: "Dividends", order: 1 },
+        { id: "inc-4", name: "Inactive Freelance", order: 2 }, // inserted before first archived (inc-3)
+        { id: "inc-3", name: "_Old Client", order: 3 },
+      ]);
+      expect(result.modifiedCategories.some((c) => c.id === "inc-4" && c.name === "Inactive Freelance")).toBe(true);
+    });
+
+    it("findIncomeSourcesBelowArchived and moveIncomeSourcesAboveArchived restores correct order", () => {
+      const misordered: ExternalProviderCategory[] = [
+        { id: "inc-1", name: "Salary", categoryType: CategoryType.Income, order: 0 },
+        { id: "inc-arch", name: "_Archived Source", categoryType: CategoryType.Income, order: 1 },
+        { id: "inc-2", name: "New Client", categoryType: CategoryType.Income, order: 2 }, // Active below archived!
+      ];
+
+      const below = findIncomeSourcesBelowArchived(misordered);
+      expect(below.map((c) => c.id)).toEqual(["inc-2"]);
+
+      const fixed = moveIncomeSourcesAboveArchived(misordered);
+      const incomeSubset = fixed.updatedCategories.filter((c) => Number(c.categoryType) === CategoryType.Income);
+      expect(incomeSubset.map((c) => ({ id: c.id, name: c.name, order: c.order }))).toEqual([
+        { id: "inc-1", name: "Salary", order: 0 },
+        { id: "inc-2", name: "New Client", order: 1 },
+        { id: "inc-arch", name: "_Archived Source", order: 2 },
+      ]);
     });
   });
 });

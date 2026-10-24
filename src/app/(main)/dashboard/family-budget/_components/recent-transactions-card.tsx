@@ -23,6 +23,8 @@ interface RecentTransactionsCardProps {
   categories?: ExternalProviderCategory[];
   selectedAccountId?: string | null;
   onClearAccountFilter?: () => void;
+  filterLabel?: string;
+  onClearFilter?: () => void;
   periodFilter?: { from?: string | null; to?: string | null };
   initialTransactions?: ExternalProviderTransaction[];
   initialHasMoreData?: boolean;
@@ -38,6 +40,8 @@ export function RecentTransactionsCard({
   categories = [],
   selectedAccountId = null,
   onClearAccountFilter,
+  filterLabel,
+  onClearFilter,
   periodFilter,
   initialTransactions,
   initialHasMoreData = false,
@@ -140,25 +144,28 @@ export function RecentTransactionsCard({
     [transactions, categories, defaultCurrency],
   );
 
+  const activeFilterLabel = filterLabel ?? selectedAccount?.name;
+  const handleClear = onClearFilter ?? onClearAccountFilter;
+
   return (
     <SectionShell
       title="Transactions"
       description={
-        selectedAccount
-          ? `All-time history for ${selectedAccount.name}`
+        activeFilterLabel
+          ? `Filtered transactions for ${activeFilterLabel}`
           : "All-time stream of household income, spending, and transfers"
       }
       action={
-        selectedAccountId ? (
+        activeFilterLabel ? (
           <Button
             type="button"
             variant="secondary"
             size="xs"
-            onClick={onClearAccountFilter}
+            onClick={handleClear}
             className="h-6 gap-1 px-2 text-[11px]"
           >
-            <span className="max-w-[140px] truncate">{selectedAccount?.name ?? "Account"}</span>
-            {selectedAccount && (
+            <span className="max-w-[140px] truncate">{activeFilterLabel}</span>
+            {selectedAccount && !filterLabel && (
               <span className="text-muted-foreground tabular-nums">
                 {formatMoney(
                   Number(selectedAccount.currentAmount ?? selectedAccount.amount) || 0,
