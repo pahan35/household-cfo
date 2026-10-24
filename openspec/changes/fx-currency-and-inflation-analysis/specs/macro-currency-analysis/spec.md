@@ -2,9 +2,17 @@
 
 ## Purpose
 
-Enables macroeconomic normalization of family budget data through historical CPI inflation deflation, dual-currency (USD/PLN) translation, and forward exchange rate scenario simulations.
+Enables macroeconomic normalization of family budget data through a dedicated `/dashboard/family-budget/fx-inflation` screen with historical CPI inflation deflation, dual-currency (USD/PLN) translation, and forward exchange rate scenario simulations.
 
 ## ADDED Requirements
+
+### Requirement: Dedicated FX and inflation analysis screen
+
+The system SHALL provide a dedicated FX & Inflation Analysis screen at `/dashboard/family-budget/fx-inflation` accessible from the "Family Budget" sidebar group, displaying macroeconomic summary metrics, the CPI Inflation Erosion analysis card, and the Forward USD/PLN Sensitivity Simulator card side-by-side or in a dedicated multi-card layout.
+
+#### Scenario: Loading the FX and inflation analysis screen
+- **WHEN** the user navigates to `/dashboard/family-budget/fx-inflation`
+- **THEN** the screen loads historical budget stats and renders both the Inflation Erosion analysis and the Forward USD/PLN Simulation tools without requiring tab-switching inside the main budget overview page
 
 ### Requirement: Inflation deflation and real income calculation
 

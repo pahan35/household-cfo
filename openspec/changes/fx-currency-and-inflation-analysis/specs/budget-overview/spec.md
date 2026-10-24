@@ -1,11 +1,17 @@
 # Spec Delta
 
-## ADDED Requirements
+## MODIFIED Requirements
 
-### Requirement: Macro and currency analysis section
+### Requirement: Family Budget screen navigation
 
-The Family Budget overview dashboard SHALL include a Macro & FX Analysis section displaying inflation impact curves and USD/PLN sensitivity controls.
+The dashboard sidebar SHALL include a top-level "Family Budget" group positioned above the template "Dashboards" group. The "Family Budget" group SHALL include an "Overview" entry that navigates to `/dashboard/family-budget` and an "FX & Inflation" entry that navigates to `/dashboard/family-budget/fx-inflation`, and both routes SHALL render screens following the dashboard shell and visual conventions of nearby screens (finance reference).
 
-#### Scenario: Interacting with the macro section
-- **WHEN** the dashboard loads the Macro & FX Analysis section
-- **THEN** the user can toggle between the Inflation Erosion curve and the Forward USD/PLN Simulation tool
+#### Scenario: Navigating to the screen
+
+- **WHEN** the user clicks "Overview" under the "Family Budget" group in the dashboard sidebar
+- **THEN** the screen at `/dashboard/family-budget` loads and displays the overview sections
+
+#### Scenario: Navigating to the FX & Inflation Analysis screen
+
+- **WHEN** the user clicks "FX & Inflation" under the "Family Budget" group in the dashboard sidebar
+- **THEN** the screen at `/dashboard/family-budget/fx-inflation` loads and displays the macroeconomic inflation and USD/PLN sensitivity analysis sections
