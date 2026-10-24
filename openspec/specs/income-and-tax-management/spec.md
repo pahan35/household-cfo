@@ -40,7 +40,11 @@ The system SHALL allow users to archive an active income source via an archive a
 
 ### Requirement: Multi-currency tax categorization by transaction tags
 
-The system SHALL identify dedicated tax expense categories for each active currency and categorize outgoing tax transactions by their `tags` array (attributing tags such as `#pit`, `#zus`, `#health` to their respective personal tax buckets). The system SHALL treat VAT-7 (`#vat`) transactions as neutral business pass-through payments and exclude them from personal tax calculations. The system SHALL compute total personal taxes paid, tag-based percentage distribution, and effective personal tax rate against gross client revenue.
+The system SHALL identify dedicated tax expense categories for each active currency using word-boundary matching on tax terminology (ensuring transport categories such as `Taxi PLN` or `Taxi / Delivery` are not classified as taxes) and categorize outgoing tax transactions by their `tags` array (attributing tags such as `#pit`, `#zus`, `#health` to their respective personal tax buckets). The system SHALL treat VAT-7 (`#vat`) transactions as neutral business pass-through payments and exclude them from personal tax calculations. The system SHALL compute total personal taxes paid, tag-based percentage distribution, and effective personal tax rate against gross client revenue.
+
+#### Scenario: Dedicated tax categories identified with word boundaries
+- **WHEN** categories are evaluated for tax classification
+- **THEN** categories matching tax patterns with word boundaries (e.g. `Tax PLN`, `Taxes & ZUS`, `Podatki`) are identified as dedicated tax categories, while ride-hailing and transit categories containing `"taxi"` (e.g. `Taxi PLN`) are excluded from tax identification and preserved as living expenses
 
 #### Scenario: Tax transactions broken down by tag
 - **WHEN** tax transactions in the tax expense category contain tags such as `#pit`, `#zus`, and `#vat`
