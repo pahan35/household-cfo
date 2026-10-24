@@ -37,3 +37,19 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 #### Scenario: Foreign currency indicator icon and child currency breakdown
 - **WHEN** a category or smart group includes expenses incurred in a currency different from the dashboard's default currency (PLN)
 - **THEN** the category row in the breakdown list displays an extra foreign-currency indicator icon/badge, and expanding or inspecting the row displays the itemized breakdown showing spending in the default currency and spending in the foreign currency
+
+#### Scenario: Launching category expense trace sheet
+- **WHEN** the user clicks any category row or child item in the Expenses Breakdown list
+- **THEN** a Category Expense Trace slide-over sheet opens, presenting the category name, total spent in the active month, and a reverse-chronological list of all transactions belonging to that category across all accounts
+
+#### Scenario: Dual-period comparison in trace sheet
+- **WHEN** a comparison baseline period is active on the Budget Overview screen and the user opens the Category Expense Trace sheet
+- **THEN** the sheet displays period view controls enabling the user to view transactions for the Active Month, the Comparison Baseline Month, or a Side-by-Side/Combined view, highlighting the spending variance between both periods
+
+#### Scenario: Non-intrusive account filtering within category trace
+- **WHEN** the Category Expense Trace sheet opens with transactions from multiple paying accounts
+- **THEN** the sheet defaults to showing all transactions across all accounts with paying accounts badged on each item, and displays account filter chips with subtotal spending per account, allowing the user to isolate transactions from a specific account on demand
+
+#### Scenario: Trace sheet URL state synchronization
+- **WHEN** a category trace sheet is opened or closed on the Budget Overview screen
+- **THEN** the query parameters in the URL update to reflect the inspected category ID and active month without causing a full page reload or unmounting the dashboard component tree

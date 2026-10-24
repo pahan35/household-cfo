@@ -191,7 +191,7 @@ All upstream access from this screen SHALL go through the local proxy path `/api
 
 ### Requirement: Expense composition pie chart
 
-The Family Budget overview dashboard SHALL include an interactive Expenses Breakdown (pie/donut chart) card for the active reporting period, displaying the proportional distribution of spending across expense categories according to the active exclusion preset, surfacing available cash capacity, supporting smart category grouping for Transport and Taxi, showing per-category deltas and variance sorting when a comparison baseline period is active, and allowing users to click any category row to trace its underlying transactions across all accounts and comparison periods in a dedicated slide-over sheet.
+The Family Budget overview dashboard SHALL include an interactive Expenses Breakdown (pie/donut chart) card for the active reporting period, displaying the proportional distribution of spending across expense categories according to the active exclusion preset, surfacing available cash capacity, supporting generalized smart category grouping for multi-currency categories sharing a canonical base name and Transport/Taxi, rendering canonical base names (omitting default currency suffixes), displaying foreign currency indicator icons/badges when non-default currency expenses occur, and showing per-category deltas and variance sorting when a comparison baseline period is active.
 
 #### Scenario: Rendering expense pie chart
 - **WHEN** the dashboard loads with expense data for the active period
@@ -199,7 +199,7 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 
 #### Scenario: Hovering or inspecting a category slice
 - **WHEN** the user hovers over a category slice or tooltip in the Expenses Breakdown chart
-- **THEN** the tooltip displays the category or group name, spent amount, percentage of included expenses, and budget limit if configured
+- **THEN** the tooltip displays the category or group name, spent amount, percentage of included expenses, budget limit if configured, and a breakdown by constituent currency if non-default currencies are present
 
 #### Scenario: Quick exclusion toggle on the chart card
 - **WHEN** the user toggles the quick "Exclude Rent" switch on the Expenses Breakdown card
@@ -214,8 +214,16 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 - **THEN** the card summary strip displays badges for Controllable/Included spending, Excluded fixed spending (if any), and Cash Left (`Net Disposable Income - Total Living Expenses`)
 
 #### Scenario: Smart grouping for Transport and Taxi
-- **WHEN** the household has both regular transit (e.g. `Transport PLN`) and ride-hailing (e.g. `Taxi PLN`) categories
+- **WHEN** the household has both regular transit (e.g. `Transport`) and ride-hailing (e.g. `Taxi`) categories
 - **THEN** the system links both categories into a smart "Transport" group, aggregating them into a unified "Transport (incl. Taxi)" slice on the donut chart when either falls below the minor-slice threshold (< 3%), and displaying distinct child line items under the Transport group header in the breakdown legend
+
+#### Scenario: Generalized smart grouping for multi-currency categories
+- **WHEN** the active period contains spending across multiple categories that share the same canonical base name across different currencies (such as `Medicine` and `Medicine UAH`, or `Hotels` and `Hotels UAH`)
+- **THEN** the system merges their spending amounts into a single unified smart group slice titled with the canonical base name (e.g. `Medicine`) on the donut chart, and displays the unified group row in the breakdown list
+
+#### Scenario: Foreign currency indicator icon and child currency breakdown
+- **WHEN** a category or smart group includes expenses incurred in a currency different from the dashboard's default currency (PLN)
+- **THEN** the category row in the breakdown list displays an extra foreign-currency indicator icon/badge, and expanding or inspecting the row displays the itemized breakdown showing spending in the default currency and spending in the foreign currency
 
 #### Scenario: Launching category expense trace sheet
 - **WHEN** the user clicks any category row or child item in the Expenses Breakdown list
