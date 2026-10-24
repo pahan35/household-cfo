@@ -15,22 +15,30 @@ import {
   computeAccountLiquiditySummary,
   computeTransactionsWithRunningBalance,
   convertCurrencyAmount,
+  extractCanonicalBaseName,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
   filterAndClassifyIncomeSources,
   findAccountsBelowArchived,
   findIncomeSourcesBelowArchived,
   formatThrowawayDebtAccountName,
+  generateProposedCategoryRenames,
   getAccountBalance,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
+  isCyrillic,
+  isPre2022Timestamp,
   isThrowawayDebtAccount,
+  KNOWN_FOREIGN_CURRENCY_CODES,
   moveAccountsAboveArchived,
   moveIncomeSourcesAboveArchived,
+  parseExternalProviderTimestamp,
+  RENAME_TAGS,
   reorderCategoriesSubset,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
   toDotNetTicks,
+  LOCALIZED_CATEGORY_DICTIONARY,
   unarchiveAccountCategory,
   unarchiveIncomeCategory,
 } from "../external-provider-data";
@@ -1162,6 +1170,184 @@ describe("Clearing Transaction Builders", () => {
         { id: "inc-2", name: "New Client", order: 1 },
         { id: "inc-arch", name: "_Archived Source", order: 2 },
       ]);
+    });
+  });
+
+  describe("Category Normalization & Clean Default Helpers", () => {
+    describe("extractCanonicalBaseName", () => {
+      it("strips trailing default currency suffix (PLN) case-insensitively", () => {
+        expect(extractCanonicalBaseName("Medicine PLN", "PLN")).toBe("Medicine");
+        expect(extractCanonicalBaseName("Hotels pln", "PLN")).toBe("Hotels");
+        expect(extractCanonicalBaseName("Transport (PLN)", "PLN")).toBe("Transport");
+      });
+
+      it("strips foreign currency suffixes (UAH, EUR, USD, etc.)", () => {
+        expect(extractCanonicalBaseName("Medicine UAH", "PLN")).toBe("Medicine");
+        expect(extractCanonicalBaseName("Hotels EUR", "PLN")).toBe("Hotels");
+        expect(extractCanonicalBaseName("Freelance (USD)", "PLN")).toBe("Freelance");
+      });
+
+      it("translates known Ukrainian dictionary categories to standardized English", () => {
+        expect(extractCanonicalBaseName("Ліки")).toBe("Medicine");
+        expect(extractCanonicalBaseName("продукти")).toBe("Groceries");
+        expect(extractCanonicalBaseName("Кафе")).toBe("Cafes & Restaurants");
+        expect(extractCanonicalBaseName("транспорт")).toBe("Transport");
+        expect(extractCanonicalBaseName("Таксі")).toBe("Taxi");
+        expect(extractCanonicalBaseName("оренда")).toBe("Rent");
+        expect(extractCanonicalBaseName("комуналка")).toBe("Utilities");
+      });
+
+      it("translates Ukrainian categories with foreign currency suffix", () => {
+        expect(extractCanonicalBaseName("Ліки UAH")).toBe("Medicine");
+        expect(extractCanonicalBaseName("Продукти (UAH)")).toBe("Groceries");
+      });
+
+      it("preserves already clean category names", () => {
+        expect(extractCanonicalBaseName("Groceries")).toBe("Groceries");
+        expect(extractCanonicalBaseName("Entertainment")).toBe("Entertainment");
+      });
+    });
+
+    describe("isPre2022Timestamp & parseExternalProviderTimestamp", () => {
+      it("identifies pre-2022 dates from .NET ticks", () => {
+        const pre2022Ticks = toDotNetTicks(new Date("2021-08-15T12:00:00Z"));
+        const post2022Ticks = toDotNetTicks(new Date("2023-05-10T12:00:00Z"));
+
+        expect(isPre2022Timestamp(pre2022Ticks)).toBe(true);
+        expect(isPre2022Timestamp(post2022Ticks)).toBe(false);
+      });
+
+      it("handles invalid or empty timestamps safely", () => {
+        expect(isPre2022Timestamp(undefined)).toBe(false);
+        expect(isPre2022Timestamp(0)).toBe(false);
+        expect(isPre2022Timestamp(-1)).toBe(false);
+      });
+    });
+
+    describe("generateProposedCategoryRenames", () => {
+      it("proposes stripping default currency suffix with [Strip PLN]", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-med-pln",
+            name: "Medicine PLN",
+            categoryType: CategoryType.Expense,
+          },
+          {
+            id: "cat-food-clean",
+            name: "Groceries",
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        expect(renames).toHaveLength(1);
+        expect(renames[0]).toMatchObject({
+          id: "cat-med-pln",
+          currentName: "Medicine PLN",
+          proposedName: "Medicine",
+          tags: [RENAME_TAGS.STRIP_PLN],
+        });
+      });
+
+      it("proposes translating Ukrainian categories and appending [Translate UA] and [Add UAH]", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-ua-med",
+            name: "Ліки",
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories);
+        expect(renames).toHaveLength(1);
+        expect(renames[0]).toMatchObject({
+          id: "cat-ua-med",
+          currentName: "Ліки",
+          proposedName: "Medicine UAH",
+          tags: [RENAME_TAGS.TRANSLATE_UA, RENAME_TAGS.ADD_UAH],
+        });
+      });
+
+      it("handles pre-2022 legacy categories without collision against modern PLN categories", () => {
+        const legacyTicks = toDotNetTicks(new Date("2021-05-10T00:00:00Z"));
+        const modernTicks = toDotNetTicks(new Date("2023-01-15T00:00:00Z"));
+
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-hotel-legacy",
+            name: "Hotels",
+            createdTimestamp: legacyTicks,
+            categoryType: CategoryType.Expense,
+          },
+          {
+            id: "cat-hotel-modern",
+            name: "Hotels PLN",
+            createdTimestamp: modernTicks,
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        expect(renames).toHaveLength(2);
+
+        const modernRename = renames.find((r) => r.id === "cat-hotel-modern");
+        const legacyRename = renames.find((r) => r.id === "cat-hotel-legacy");
+
+        expect(modernRename?.isCollision).toBeFalsy();
+        expect(modernRename).toMatchObject({
+          proposedName: "Hotels",
+          tags: [RENAME_TAGS.STRIP_PLN],
+        });
+
+        expect(legacyRename?.isCollision).toBeFalsy();
+        expect(legacyRename).toMatchObject({
+          proposedName: "Hotels UAH",
+          tags: [RENAME_TAGS.ADD_UAH],
+        });
+      });
+
+      it("ignores account categories and deleted categories", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "acc-bank",
+            name: "Millennium PLN",
+            categoryType: CategoryType.BankAccount,
+          },
+          {
+            id: "cat-del",
+            name: "Old PLN",
+            deleted: true,
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        expect(renames).toHaveLength(0);
+      });
+
+      it("detects collisions against unchanged categories", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-1",
+            name: "Transport PLN",
+            categoryType: CategoryType.Expense,
+          },
+          {
+            id: "cat-2",
+            name: "Transport",
+            categoryType: CategoryType.Expense,
+            // Not pre-2022, no counterpart with default suffix, so it remains unchanged
+            createdTimestamp: toDotNetTicks(new Date("2024-01-01")),
+          },
+        ];
+
+        // cat-2 has name "Transport" which matches "Transport PLN" stripped!
+        // But cat-2 has counterpart "Transport PLN", so cat-2 is recognized as legacy counterpart or collision
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        // Since cat-2 has counterpart with PLN suffix, cat-2 becomes "Transport UAH"
+        expect(renames.some((r) => r.proposedName === "Transport")).toBe(true);
+        expect(renames.some((r) => r.proposedName === "Transport UAH")).toBe(true);
+      });
     });
   });
 });

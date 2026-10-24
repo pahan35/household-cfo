@@ -1571,3 +1571,230 @@ export function computeTransactionsWithRunningBalance(
     return result;
   });
 }
+
+// ---------------------------------------------------------------------------
+// Category Normalization & Smart Grouping Utilities
+// ---------------------------------------------------------------------------
+
+export const KNOWN_FOREIGN_CURRENCY_CODES = ["UAH", "EUR", "USD", "GBP", "CZK", "CHF"] as const;
+
+export const LOCALIZED_CATEGORY_DICTIONARY: Record<string, string> = {
+  ліки: "Medicine",
+  продукти: "Groceries",
+  кафе: "Cafes & Restaurants",
+  транспорт: "Transport",
+  таксі: "Taxi",
+  оренда: "Rent",
+  розваги: "Entertainment",
+  комуналка: "Utilities",
+  "здоров'я": "Health",
+  здоровя: "Health",
+  одяг: "Clothes",
+  спорт: "Sport",
+  подорожі: "Travel",
+  діти: "Kids",
+  авто: "Car",
+  подарунки: "Gifts",
+  "зв'язок": "Mobile & Internet",
+  звязок: "Mobile & Internet",
+  ресторани: "Restaurants",
+  їжа: "Food",
+  дім: "Home",
+  побут: "Household",
+};
+
+export const RENAME_TAGS = {
+  STRIP_PLN: "[Strip PLN]",
+  TRANSLATE_UA: "[Translate UA]",
+  ADD_UAH: "[Add UAH]",
+} as const;
+
+export function getStripCurrencyTag(currency = "PLN"): string {
+  return `[Strip ${currency.toUpperCase()}]`;
+}
+
+export function isCyrillic(text: string): boolean {
+  return /[\u0400-\u04FF]/.test(text);
+}
+
+export function parseExternalProviderTimestamp(timestamp?: number | null): Date | null {
+  if (typeof timestamp !== "number" || Number.isNaN(timestamp) || timestamp <= 0) return null;
+  // .NET ticks (typically ~6.3e17)
+  if (timestamp > 1e16) {
+    const epochTicks = BigInt("621355968000000000");
+    const millis = (BigInt(Math.trunc(timestamp)) - epochTicks) / BigInt(10000);
+    return new Date(Number(millis));
+  }
+  // Unix milliseconds (~1.6e12)
+  if (timestamp > 1e11) {
+    return new Date(timestamp);
+  }
+  // Unix seconds (~1.6e9)
+  return new Date(timestamp * 1000);
+}
+
+export function isPre2022Timestamp(timestamp?: number | null): boolean {
+  if (typeof timestamp !== "number" || Number.isNaN(timestamp) || timestamp <= 0) return false;
+  const date = parseExternalProviderTimestamp(timestamp);
+  if (!date || Number.isNaN(date.getTime())) return false;
+  return date.getUTCFullYear() < 2022;
+}
+
+/**
+ * Extracts a canonical base name by stripping trailing currency codes (default or foreign)
+ * and translating known Ukrainian Cyrillic labels to standardized English names.
+ */
+export function extractCanonicalBaseName(name: string, defaultCurrency = "PLN"): string {
+  const trimmed = name.trim();
+  const defaultUpper = defaultCurrency.toUpperCase();
+
+  // Strip trailing default currency (e.g. "Medicine PLN" or "Medicine (PLN)" -> "Medicine")
+  const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultUpper}\\)?$`, "i");
+  let cleaned = trimmed.replace(defaultSuffixRegex, "").trim();
+
+  // Strip trailing foreign currency (e.g. "Medicine UAH" or "Medicine (UAH)" -> "Medicine")
+  const foreignSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()(${KNOWN_FOREIGN_CURRENCY_CODES.join("|")})\\)?$`, "i");
+  cleaned = cleaned.replace(foreignSuffixRegex, "").trim();
+
+  // Check dictionary for Ukrainian/Cyrillic translation
+  const lower = cleaned.toLowerCase();
+  if (LOCALIZED_CATEGORY_DICTIONARY[lower]) {
+    return LOCALIZED_CATEGORY_DICTIONARY[lower];
+  }
+  return cleaned;
+}
+
+export interface ProposedCategoryRename {
+  id: string;
+  category: ExternalProviderCategory;
+  currentName: string;
+  proposedName: string;
+  tags: string[];
+  reason?: string;
+  isCollision?: boolean;
+}
+
+export interface GenerateProposedRenamesOptions {
+  defaultCurrency?: string;
+  transactions?: ExternalProviderTransaction[];
+}
+
+/**
+ * Scans categories and generates proposed standardized renames following the Clean Default convention:
+ * 1. Default currency suffix (e.g. " PLN") stripped.
+ * 2. Ukrainian categories translated and tagged with " UAH".
+ * 3. Legacy pre-2022 categories without currency tag appended with " UAH".
+ * Performs collision checking so simultaneous renames (e.g. "Hotels PLN" -> "Hotels" and "Hotels" -> "Hotels UAH")
+ * resolve cleanly without ID or name conflict.
+ */
+export function generateProposedCategoryRenames(
+  categories: ExternalProviderCategory[],
+  options?: GenerateProposedRenamesOptions,
+): ProposedCategoryRename[] {
+  const defaultCurrency = (options?.defaultCurrency ?? "PLN").toUpperCase();
+  const stripTag = defaultCurrency === "PLN" ? RENAME_TAGS.STRIP_PLN : getStripCurrencyTag(defaultCurrency);
+
+  // Filter for valid active expense/income categories (exclude deleted and account types)
+  const candidateCategories = categories.filter((c) => !c.deleted && !isAccountType(c.categoryType));
+
+  // Identify categories that have explicit transactions in UAH or pre-2022
+  const uahCategoryIds = new Set<string>();
+  if (options?.transactions) {
+    for (const tx of options.transactions) {
+      if (tx.deleted) continue;
+      const catId = tx.destinationId ?? tx.sourceId;
+      if (!catId) continue;
+      const rawCurr =
+        typeof tx.currency === "string" ? tx.currency : (tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? "");
+      const curr = String(rawCurr).toUpperCase();
+      const date = parseExternalProviderTimestamp(tx.dateTimestamp);
+      if (curr === "UAH" || (date && date.getUTCFullYear() < 2022)) {
+        uahCategoryIds.add(catId);
+      }
+    }
+  }
+
+  // Find all category names that have a "${name} ${defaultCurrency}" counterpart
+  const baseNamesWithDefaultSuffix = new Set<string>();
+  for (const cat of candidateCategories) {
+    const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultCurrency}\\)?$`, "i");
+    if (defaultSuffixRegex.test(cat.name.trim())) {
+      const base = cat.name.trim().replace(defaultSuffixRegex, "").trim().toLowerCase();
+      if (base) {
+        baseNamesWithDefaultSuffix.add(base);
+      }
+    }
+  }
+
+  const rawProposed: ProposedCategoryRename[] = [];
+
+  for (const cat of candidateCategories) {
+    const rawName = cat.name.trim();
+    const tags: string[] = [];
+    let proposed = rawName;
+    const reasons: string[] = [];
+
+    const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultCurrency}\\)?$`, "i");
+    const foreignSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()(${KNOWN_FOREIGN_CURRENCY_CODES.join("|")})\\)?$`, "i");
+
+    const endsWithDefault = defaultSuffixRegex.test(rawName);
+    const endsWithForeign = foreignSuffixRegex.test(rawName);
+    const hasCyrillic = isCyrillic(rawName);
+    const isPre2022 = isPre2022Timestamp(cat.createdTimestamp) || uahCategoryIds.has(cat.id);
+    const hasModernDefaultCounterpart = baseNamesWithDefaultSuffix.has(rawName.toLowerCase());
+
+    if (endsWithDefault) {
+      // Rule 1: Strip default currency
+      proposed = rawName.replace(defaultSuffixRegex, "").trim();
+      tags.push(stripTag);
+      reasons.push(`Strip default ${defaultCurrency} suffix`);
+    } else if (hasCyrillic) {
+      // Rule 2: Ukrainian / Cyrillic category
+      const cleaned = rawName.replace(foreignSuffixRegex, "").trim();
+      const lower = cleaned.toLowerCase();
+      const translated = LOCALIZED_CATEGORY_DICTIONARY[lower] ?? cleaned;
+      tags.push(RENAME_TAGS.TRANSLATE_UA);
+      tags.push(RENAME_TAGS.ADD_UAH);
+      proposed = `${translated} UAH`;
+      reasons.push("Translate Ukrainian category and add UAH suffix");
+    } else if (!endsWithForeign && (isPre2022 || hasModernDefaultCounterpart)) {
+      // Rule 3: Legacy pre-2022 category without currency suffix
+      proposed = `${rawName} UAH`;
+      tags.push(RENAME_TAGS.ADD_UAH);
+      reasons.push("Add UAH suffix to legacy pre-2022 category");
+    }
+
+    if (proposed !== rawName && tags.length > 0) {
+      rawProposed.push({
+        id: cat.id,
+        category: cat,
+        currentName: rawName,
+        proposedName: proposed,
+        tags,
+        reason: reasons.join("; "),
+      });
+    }
+  }
+
+  // Collision detection:
+  // Check if any proposed name duplicates another proposed name or an unchanged category
+  const proposedCounts = new Map<string, number>();
+  for (const item of rawProposed) {
+    const key = item.proposedName.toLowerCase();
+    proposedCounts.set(key, (proposedCounts.get(key) ?? 0) + 1);
+  }
+
+  const renamingIds = new Set(rawProposed.map((r) => r.id));
+  const unchangedNames = new Set(
+    categories.filter((c) => !c.deleted && !renamingIds.has(c.id)).map((c) => c.name.trim().toLowerCase()),
+  );
+
+  for (const item of rawProposed) {
+    const key = item.proposedName.toLowerCase();
+    if ((proposedCounts.get(key) ?? 0) > 1 || unchangedNames.has(key)) {
+      item.isCollision = true;
+    }
+  }
+
+  return rawProposed;
+}

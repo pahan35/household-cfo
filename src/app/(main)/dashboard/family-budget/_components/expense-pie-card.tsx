@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { cn } from "cn";
-import { AlertCircle, PieChart as PieChartIcon, ShieldCheck } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Globe, PieChart as PieChartIcon, ShieldCheck } from "lucide-react";
 import { Cell, Label, Pie, PieChart } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
@@ -20,12 +20,19 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-import { type ExternalProviderCategory, formatMoney, type StatCategoryPoint } from "./external-provider-data";
+import {
+  type ExternalProviderCategory,
+  extractCanonicalBaseName,
+  formatMoney,
+  type StatCategoryPoint,
+} from "./external-provider-data";
 import {
   assignChartColors,
+  detectSliceCurrency,
   type ExpenseSlice,
   groupSmartSlices,
   isTaxiCategory,
+  isTransportOrTaxi,
   type PeriodComparisonResult,
   transformExpenses,
 } from "./expense-transforms";
@@ -87,11 +94,14 @@ function CustomPieTooltip({
   const slice = item.payload;
   if (!slice) return null;
 
+  const displayName = extractCanonicalBaseName(slice.name, currency);
+
   return (
-    <div className="border-border/60 bg-popover/95 text-popover-foreground flex min-w-44 flex-col gap-1.5 rounded-lg border p-2.5 text-xs shadow-lg backdrop-blur-xs">
+    <div className="border-border/60 bg-popover/95 text-popover-foreground flex min-w-48 flex-col gap-1.5 rounded-lg border p-2.5 text-xs shadow-lg backdrop-blur-xs">
       <div className="flex items-center gap-2 font-medium">
         <span className="size-2.5 shrink-0 rounded-xs" style={{ backgroundColor: slice.fill ?? "var(--chart-1)" }} />
-        <span className="truncate">{slice.name}</span>
+        <span className="truncate">{displayName}</span>
+        {slice.hasForeignCurrency && <Globe className="size-3 text-blue-500 shrink-0" />}
       </div>
 
       <div className="grid grid-cols-2 gap-x-2 gap-y-1 pt-1 text-[11px]">
@@ -112,6 +122,26 @@ function CustomPieTooltip({
           </>
         )}
       </div>
+
+      {slice.hasForeignCurrency && (
+        <div className="border-border/40 mt-1 border-t pt-1.5 flex flex-col gap-1 text-[10px]">
+          <span className="text-muted-foreground font-medium">Currency Breakdown:</span>
+          {slice.children && slice.children.length > 0 ? (
+            <div className="flex flex-col gap-0.5">
+              {slice.children.map((child) => (
+                <div key={child.id} className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground truncate max-w-32">{child.name}</span>
+                  <span className="text-foreground font-medium tabular-nums">
+                    {formatMoney(child.amount, currency)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-muted-foreground">Includes {slice.foreignCurrencies?.join(", ")} spend</div>
+          )}
+        </div>
+      )}
 
       {slice.isOverrun && (
         <div className="bg-destructive/10 text-destructive mt-1 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium">
@@ -136,6 +166,7 @@ export function ExpensePieCard({
   onSelectCategory,
 }: ExpensePieCardProps) {
   const [sortMode, setSortMode] = useState<CategorySortMode>("spend");
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
   const internalPresetController = useExclusionPresets(categories);
   const {
     presets,
@@ -166,23 +197,23 @@ export function ExpensePieCard({
     controllableCashLeft,
   } = transformed;
 
-  // Chart slices: smart group Transport & Taxi and group small slices (< 3%) into "Other"
+  // Chart slices: smart group multi-currency categories & Transport/Taxi, and group small slices (< 3%) into "Other"
   const chartSlices = useMemo(() => {
-    const grouped = groupSmartSlices(controllableCategories, 3);
+    const grouped = groupSmartSlices(controllableCategories, 3, defaultCurrency);
     return assignChartColors(grouped);
-  }, [controllableCategories]);
+  }, [controllableCategories, defaultCurrency]);
 
-  const smartTransportGroup = useMemo(() => {
-    return chartSlices.find((s) => s.isSmartGroup);
+  const smartGroups = useMemo(() => {
+    return chartSlices.filter((s) => s.isSmartGroup);
   }, [chartSlices]);
 
   const displayedCategories = useMemo(() => {
     let items: ExpenseSlice[];
 
-    if (smartTransportGroup && sortMode === "spend") {
-      const childIds = new Set(smartTransportGroup.children?.map((c) => c.id) ?? []);
-      const nonGrouped = controllableCategories.filter((c) => !childIds.has(c.id));
-      items = [...nonGrouped, smartTransportGroup].sort((a, b) => b.amount - a.amount);
+    if (sortMode === "spend") {
+      const allChildIds = new Set(smartGroups.flatMap((g) => g.children?.map((c) => c.id) ?? []));
+      const nonGrouped = controllableCategories.filter((c) => !allChildIds.has(c.id));
+      items = [...nonGrouped, ...smartGroups].sort((a, b) => b.amount - a.amount);
     } else {
       items = [...controllableCategories];
     }
@@ -206,7 +237,7 @@ export function ExpensePieCard({
     }
 
     return items;
-  }, [controllableCategories, comparison, sortMode, smartTransportGroup]);
+  }, [controllableCategories, comparison, sortMode, smartGroups]);
 
   // Construct chartConfig for shadcn ChartContainer
   const chartConfig = useMemo(() => {
@@ -215,12 +246,12 @@ export function ExpensePieCard({
     };
     for (const slice of chartSlices) {
       config[slice.id] = {
-        label: slice.name,
+        label: extractCanonicalBaseName(slice.name, defaultCurrency),
         color: slice.fill,
       };
     }
     return config;
-  }, [chartSlices]);
+  }, [chartSlices, defaultCurrency]);
 
   const hasRentCategory = detectedRentCategoryIds.length > 0;
   const currency = defaultCurrency;
@@ -414,31 +445,65 @@ export function ExpensePieCard({
               const colorIndex = (index % 5) + 1;
               const colorVar = `var(--chart-${colorIndex})`;
               const catDelta = comparison?.categoryDeltaMap.get(cat.id);
+              const displayName = extractCanonicalBaseName(cat.name, currency);
+              const isCollapsed = collapsedGroupIds.has(cat.id);
 
               return (
                 <div key={cat.id} className="flex flex-col gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onSelectCategory?.(cat)}
-                    title="Click to trace category expenses"
-                    className="border-border/40 bg-muted/20 hover:bg-muted/50 group focus-visible:ring-ring flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors select-none focus-visible:ring-1 focus-visible:outline-none"
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
+                  <div className="border-border/40 bg-muted/20 hover:bg-muted/50 group focus-within:ring-ring flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors select-none focus-within:ring-1">
+                    <button
+                      type="button"
+                      onClick={() => onSelectCategory?.(cat)}
+                      title="Click to trace category expenses"
+                      className="flex min-w-0 flex-1 items-center gap-2 cursor-pointer text-left focus:outline-none"
+                    >
                       <span className="size-2 shrink-0 rounded-xs" style={{ backgroundColor: colorVar }} />
-                      <span className="group-hover:text-foreground truncate font-medium">{cat.name}</span>
+                      <span className="group-hover:text-foreground truncate font-medium">{displayName}</span>
                       {cat.isSmartGroup && (
                         <Badge variant="secondary" className="h-4 px-1 text-[9px] font-normal">
                           Group
                         </Badge>
+                      )}
+                      {cat.hasForeignCurrency && (
+                        <div className="flex items-center gap-1" title="Includes foreign currency spend">
+                          <Globe className="size-3 text-blue-500 shrink-0" />
+                          {cat.foreignCurrencies?.map((curr) => (
+                            <Badge
+                              key={curr}
+                              variant="outline"
+                              className="h-3.5 px-1 text-[8px] font-medium border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400"
+                            >
+                              +{curr}
+                            </Badge>
+                          ))}
+                        </div>
                       )}
                       {cat.isOverrun && (
                         <Badge variant="destructive" className="h-4 px-1 text-[9px] font-normal">
                           Over
                         </Badge>
                       )}
-                    </div>
+                    </button>
 
                     <div className="flex shrink-0 items-center gap-2">
+                      {cat.isSmartGroup && cat.children && cat.children.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCollapsedGroupIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(cat.id)) next.delete(cat.id);
+                              else next.add(cat.id);
+                              return next;
+                            });
+                          }}
+                          className="text-muted-foreground hover:text-foreground inline-flex cursor-pointer p-0.5 rounded transition-colors"
+                          title={isCollapsed ? "Expand group items" : "Collapse group items"}
+                          aria-label={isCollapsed ? `Expand ${displayName} items` : `Collapse ${displayName} items`}
+                        >
+                          {isCollapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                        </button>
+                      )}
                       {catDelta && catDelta.deltaAbs !== 0 && (
                         <span
                           className={cn(
@@ -449,19 +514,37 @@ export function ExpensePieCard({
                           {formatCategoryDelta(catDelta, currency)}
                         </span>
                       )}
-                      <span className="font-semibold tabular-nums">{formatMoney(cat.amount, currency)}</span>
+                      <button
+                        type="button"
+                        onClick={() => onSelectCategory?.(cat)}
+                        title="Click to trace category expenses"
+                        className="cursor-pointer font-semibold tabular-nums hover:underline focus:outline-none"
+                      >
+                        {formatMoney(cat.amount, currency)}
+                      </button>
                       <span className="text-muted-foreground w-10 text-right text-[11px] tabular-nums">
                         {cat.percentage.toFixed(0)}%
                       </span>
                     </div>
-                  </button>
+                  </div>
 
-                  {/* Render child sub-items for smart groups (Transport & Taxi breakdown) */}
-                  {cat.isSmartGroup && cat.children && cat.children.length > 0 && (
+                  {/* Render child sub-items for smart groups */}
+                  {cat.isSmartGroup && cat.children && cat.children.length > 0 && !isCollapsed && (
                     <div className="border-border/40 bg-muted/10 ml-4 flex flex-col gap-1 border-l-2 py-0.5 pl-2.5 text-xs">
                       {cat.children.map((child) => {
                         const isTaxi = isTaxiCategory(child.name);
+                        const isTransport = isTransportOrTaxi(child.name);
                         const childDelta = comparison?.categoryDeltaMap.get(child.id);
+                        const childCurr = detectSliceCurrency(child.name, currency);
+                        const childBadge =
+                          isTransport && isTaxi
+                            ? "Taxi / Ride-hailing"
+                            : isTransport
+                              ? "Transit"
+                              : childCurr.isForeign
+                                ? childCurr.currency
+                                : currency;
+
                         return (
                           <button
                             key={child.id}
@@ -480,9 +563,12 @@ export function ExpensePieCard({
                               </span>
                               <Badge
                                 variant="outline"
-                                className="text-muted-foreground h-3.5 px-1 text-[8px] font-normal"
+                                className={cn(
+                                  "h-3.5 px-1 text-[8px] font-normal",
+                                  childCurr.isForeign && "border-blue-500/30 text-blue-700 dark:text-blue-400",
+                                )}
                               >
-                                {isTaxi ? "Taxi / Ride-hailing" : "Transit"}
+                                {childBadge}
                               </Badge>
                             </div>
                             <div className="flex shrink-0 items-center gap-2">

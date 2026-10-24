@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "cn";
 import { endOfMonth, format, isValid, parseISO, startOfMonth } from "date-fns";
-import { RotateCw } from "lucide-react";
+import { RotateCw, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
 import { BudgetSummaryCard } from "./budget-summary-card";
 import { CategoryExpenseTraceSheet } from "./category-expense-trace-sheet";
+import { CategoryRenamingDialog } from "./category-renaming-dialog";
 import {
   getBudgetSelection,
   getCategories,
@@ -63,6 +64,7 @@ export function BudgetOverviewDashboard() {
   const [, setPeriodTxError] = useState<Error | null>(null);
 
   const [selectedTraceCategory, setSelectedTraceCategory] = useState<ExpenseSlice | null>(null);
+  const [isRenamingDialogOpen, setIsRenamingDialogOpen] = useState(false);
 
   const presetController = useExclusionPresets(categories);
 
@@ -389,6 +391,11 @@ export function BudgetOverviewDashboard() {
             <RotateCw className={cn("size-3.5", isRefreshing && "animate-spin")} />
             <span>Refresh Data</span>
           </Button>
+
+          <Button size="sm" variant="outline" onClick={() => setIsRenamingDialogOpen(true)} className="gap-1.5 text-xs">
+            <Sparkles className="size-3.5 text-primary" />
+            <span>Normalize Categories</span>
+          </Button>
         </div>
       </div>
 
@@ -477,6 +484,19 @@ export function BudgetOverviewDashboard() {
         activeMonthDateStr={activeMonthDateStr}
         baselineResolution={baselineResolution}
         defaultCurrency={defaultCurrency}
+      />
+
+      {/* Category Renaming & Normalization Dialog */}
+      <CategoryRenamingDialog
+        open={isRenamingDialogOpen}
+        onOpenChange={setIsRenamingDialogOpen}
+        categories={categories}
+        defaultCurrency={defaultCurrency}
+        transactions={recentTransactions}
+        onRenamed={(updatedCategories) => {
+          setCategories(updatedCategories);
+          handleRefreshAll();
+        }}
       />
     </div>
   );

@@ -1,4 +1,11 @@
-import { CategoryType, type ExternalProviderCategory, type StatCategoryPoint } from "./external-provider-data";
+import {
+  CategoryType,
+  type ExternalProviderCategory,
+  extractCanonicalBaseName,
+  isCyrillic,
+  KNOWN_FOREIGN_CURRENCY_CODES,
+  type StatCategoryPoint,
+} from "./external-provider-data";
 
 export interface ExclusionPreset {
   id: string;
@@ -45,7 +52,10 @@ export interface ExpenseSlice {
   isOverrun?: boolean;
   isGrouped?: boolean;
   isSmartGroup?: boolean;
+  hasForeignCurrency?: boolean;
+  foreignCurrencies?: string[];
   children?: ExpenseSlice[];
+  fill?: string;
 }
 
 export interface TransformExpensesInput {
@@ -203,25 +213,119 @@ export function isTaxiCategory(name: string): boolean {
 }
 
 /**
- * Links Transport and Taxi categories into a smart group slice on the donut chart
- * when either falls below the minor-slice threshold (< thresholdPercent, default 3%).
- * Protects the combined Transport group from being swallowed into "Other Categories".
+ * Detects whether a slice represents spending in a foreign (non-default) currency
+ * based on trailing currency code or Ukrainian Cyrillic name.
  */
-export function groupSmartSlices(slices: ExpenseSlice[], thresholdPercent = 3): ExpenseSlice[] {
-  const transportSlices = slices.filter((s) => isTransportOrTaxi(s.name));
-  const otherSlices = slices.filter((s) => !isTransportOrTaxi(s.name));
+export function detectSliceCurrency(name: string, defaultCurrency = "PLN"): { currency: string; isForeign: boolean } {
+  const trimmed = name.trim();
+  const defaultUpper = defaultCurrency.toUpperCase();
+  const foreignSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()(${KNOWN_FOREIGN_CURRENCY_CODES.join("|")})\\)?$`, "i");
+  const match = trimmed.match(foreignSuffixRegex);
+  if (match) {
+    const curr = match[1].toUpperCase();
+    return { currency: curr, isForeign: curr !== defaultUpper };
+  }
+  if (isCyrillic(trimmed)) {
+    return { currency: "UAH", isForeign: defaultUpper !== "UAH" };
+  }
+  return { currency: defaultUpper, isForeign: false };
+}
 
-  // Smart group condition: multiple transport/taxi categories present, and at least one is < thresholdPercent
-  const shouldSmartGroup = transportSlices.length >= 2 && transportSlices.some((s) => s.percentage < thresholdPercent);
+/**
+ * Links Transport and Taxi categories into a smart group slice on the donut chart,
+ * and automatically rolls up multi-currency categories sharing a canonical base name
+ * (e.g. "Medicine" and "Medicine UAH") into a unified smart group slice.
+ * Protects smart group slices from being swallowed into "Other Categories".
+ */
+export function groupSmartSlices(
+  slices: ExpenseSlice[],
+  thresholdPercent = 3,
+  defaultCurrency = "PLN",
+): ExpenseSlice[] {
+  const totalAmount = slices.reduce((acc, s) => acc + s.amount, 0);
+
+  // ---------------------------------------------------------------------------
+  // Tier 1: Multi-Currency Rollup by Canonical Base Name
+  // Categories sharing the exact same canonical base name (e.g. Medicine and Medicine UAH)
+  // are aggregated into a single smart group.
+  // ---------------------------------------------------------------------------
+  const canonicalGroups = new Map<string, ExpenseSlice[]>();
+  for (const slice of slices) {
+    const base = slice.isSmartGroup ? slice.name : extractCanonicalBaseName(slice.name, defaultCurrency);
+    const existing = canonicalGroups.get(base) ?? [];
+    existing.push(slice);
+    canonicalGroups.set(base, existing);
+  }
+
+  const tier1Slices: ExpenseSlice[] = [];
+
+  for (const [canonicalBase, groupSlices] of canonicalGroups.entries()) {
+    if (groupSlices.length >= 2) {
+      const combinedAmount = groupSlices.reduce((acc, s) => acc + s.amount, 0);
+      const combinedLimit = groupSlices.reduce((acc, s) => acc + (s.limitAmount ?? 0), 0);
+      const combinedPercentage = totalAmount > 0 ? (combinedAmount / totalAmount) * 100 : 0;
+      const hasOverrun = groupSlices.some((s) => s.isOverrun) || (combinedLimit > 0 && combinedAmount > combinedLimit);
+
+      const foreignCurrencies = Array.from(
+        new Set(
+          groupSlices.flatMap((s) => {
+            if (s.foreignCurrencies?.length) return s.foreignCurrencies;
+            const det = detectSliceCurrency(s.name, defaultCurrency);
+            return det.isForeign ? [det.currency] : [];
+          }),
+        ),
+      );
+
+      tier1Slices.push({
+        id: `group-${canonicalBase.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        name: canonicalBase,
+        amount: combinedAmount,
+        percentage: combinedPercentage,
+        limitAmount: combinedLimit > 0 ? combinedLimit : undefined,
+        isOverrun: hasOverrun,
+        isSmartGroup: true,
+        hasForeignCurrency: foreignCurrencies.length > 0,
+        foreignCurrencies: foreignCurrencies.length > 0 ? foreignCurrencies : undefined,
+        children: groupSlices.flatMap((s) => (s.children?.length ? s.children : [s])),
+      });
+    } else {
+      const single = groupSlices[0];
+      const det = detectSliceCurrency(single.name, defaultCurrency);
+      tier1Slices.push({
+        ...single,
+        hasForeignCurrency: det.isForeign || single.hasForeignCurrency,
+        foreignCurrencies: single.foreignCurrencies ?? (det.isForeign ? [det.currency] : undefined),
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tier 2: Transport & Taxi smart grouping
+  // ---------------------------------------------------------------------------
+  const transportSlices = tier1Slices.filter((s) => isTransportOrTaxi(s.name));
+  const otherSlices = tier1Slices.filter((s) => !isTransportOrTaxi(s.name));
+
+  const shouldSmartGroupTransport =
+    transportSlices.length >= 2 && transportSlices.some((s) => s.percentage < thresholdPercent);
 
   let candidateSlices: ExpenseSlice[];
 
-  if (shouldSmartGroup) {
+  if (shouldSmartGroupTransport) {
     const combinedAmount = transportSlices.reduce((acc, s) => acc + s.amount, 0);
     const combinedLimit = transportSlices.reduce((acc, s) => acc + (s.limitAmount ?? 0), 0);
-    const totalAmount = slices.reduce((acc, s) => acc + s.amount, 0);
     const combinedPercentage = totalAmount > 0 ? (combinedAmount / totalAmount) * 100 : 0;
-    const hasOverrun = transportSlices.some((s) => s.isOverrun);
+    const hasOverrun =
+      transportSlices.some((s) => s.isOverrun) || (combinedLimit > 0 && combinedAmount > combinedLimit);
+
+    const foreignCurrencies = Array.from(
+      new Set(
+        transportSlices.flatMap((s) => {
+          if (s.foreignCurrencies?.length) return s.foreignCurrencies;
+          const det = detectSliceCurrency(s.name, defaultCurrency);
+          return det.isForeign ? [det.currency] : [];
+        }),
+      ),
+    );
 
     const transportGroup: ExpenseSlice = {
       id: "group-transport",
@@ -231,12 +335,14 @@ export function groupSmartSlices(slices: ExpenseSlice[], thresholdPercent = 3): 
       limitAmount: combinedLimit > 0 ? combinedLimit : undefined,
       isOverrun: hasOverrun,
       isSmartGroup: true,
-      children: transportSlices,
+      hasForeignCurrency: foreignCurrencies.length > 0,
+      foreignCurrencies: foreignCurrencies.length > 0 ? foreignCurrencies : undefined,
+      children: transportSlices.flatMap((s) => (s.children?.length ? s.children : [s])),
     };
 
     candidateSlices = [...otherSlices, transportGroup];
   } else {
-    candidateSlices = [...slices];
+    candidateSlices = [...tier1Slices];
   }
 
   // If few slices, return as is (sorted by amount)
@@ -244,13 +350,16 @@ export function groupSmartSlices(slices: ExpenseSlice[], thresholdPercent = 3): 
     return candidateSlices.sort((a, b) => b.amount - a.amount);
   }
 
+  // ---------------------------------------------------------------------------
+  // Tier 3: Minor slices rollup into "Other Categories"
+  // Smart group slices are protected from generic "Other Categories" collapsing
+  // ---------------------------------------------------------------------------
   const primary: ExpenseSlice[] = [];
   let otherAmount = 0;
   let otherLimit = 0;
   let smallSliceCount = 0;
 
   for (const slice of candidateSlices) {
-    // Smart group slices are protected from generic "Other Categories" collapsing
     if (slice.isSmartGroup) {
       primary.push(slice);
     } else if (slice.percentage < thresholdPercent) {
@@ -263,7 +372,6 @@ export function groupSmartSlices(slices: ExpenseSlice[], thresholdPercent = 3): 
   }
 
   if (smallSliceCount > 1 && otherAmount > 0) {
-    const totalAmount = slices.reduce((acc, s) => acc + s.amount, 0);
     const otherPercentage = totalAmount > 0 ? (otherAmount / totalAmount) * 100 : 0;
     primary.push({
       id: "other-grouped",

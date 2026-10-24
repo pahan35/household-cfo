@@ -13,6 +13,7 @@ import {
 } from "./external-provider-data";
 import {
   computePeriodComparison,
+  detectSliceCurrency,
   type ExclusionPreset,
   groupSmallSlices,
   groupSmartSlices,
@@ -418,6 +419,54 @@ describe("transformExpenses", () => {
       expect(grouped.some((s) => s.id === "group-transport")).toBe(false);
       expect(grouped.some((s) => s.id === "cat-transport")).toBe(true);
       expect(grouped.some((s) => s.id === "cat-taxi")).toBe(true);
+    });
+
+    it("rolls up multi-currency categories sharing canonical base name into a smart group", () => {
+      const slices = [
+        { id: "cat-med-clean", name: "Medicine", amount: 400, percentage: 40 },
+        { id: "cat-med-uah", name: "Medicine UAH", amount: 100, percentage: 10 },
+        { id: "cat-groceries", name: "Groceries", amount: 500, percentage: 50 },
+      ];
+
+      const grouped = groupSmartSlices(slices, 3);
+
+      const medGroup = grouped.find((s) => s.name === "Medicine");
+      expect(medGroup).toBeDefined();
+      expect(medGroup?.amount).toBe(500); // 400 + 100
+      expect(medGroup?.isSmartGroup).toBe(true);
+      expect(medGroup?.hasForeignCurrency).toBe(true);
+      expect(medGroup?.foreignCurrencies).toEqual(["UAH"]);
+      expect(medGroup?.children).toHaveLength(2);
+      expect(medGroup?.children?.map((c) => c.name)).toEqual(["Medicine", "Medicine UAH"]);
+
+      // Total slices: Groceries, Medicine
+      expect(grouped).toHaveLength(2);
+    });
+
+    it("rolls up Ukrainian Cyrillic categories with canonical English counterparts", () => {
+      const slices = [
+        { id: "cat-med-pln", name: "Medicine PLN", amount: 300, percentage: 60 },
+        { id: "cat-med-ua", name: "Ліки", amount: 100, percentage: 20 },
+        { id: "cat-other", name: "Groceries", amount: 100, percentage: 20 },
+      ];
+
+      const grouped = groupSmartSlices(slices, 3);
+
+      const medGroup = grouped.find((s) => s.name === "Medicine");
+      expect(medGroup).toBeDefined();
+      expect(medGroup?.amount).toBe(400); // 300 + 100
+      expect(medGroup?.isSmartGroup).toBe(true);
+      expect(medGroup?.hasForeignCurrency).toBe(true);
+      expect(medGroup?.foreignCurrencies).toEqual(["UAH"]);
+      expect(medGroup?.children).toHaveLength(2);
+    });
+
+    it("detects foreign currency on standalone foreign slices", () => {
+      expect(detectSliceCurrency("Hotels UAH")).toEqual({ currency: "UAH", isForeign: true });
+      expect(detectSliceCurrency("Sport EUR")).toEqual({ currency: "EUR", isForeign: true });
+      expect(detectSliceCurrency("Medicine")).toEqual({ currency: "PLN", isForeign: false });
+      expect(detectSliceCurrency("Medicine PLN")).toEqual({ currency: "PLN", isForeign: false });
+      expect(detectSliceCurrency("Ліки")).toEqual({ currency: "UAH", isForeign: true });
     });
   });
 });

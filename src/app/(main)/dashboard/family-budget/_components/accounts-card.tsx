@@ -15,6 +15,7 @@ import {
   MoreHorizontal,
   Plus,
   Scale,
+  Sparkles,
   Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -74,6 +75,7 @@ interface AccountsCardProps {
   onSelectAccount?: (accountId: string | null) => void;
   onOpenNewDebtDialog?: () => void;
   onOpenClearingLedger?: (accountId: string) => void;
+  onOpenNormalizeCategories?: () => void;
 }
 
 export function AccountsCard({
@@ -92,6 +94,7 @@ export function AccountsCard({
   onSelectAccount,
   onOpenNewDebtDialog,
   onOpenClearingLedger,
+  onOpenNormalizeCategories,
 }: AccountsCardProps) {
   const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -297,6 +300,18 @@ export function AccountsCard({
         action={
           !isLoading && !error && classifiedAccounts.length > 0 ? (
             <div className="flex items-center gap-2">
+              {onOpenNormalizeCategories && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={onOpenNormalizeCategories}
+                  className="h-6 gap-1 px-2 text-[11px]"
+                >
+                  <Sparkles className="size-3 text-primary" />
+                  <span>Normalize Categories</span>
+                </Button>
+              )}
               {onOpenNewDebtDialog && (
                 <Button
                   type="button"
