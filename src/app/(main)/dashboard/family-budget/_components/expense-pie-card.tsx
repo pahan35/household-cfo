@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
+import { cn } from "cn";
 import { AlertCircle, PieChart as PieChartIcon, ShieldCheck } from "lucide-react";
 import { Cell, Label, Pie, PieChart } from "recharts";
 
@@ -20,9 +21,17 @@ import {
 import { Switch } from "@/components/ui/switch";
 
 import { type ExternalProviderCategory, formatMoney, type StatCategoryPoint } from "./external-provider-data";
-import { assignChartColors, type ExpenseSlice, groupSmallSlices, transformExpenses } from "./expense-transforms";
+import {
+  assignChartColors,
+  type ExpenseSlice,
+  groupSmallSlices,
+  type PeriodComparisonResult,
+  transformExpenses,
+} from "./expense-transforms";
 import { SectionShell } from "./section-shell";
 import { useExclusionPresets } from "./use-exclusion-presets";
+
+export type CategorySortMode = "spend" | "increase" | "decrease";
 
 interface ExpensePieCardProps {
   statCategories?: StatCategoryPoint[];
@@ -34,6 +43,23 @@ interface ExpensePieCardProps {
   onRetry?: () => void;
   // Optional shared presets hook instance
   presetController?: ReturnType<typeof useExclusionPresets>;
+  comparison?: PeriodComparisonResult | null;
+}
+
+function formatCategoryDelta(
+  delta: NonNullable<PeriodComparisonResult["categoryDeltas"][number]>,
+  currency: string,
+): string {
+  const sign = delta.deltaAbs > 0 ? "+" : "";
+  const money = formatMoney(delta.deltaAbs, currency);
+  if (delta.isNew) {
+    return `${sign}${money} (New)`;
+  }
+  if (delta.deltaPercent !== null) {
+    const pctSign = delta.deltaPercent > 0 ? "+" : "";
+    return `${sign}${money} (${pctSign}${delta.deltaPercent.toFixed(0)}%)`;
+  }
+  return `${sign}${money}`;
 }
 
 interface CustomTooltipPayloadItem {
@@ -104,7 +130,9 @@ export function ExpensePieCard({
   error = null,
   onRetry,
   presetController: externalPresetController,
+  comparison = null,
 }: ExpensePieCardProps) {
+  const [sortMode, setSortMode] = useState<CategorySortMode>("spend");
   const internalPresetController = useExclusionPresets(categories);
   const {
     presets,
@@ -133,6 +161,29 @@ export function ExpensePieCard({
     totalTaxDeductions,
     excludedExpenseSum,
   } = transformed;
+
+  const displayedCategories = useMemo(() => {
+    const items = [...controllableCategories];
+    if (!comparison) return items;
+
+    if (sortMode === "increase") {
+      return items.sort((a, b) => {
+        const deltaA = comparison.categoryDeltaMap.get(a.id)?.deltaAbs ?? 0;
+        const deltaB = comparison.categoryDeltaMap.get(b.id)?.deltaAbs ?? 0;
+        return deltaB - deltaA;
+      });
+    }
+
+    if (sortMode === "decrease") {
+      return items.sort((a, b) => {
+        const deltaA = comparison.categoryDeltaMap.get(a.id)?.deltaAbs ?? 0;
+        const deltaB = comparison.categoryDeltaMap.get(b.id)?.deltaAbs ?? 0;
+        return deltaA - deltaB;
+      });
+    }
+
+    return items;
+  }, [controllableCategories, comparison, sortMode]);
 
   // Chart slices: group very small slices (< 3%) into "Other"
   const chartSlices = useMemo(() => {
@@ -277,13 +328,56 @@ export function ExpensePieCard({
 
           {/* Breakdown legend list */}
           <div className="flex max-h-64 flex-col gap-2 overflow-y-auto pr-1">
-            <div className="text-muted-foreground mb-1 text-xs font-medium">
-              Top Categories ({controllableCategories.length})
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-muted-foreground text-xs font-medium">
+                Top Categories ({controllableCategories.length})
+              </div>
+              {comparison && (
+                <div className="bg-muted/40 flex items-center rounded-md border p-0.5 text-[10px]">
+                  <button
+                    type="button"
+                    className={cn(
+                      "cursor-pointer rounded px-1.5 py-0.5 font-medium transition-colors",
+                      sortMode === "spend"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => setSortMode("spend")}
+                  >
+                    By Spend
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "cursor-pointer rounded px-1.5 py-0.5 font-medium transition-colors",
+                      sortMode === "increase"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => setSortMode("increase")}
+                  >
+                    Biggest +
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "cursor-pointer rounded px-1.5 py-0.5 font-medium transition-colors",
+                      sortMode === "decrease"
+                        ? "bg-background text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                    onClick={() => setSortMode("decrease")}
+                  >
+                    Biggest -
+                  </button>
+                </div>
+              )}
             </div>
 
-            {controllableCategories.map((cat, index) => {
+            {displayedCategories.map((cat, index) => {
               const colorIndex = (index % 5) + 1;
               const colorVar = `var(--chart-${colorIndex})`;
+              const catDelta = comparison?.categoryDeltaMap.get(cat.id);
 
               return (
                 <div
@@ -301,6 +395,16 @@ export function ExpensePieCard({
                   </div>
 
                   <div className="flex shrink-0 items-center gap-2">
+                    {catDelta && catDelta.deltaAbs !== 0 && (
+                      <span
+                        className={cn(
+                          "text-[10px] tabular-nums font-medium",
+                          catDelta.deltaAbs > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400",
+                        )}
+                      >
+                        {formatCategoryDelta(catDelta, currency)}
+                      </span>
+                    )}
                     <span className="font-semibold tabular-nums">{formatMoney(cat.amount, currency)}</span>
                     <span className="text-muted-foreground w-10 text-right text-[11px] tabular-nums">
                       {cat.percentage.toFixed(0)}%

@@ -8,6 +8,34 @@ export interface ExclusionPreset {
   isBuiltIn?: boolean;
 }
 
+export type CompareMode = "none" | "prev_month" | "prev_year" | "custom";
+
+export interface MetricDelta {
+  current: number;
+  baseline: number;
+  deltaAbs: number;
+  deltaPercent: number | null;
+}
+
+export interface CategoryComparisonDelta {
+  categoryId: string;
+  name: string;
+  currentAmount: number;
+  baselineAmount: number;
+  deltaAbs: number;
+  deltaPercent: number | null;
+  isNew: boolean;
+}
+
+export interface PeriodComparisonResult {
+  grossIncome: MetricDelta;
+  netDisposableIncome: MetricDelta;
+  totalControllableExpense: MetricDelta;
+  netCashFlowMargin: MetricDelta;
+  categoryDeltas: CategoryComparisonDelta[];
+  categoryDeltaMap: Map<string, CategoryComparisonDelta>;
+}
+
 export interface ExpenseSlice {
   id: string;
   name: string;
@@ -205,4 +233,108 @@ export function assignChartColors<T extends { id: string }>(items: T[]): (T & { 
       colorKey: `chart-${colorIndex}`,
     };
   });
+}
+
+function computeMetricDelta(current: number, baseline: number): MetricDelta {
+  const deltaAbs = current - baseline;
+  let deltaPercent: number | null = null;
+  if (baseline !== 0) {
+    deltaPercent = ((current - baseline) / Math.abs(baseline)) * 100;
+  } else if (current === 0) {
+    deltaPercent = 0;
+  }
+  return {
+    current,
+    baseline,
+    deltaAbs,
+    deltaPercent,
+  };
+}
+
+/**
+ * Computes delta metrics between an active period and a comparison baseline period.
+ * Calculates KPI variances and per-category delta map.
+ */
+export function computePeriodComparison(
+  current: TransformedExpenseData,
+  baseline: TransformedExpenseData | null | undefined,
+): PeriodComparisonResult | null {
+  if (!baseline) {
+    return null;
+  }
+
+  const grossIncome = computeMetricDelta(current.grossIncome, baseline.grossIncome);
+  const netDisposableIncome = computeMetricDelta(current.netDisposableIncome, baseline.netDisposableIncome);
+  const totalControllableExpense = computeMetricDelta(
+    current.totalControllableExpense,
+    baseline.totalControllableExpense,
+  );
+  const netCashFlowMargin = computeMetricDelta(current.netCashFlowMargin, baseline.netCashFlowMargin);
+
+  const categoryDeltaMap = new Map<string, CategoryComparisonDelta>();
+
+  // Collect all category slices across controllable, excluded, and tax deductions
+  const allCurrentSlices = [
+    ...current.controllableCategories,
+    ...current.excludedCategories,
+    ...current.taxDeductionCategories,
+  ];
+  const allBaselineSlices = [
+    ...baseline.controllableCategories,
+    ...baseline.excludedCategories,
+    ...baseline.taxDeductionCategories,
+  ];
+
+  const currentMap = new Map(allCurrentSlices.map((s) => [s.id, s]));
+  const baselineMap = new Map(allBaselineSlices.map((s) => [s.id, s]));
+
+  const allCategoryIds = new Set([...currentMap.keys(), ...baselineMap.keys()]);
+
+  for (const catId of allCategoryIds) {
+    const curSlice = currentMap.get(catId);
+    const baseSlice = baselineMap.get(catId);
+    const name = curSlice?.name ?? baseSlice?.name ?? "Category";
+    const currentAmount = curSlice?.amount ?? 0;
+    const baselineAmount = baseSlice?.amount ?? 0;
+    const deltaAbs = currentAmount - baselineAmount;
+    const isNew = baselineAmount === 0 && currentAmount > 0;
+    let deltaPercent: number | null = null;
+    if (baselineAmount > 0) {
+      deltaPercent = ((currentAmount - baselineAmount) / baselineAmount) * 100;
+    } else if (baselineAmount === 0 && currentAmount === 0) {
+      deltaPercent = 0;
+    }
+
+    categoryDeltaMap.set(catId, {
+      categoryId: catId,
+      name,
+      currentAmount,
+      baselineAmount,
+      deltaAbs,
+      deltaPercent,
+      isNew,
+    });
+  }
+
+  // Controllable category deltas (for controllable breakdown list)
+  const controllableCurrentMap = new Map(current.controllableCategories.map((s) => [s.id, s]));
+  const controllableBaselineMap = new Map(baseline.controllableCategories.map((s) => [s.id, s]));
+  const controllableCategoryIds = new Set([...controllableCurrentMap.keys(), ...controllableBaselineMap.keys()]);
+
+  const categoryDeltas: CategoryComparisonDelta[] = [];
+  for (const catId of controllableCategoryIds) {
+    const delta = categoryDeltaMap.get(catId);
+    if (delta) {
+      categoryDeltas.push(delta);
+    }
+  }
+
+  return {
+    grossIncome,
+    netDisposableIncome,
+    totalControllableExpense,
+    netCashFlowMargin,
+    categoryDeltas,
+    categoryDeltaMap,
+  };
 }

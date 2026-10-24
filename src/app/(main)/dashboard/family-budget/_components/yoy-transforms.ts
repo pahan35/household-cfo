@@ -1,4 +1,4 @@
-import { format, isValid, parseISO, startOfMonth } from "date-fns";
+import { format, isValid, parseISO, startOfMonth, subMonths } from "date-fns";
 
 import {
   CategoryType,
@@ -9,7 +9,7 @@ import {
   isAccountType,
   type StatPoint,
 } from "./external-provider-data";
-import { type ExclusionPreset, transformExpenses } from "./expense-transforms";
+import { type CompareMode, type ExclusionPreset, transformExpenses } from "./expense-transforms";
 
 export const MONTH_LABELS = [
   "Jan",
@@ -128,6 +128,117 @@ export function parsePointDate(
     monthIndex: monthStart.getMonth(),
     dateStr: format(monthStart, "yyyy-MM-dd"),
     timestamp: monthStart.getTime(),
+  };
+}
+
+export interface AvailableMonth {
+  year: number;
+  monthIndex: number;
+  dateStr: string;
+  label: string;
+}
+
+export interface BaselineResolutionResult {
+  dateStr: string;
+  label: string;
+  hasData: boolean;
+}
+
+/**
+ * Extracts a deduplicated list of available months from /stat/ping points,
+ * always including at least the current month and previous calendar month,
+ * sorted descending by date (most recent first).
+ */
+export function extractAvailableMonths(points?: Array<Pick<StatPoint, "id" | "date">>): AvailableMonth[] {
+  const monthMap = new Map<string, AvailableMonth>();
+
+  // Ensure current and previous months are always available even while loading
+  const now = new Date();
+  const currentStart = startOfMonth(now);
+  const prevStart = startOfMonth(subMonths(now, 1));
+
+  const defaultMonths = [currentStart, prevStart];
+  for (const d of defaultMonths) {
+    const year = d.getFullYear();
+    const monthIndex = d.getMonth();
+    const dateStr = format(d, "yyyy-MM-dd");
+    const label = `${MONTH_LABELS[monthIndex]} ${year}`;
+    monthMap.set(dateStr, { year, monthIndex, dateStr, label });
+  }
+
+  for (const point of points ?? []) {
+    const parsed = parsePointDate(point);
+    if (parsed) {
+      const { year, monthIndex, dateStr } = parsed;
+      const label = `${MONTH_LABELS[monthIndex]} ${year}`;
+      monthMap.set(dateStr, { year, monthIndex, dateStr, label });
+    }
+  }
+
+  return Array.from(monthMap.values()).sort((a, b) => b.dateStr.localeCompare(a.dateStr));
+}
+
+/**
+ * Gets the chronological previous month (older in time) from available months.
+ */
+export function getPrevMonth(currentDateStr: string, availableMonths: AvailableMonth[]): AvailableMonth | null {
+  const asc = [...availableMonths].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+  const idx = asc.findIndex((m) => m.dateStr === currentDateStr);
+  if (idx <= 0) return null;
+  return asc[idx - 1];
+}
+
+/**
+ * Gets the chronological next month (newer in time) from available months.
+ */
+export function getNextMonth(currentDateStr: string, availableMonths: AvailableMonth[]): AvailableMonth | null {
+  const asc = [...availableMonths].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+  const idx = asc.findIndex((m) => m.dateStr === currentDateStr);
+  if (idx === -1 || idx >= asc.length - 1) return null;
+  return asc[idx + 1];
+}
+
+/**
+ * Resolves the baseline comparison month based on comparison mode and active month.
+ */
+export function resolveBaselineMonth(
+  activeDateStr: string,
+  mode: CompareMode,
+  availableMonths: AvailableMonth[],
+  customDateStr?: string | null,
+): BaselineResolutionResult | null {
+  if (mode === "none") {
+    return null;
+  }
+
+  const parsedActive = parseISO(activeDateStr);
+  const activeDate = isValid(parsedActive) ? parsedActive : new Date(activeDateStr);
+  const normalizedActive = isValid(activeDate) ? startOfMonth(activeDate) : startOfMonth(new Date());
+
+  let targetDate: Date;
+  if (mode === "prev_month") {
+    targetDate = subMonths(normalizedActive, 1);
+  } else if (mode === "prev_year") {
+    targetDate = subMonths(normalizedActive, 12);
+  } else if (mode === "custom") {
+    if (!customDateStr) return null;
+    const parsedCustom = parseISO(customDateStr);
+    const d = isValid(parsedCustom) ? parsedCustom : new Date(customDateStr);
+    targetDate = isValid(d) ? startOfMonth(d) : normalizedActive;
+  } else {
+    return null;
+  }
+
+  const targetDateStr = format(targetDate, "yyyy-MM-dd");
+  const monthIndex = targetDate.getMonth();
+  const year = targetDate.getFullYear();
+  const label = `${MONTH_LABELS[monthIndex]} ${year}`;
+  const hasData = availableMonths.some((m) => m.dateStr === targetDateStr);
+
+  return {
+    dateStr: targetDateStr,
+    label,
+    hasData,
   };
 }
 

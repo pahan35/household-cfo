@@ -22,6 +22,7 @@ import {
   type StatCategoryPoint,
   type StatPingData,
 } from "./external-provider-data";
+import type { CategoryComparisonDelta } from "./expense-transforms";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 import { parsePointDate } from "./yoy-transforms";
@@ -93,35 +94,32 @@ export function computeBudgetSummaryItems(
 interface BudgetSummaryCardProps {
   categories?: ExternalProviderCategory[];
   defaultCurrency?: string;
+  activeMonthDateStr?: string;
   periodMonth?: BudgetPeriodMonth;
-  onPeriodMonthChange?: (period: BudgetPeriodMonth) => void;
   customFromDate?: string | null;
-  onClearCustomPeriod?: () => void;
   statData?: StatPingData | null;
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
   onReorderCategories?: (reorderedVisibleIds: string[]) => Promise<void>;
   lastTransactionByCategoryId?: Map<string, LastTransactionSummary>;
+  categoryDeltaMap?: Map<string, CategoryComparisonDelta>;
 }
 
 export function BudgetSummaryCard({
   categories = [],
   defaultCurrency = "PLN",
-  periodMonth: controlledPeriod,
-  onPeriodMonthChange,
+  activeMonthDateStr,
+  periodMonth = "current",
   customFromDate,
-  onClearCustomPeriod,
   statData: controlledStatData,
   isLoading: controlledIsLoading,
   error: controlledError,
   onRetry: controlledOnRetry,
   onReorderCategories,
   lastTransactionByCategoryId,
+  categoryDeltaMap,
 }: BudgetSummaryCardProps) {
-  const [internalPeriod, setInternalPeriod] = useState<BudgetPeriodMonth>("current");
-  const periodMonth = controlledPeriod ?? internalPeriod;
-
   const [sortMode, setSortMode] = useState<BudgetSortMode>("custom");
   const [showArchived, setShowArchived] = useState(false);
 
@@ -135,6 +133,9 @@ export function BudgetSummaryCard({
   const error = isControlled ? (controlledError ?? null) : internalError;
 
   const fromDate = useMemo(() => {
+    if (activeMonthDateStr) {
+      return activeMonthDateStr;
+    }
     if (customFromDate) {
       return customFromDate;
     }
@@ -143,7 +144,7 @@ export function BudgetSummaryCard({
       return format(startOfMonth(subMonths(now, 1)), "yyyy-MM-dd");
     }
     return format(startOfMonth(now), "yyyy-MM-dd");
-  }, [periodMonth, customFromDate]);
+  }, [activeMonthDateStr, periodMonth, customFromDate]);
 
   const fetchBudget = useCallback(
     async (signal?: AbortSignal, forceRefresh?: boolean) => {
@@ -180,15 +181,6 @@ export function BudgetSummaryCard({
       void fetchBudget(undefined, true);
     }
   }, [controlledOnRetry, fetchBudget]);
-
-  function handlePeriodSwitch(target: BudgetPeriodMonth) {
-    onClearCustomPeriod?.();
-    if (onPeriodMonthChange) {
-      onPeriodMonthChange(target);
-    } else {
-      setInternalPeriod(target);
-    }
-  }
 
   const categoryNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -310,34 +302,6 @@ export function BudgetSummaryCard({
               <span>{showArchived ? "Hide archived" : `Show archived (${hiddenArchivedCount})`}</span>
             </Button>
           )}
-
-          {/* Period Selection */}
-          <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
-            <button
-              type="button"
-              className={cn(
-                "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                periodMonth === "current"
-                  ? "bg-background text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => handlePeriodSwitch("current")}
-            >
-              Current Month
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                periodMonth === "previous"
-                  ? "bg-background text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => handlePeriodSwitch("previous")}
-            >
-              Previous Month
-            </button>
-          </div>
         </div>
       }
       isLoading={isLoading}
@@ -354,6 +318,7 @@ export function BudgetSummaryCard({
         <div className="flex flex-col gap-4">
           {sortedItems.map(({ item, isArchived }, index) => {
             const lastTx = lastTransactionByCategoryId?.get(item.id);
+            const delta = categoryDeltaMap?.get(item.id);
 
             return (
               <SortableBudgetCategoryRow
@@ -365,6 +330,7 @@ export function BudgetSummaryCard({
                 isArchived={isArchived}
                 lastTx={lastTx}
                 canReorder={canReorder}
+                delta={delta}
               />
             );
           })}
@@ -372,6 +338,19 @@ export function BudgetSummaryCard({
       </DragDropProvider>
     </SectionShell>
   );
+}
+
+function formatCategoryDelta(delta: CategoryComparisonDelta, currency: string): string {
+  const sign = delta.deltaAbs > 0 ? "+" : "";
+  const money = formatMoney(delta.deltaAbs, currency);
+  if (delta.isNew) {
+    return `${sign}${money} (New)`;
+  }
+  if (delta.deltaPercent !== null) {
+    const pctSign = delta.deltaPercent > 0 ? "+" : "";
+    return `${sign}${money} (${pctSign}${delta.deltaPercent.toFixed(0)}%)`;
+  }
+  return `${sign}${money}`;
 }
 
 interface SortableBudgetCategoryRowProps {
@@ -382,6 +361,7 @@ interface SortableBudgetCategoryRowProps {
   isArchived: boolean;
   lastTx?: LastTransactionSummary | null;
   canReorder: boolean;
+  delta?: CategoryComparisonDelta;
 }
 
 function SortableBudgetCategoryRow({
@@ -392,6 +372,7 @@ function SortableBudgetCategoryRow({
   isArchived,
   lastTx,
   canReorder,
+  delta,
 }: SortableBudgetCategoryRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -445,7 +426,17 @@ function SortableBudgetCategoryRow({
           {lastTx && <LastTransactionBadge summary={lastTx} />}
         </div>
 
-        <div className="text-muted-foreground flex shrink-0 items-center gap-1 pl-2">
+        <div className="text-muted-foreground flex shrink-0 items-center gap-1.5 pl-2">
+          {delta && delta.deltaAbs !== 0 && (
+            <span
+              className={cn(
+                "mr-0.5 text-[10px] font-medium tabular-nums",
+                delta.deltaAbs > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400",
+              )}
+            >
+              {formatCategoryDelta(delta, currency)}
+            </span>
+          )}
           <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
             {formatMoney(item.current, currency)}
           </span>

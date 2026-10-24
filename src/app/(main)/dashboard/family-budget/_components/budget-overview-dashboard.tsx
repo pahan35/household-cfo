@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "cn";
-import { endOfMonth, format, isValid, parseISO, startOfMonth, subMonths } from "date-fns";
-import { RotateCw, X } from "lucide-react";
+import { endOfMonth, format, isValid, parseISO, startOfMonth } from "date-fns";
+import { RotateCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
-import { type BudgetPeriodMonth, BudgetSummaryCard } from "./budget-summary-card";
+import { BudgetSummaryCard } from "./budget-summary-card";
 import {
   getBudgetSelection,
   getCategories,
@@ -31,9 +31,10 @@ import {
   type StatPingData,
 } from "./external-provider-data";
 import { ExpensePieCard } from "./expense-pie-card";
-import { transformExpenses } from "./expense-transforms";
+import { type CompareMode, computePeriodComparison, transformExpenses } from "./expense-transforms";
+import { MonthPeriodPicker } from "./month-period-picker";
 import { useExclusionPresets } from "./use-exclusion-presets";
-import { MONTH_LABELS, parsePointDate } from "./yoy-transforms";
+import { extractAvailableMonths, parsePointDate, resolveBaselineMonth } from "./yoy-transforms";
 import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 
 export function BudgetOverviewDashboard() {
@@ -44,8 +45,12 @@ export function BudgetOverviewDashboard() {
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
   const [baseDataError, setBaseDataError] = useState<Error | null>(null);
 
-  const [periodMonth, setPeriodMonth] = useState<BudgetPeriodMonth>("current");
-  const [selectedHistoricalPeriod, setSelectedHistoricalPeriod] = useState<SelectedPeriod | null>(null);
+  // Single unified period state across the entire Budget Overview dashboard
+  const [activeMonthDateStr, setActiveMonthDateStr] = useState<string>(() =>
+    format(startOfMonth(new Date()), "yyyy-MM-dd"),
+  );
+  const [compareMode, setCompareMode] = useState<CompareMode>("none");
+  const [compareCustomDateStr, setCompareCustomDateStr] = useState<string | null>(null);
 
   // Period-specific budget points and transactions for metrics calculation
   const [statData, setStatData] = useState<StatPingData | null>(null);
@@ -57,6 +62,16 @@ export function BudgetOverviewDashboard() {
   const [, setPeriodTxError] = useState<Error | null>(null);
 
   const presetController = useExclusionPresets(categories);
+
+  // Available months derived from cached statistics points
+  const availableMonths = useMemo(() => {
+    return extractAvailableMonths(statData?.selection?.points ?? []);
+  }, [statData]);
+
+  // Baseline month resolution based on comparison mode
+  const baselineResolution = useMemo(() => {
+    return resolveBaselineMonth(activeMonthDateStr, compareMode, availableMonths, compareCustomDateStr);
+  }, [activeMonthDateStr, compareMode, availableMonths, compareCustomDateStr]);
 
   // Anchor 40-month statistics series once at current day so active month is included in Before: 40 window
   const currentMonthAnchor = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
@@ -121,24 +136,22 @@ export function BudgetOverviewDashboard() {
   );
 
   const { fromDate, periodFilter } = useMemo(() => {
-    if (selectedHistoricalPeriod) {
-      const parsed = parseISO(selectedHistoricalPeriod.dateStr);
-      const target = isValid(parsed) ? parsed : new Date(selectedHistoricalPeriod.dateStr);
-      const from = format(startOfMonth(target), "yyyy-MM-dd");
-      const to = format(endOfMonth(target), "yyyy-MM-dd");
-      return { fromDate: from, periodFilter: { from, to } };
-    }
-    const now = new Date();
-    if (periodMonth === "previous") {
-      const target = subMonths(now, 1);
-      const from = format(startOfMonth(target), "yyyy-MM-dd");
-      const to = format(endOfMonth(target), "yyyy-MM-dd");
-      return { fromDate: from, periodFilter: { from, to } };
-    }
-    const from = format(startOfMonth(now), "yyyy-MM-dd");
-    const to = format(endOfMonth(now), "yyyy-MM-dd");
+    const parsed = parseISO(activeMonthDateStr);
+    const target = isValid(parsed) ? parsed : new Date(activeMonthDateStr);
+    const from = format(startOfMonth(target), "yyyy-MM-dd");
+    const to = format(endOfMonth(target), "yyyy-MM-dd");
     return { fromDate: from, periodFilter: { from, to } };
-  }, [periodMonth, selectedHistoricalPeriod]);
+  }, [activeMonthDateStr]);
+
+  const selectedHistoricalPeriod: SelectedPeriod | null = useMemo(() => {
+    const parsed = parseISO(activeMonthDateStr);
+    if (!isValid(parsed)) return null;
+    return {
+      year: parsed.getFullYear(),
+      monthIndex: parsed.getMonth(),
+      dateStr: activeMonthDateStr,
+    };
+  }, [activeMonthDateStr]);
 
   const loadPeriodTransactions = useCallback(
     async (signal?: AbortSignal, forceRefresh?: boolean) => {
@@ -213,6 +226,30 @@ export function BudgetOverviewDashboard() {
     });
   }, [statCategories, categories, presetController.activePreset, grossIncome]);
 
+  // Extract statCategories for baseline comparison point from memory
+  const baselineStatCategories = useMemo(() => {
+    if (!baselineResolution?.hasData || !baselineResolution.dateStr) return [];
+    const points = statData?.selection?.points ?? [];
+    const pt = points.find(
+      (p) => p.id === baselineResolution.dateStr || parsePointDate(p)?.dateStr === baselineResolution.dateStr,
+    );
+    return pt?.categories ?? [];
+  }, [statData, baselineResolution]);
+
+  const baselineTransformed = useMemo(() => {
+    if (!baselineResolution?.hasData) return null;
+    return transformExpenses({
+      statCategories: baselineStatCategories,
+      categories,
+      activePreset: presetController.activePreset,
+    });
+  }, [baselineResolution, baselineStatCategories, categories, presetController.activePreset]);
+
+  // Pure comparison result between active month and baseline month
+  const comparison = useMemo(() => {
+    return computePeriodComparison(transformed, baselineTransformed);
+  }, [transformed, baselineTransformed]);
+
   const lastTransactionByCategoryId = useMemo(() => {
     return buildLastTransactionMap([...recentTransactions, ...periodTransactions], categories);
   }, [recentTransactions, periodTransactions, categories]);
@@ -267,54 +304,17 @@ export function BudgetOverviewDashboard() {
           <span className="text-muted-foreground text-xs font-medium">Default: {defaultCurrency}</span>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
-            <button
-              type="button"
-              className={cn(
-                "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                !selectedHistoricalPeriod && periodMonth === "current"
-                  ? "bg-background text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => {
-                setSelectedHistoricalPeriod(null);
-                setPeriodMonth("current");
-              }}
-            >
-              Current Month
-            </button>
-            <button
-              type="button"
-              className={cn(
-                "cursor-pointer rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                !selectedHistoricalPeriod && periodMonth === "previous"
-                  ? "bg-background text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-              onClick={() => {
-                setSelectedHistoricalPeriod(null);
-                setPeriodMonth("previous");
-              }}
-            >
-              Previous Month
-            </button>
-            {selectedHistoricalPeriod && (
-              <span className="bg-background text-foreground flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold shadow-xs">
-                <span>
-                  {MONTH_LABELS[selectedHistoricalPeriod.monthIndex]} {selectedHistoricalPeriod.year}
-                </span>
-                <button
-                  type="button"
-                  aria-label="Clear historical focus"
-                  className="text-muted-foreground hover:text-foreground cursor-pointer"
-                  onClick={() => setSelectedHistoricalPeriod(null)}
-                >
-                  <X className="size-3" />
-                </button>
-              </span>
-            )}
-          </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <MonthPeriodPicker
+            activeMonthDateStr={activeMonthDateStr}
+            onActiveMonthChange={setActiveMonthDateStr}
+            availableMonths={availableMonths}
+            compareMode={compareMode}
+            onCompareModeChange={setCompareMode}
+            compareCustomDateStr={compareCustomDateStr}
+            onCompareCustomDateChange={setCompareCustomDateStr}
+            baselineResolution={baselineResolution}
+          />
 
           <Button size="sm" variant="outline" onClick={handleRefreshAll} className="gap-1.5 text-xs">
             <RotateCw className={cn("size-3.5", isRefreshing && "animate-spin")} />
@@ -342,6 +342,7 @@ export function BudgetOverviewDashboard() {
         netCashFlowMargin={transformed.netCashFlowMargin}
         currency={defaultCurrency}
         isLoading={isLoadingPeriodData}
+        comparison={comparison}
       />
 
       {/* Controllable Expense Pie Card */}
@@ -352,6 +353,7 @@ export function BudgetOverviewDashboard() {
         rawGrossIncome={grossIncome}
         isLoading={isLoadingPeriodData}
         presetController={presetController}
+        comparison={comparison}
       />
 
       {/* Year-over-Year Historical Trends */}
@@ -366,7 +368,7 @@ export function BudgetOverviewDashboard() {
             isLoading={isLoadingStatData}
             selectedPeriod={selectedHistoricalPeriod}
             onSelectPeriod={(period) => {
-              setSelectedHistoricalPeriod(period);
+              setActiveMonthDateStr(period.dateStr);
             }}
           />
         </div>
@@ -378,16 +380,14 @@ export function BudgetOverviewDashboard() {
           <BudgetSummaryCard
             categories={categories}
             defaultCurrency={defaultCurrency}
-            periodMonth={periodMonth}
-            onPeriodMonthChange={setPeriodMonth}
-            customFromDate={selectedHistoricalPeriod?.dateStr}
-            onClearCustomPeriod={() => setSelectedHistoricalPeriod(null)}
+            activeMonthDateStr={activeMonthDateStr}
             statData={statData}
             isLoading={isLoadingStatData}
             error={statDataError}
             onRetry={() => void loadStatData(undefined, true)}
             onReorderCategories={handleReorderCategories}
             lastTransactionByCategoryId={lastTransactionByCategoryId}
+            categoryDeltaMap={comparison?.categoryDeltaMap}
           />
         </div>
       </div>

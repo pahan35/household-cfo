@@ -11,11 +11,20 @@ import {
   type StatPingData,
   type StatPoint,
 } from "./external-provider-data";
-import { type ExclusionPreset, groupSmallSlices, transformExpenses } from "./expense-transforms";
+import {
+  computePeriodComparison,
+  type ExclusionPreset,
+  groupSmallSlices,
+  transformExpenses,
+} from "./expense-transforms";
 import {
   computeTotalNetWorth,
+  extractAvailableMonths,
   filterChronologicalTrends,
+  getNextMonth,
+  getPrevMonth,
   parsePointDate,
+  resolveBaselineMonth,
   stepZoomRange,
   transformChronologicalTrends,
   transformYoYPoints,
@@ -629,5 +638,154 @@ describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
     expect(stepZoomRange("12M", "out")).toBe("24M");
     expect(stepZoomRange("24M", "out")).toBe("40M");
     expect(stepZoomRange("40M", "out")).toBe("40M");
+  });
+});
+
+describe("computePeriodComparison", () => {
+  const currentTransformed = transformExpenses({
+    statCategories: [
+      { id: "cat-groceries", title: "Groceries", amount: 2500, value: 2500 },
+      { id: "cat-dining", title: "Dining", amount: 1200, value: 1200 },
+      { id: "cat-vacation", title: "Vacation", amount: 800, value: 800 },
+    ],
+    categories: MOEXT_CATEGORIES,
+    activePreset: MOCK_PRESET,
+    rawGrossIncome: 20000,
+  });
+
+  const baselineTransformed = transformExpenses({
+    statCategories: [
+      { id: "cat-groceries", title: "Groceries", amount: 2000, value: 2000 },
+      { id: "cat-dining", title: "Dining", amount: 1500, value: 1500 },
+      { id: "cat-old", title: "Old Category", amount: 400, value: 400 },
+    ],
+    categories: MOEXT_CATEGORIES,
+    activePreset: MOCK_PRESET,
+    rawGrossIncome: 18000,
+  });
+
+  it("returns null when baseline is null or undefined", () => {
+    expect(computePeriodComparison(currentTransformed, null)).toBeNull();
+    expect(computePeriodComparison(currentTransformed, undefined)).toBeNull();
+  });
+
+  it("calculates accurate KPI deltas and percentages", () => {
+    const comparison = computePeriodComparison(currentTransformed, baselineTransformed);
+    expect(comparison).not.toBeNull();
+    if (!comparison) return;
+
+    // Gross Income: 20000 vs 18000 -> +2000 (+11.11%)
+    expect(comparison.grossIncome.deltaAbs).toBe(2000);
+    expect(comparison.grossIncome.deltaPercent).toBeCloseTo(11.11, 1);
+
+    // Controllable Expense: (2500 + 1200 + 800 = 4500) vs (2000 + 1500 + 400 = 3900) -> +600 (+15.38%)
+    expect(comparison.totalControllableExpense.current).toBe(4500);
+    expect(comparison.totalControllableExpense.baseline).toBe(3900);
+    expect(comparison.totalControllableExpense.deltaAbs).toBe(600);
+    expect(comparison.totalControllableExpense.deltaPercent).toBeCloseTo(15.38, 1);
+  });
+
+  it("computes per-category variance, flags new categories, and handles removed categories", () => {
+    const comparison = computePeriodComparison(currentTransformed, baselineTransformed);
+    expect(comparison).not.toBeNull();
+    if (!comparison) return;
+
+    // Groceries: 2500 vs 2000 -> +500 (+25%)
+    const groceries = comparison.categoryDeltaMap.get("cat-groceries");
+    expect(groceries).toBeDefined();
+    expect(groceries?.deltaAbs).toBe(500);
+    expect(groceries?.deltaPercent).toBe(25);
+    expect(groceries?.isNew).toBe(false);
+
+    // Dining: 1200 vs 1500 -> -300 (-20%)
+    const dining = comparison.categoryDeltaMap.get("cat-dining");
+    expect(dining).toBeDefined();
+    expect(dining?.deltaAbs).toBe(-300);
+    expect(dining?.deltaPercent).toBe(-20);
+    expect(dining?.isNew).toBe(false);
+
+    // Vacation: 800 vs 0 -> +800, isNew = true, deltaPercent = null
+    const vacation = comparison.categoryDeltaMap.get("cat-vacation");
+    expect(vacation).toBeDefined();
+    expect(vacation?.currentAmount).toBe(800);
+    expect(vacation?.baselineAmount).toBe(0);
+    expect(vacation?.deltaAbs).toBe(800);
+    expect(vacation?.isNew).toBe(true);
+    expect(vacation?.deltaPercent).toBeNull();
+
+    // Old Category: 0 vs 400 -> -400 (-100%)
+    const oldCat = comparison.categoryDeltaMap.get("cat-old");
+    expect(oldCat).toBeDefined();
+    expect(oldCat?.currentAmount).toBe(0);
+    expect(oldCat?.baselineAmount).toBe(400);
+    expect(oldCat?.deltaAbs).toBe(-400);
+    expect(oldCat?.deltaPercent).toBe(-100);
+    expect(oldCat?.isNew).toBe(false);
+  });
+});
+
+describe("extractAvailableMonths & resolveBaselineMonth", () => {
+  const mockPoints = [
+    { id: "2026-10-01", date: "10-2026" },
+    { id: "2026-09-01", date: "9-2026" },
+    { id: "2026-08-01", date: "8-2026" },
+    { id: "2025-10-01", date: "10-2025" },
+  ];
+
+  it("extracts available months deduplicated and sorted descending", () => {
+    const months = extractAvailableMonths(mockPoints);
+    expect(months.length).toBeGreaterThanOrEqual(4);
+    expect(months.some((m) => m.dateStr === "2026-10-01")).toBe(true);
+    expect(months.some((m) => m.dateStr === "2025-10-01")).toBe(true);
+
+    // Sorted descending
+    for (let i = 0; i < months.length - 1; i++) {
+      expect(months[i].dateStr >= months[i + 1].dateStr).toBe(true);
+    }
+  });
+
+  it("navigates previous and next months with bounds checking", () => {
+    const months = extractAvailableMonths(mockPoints);
+    const prev = getPrevMonth("2026-10-01", months);
+    expect(prev?.dateStr).toBe("2026-09-01");
+
+    const next = getNextMonth("2026-09-01", months);
+    expect(next?.dateStr).toBe("2026-10-01");
+
+    // Earliest month has no previous
+    const earliest = months[months.length - 1];
+    expect(getPrevMonth(earliest.dateStr, months)).toBeNull();
+  });
+
+  it("resolves baseline months for prev_month, prev_year, and custom modes", () => {
+    const months = extractAvailableMonths(mockPoints);
+
+    // Prev month from Oct 2026 -> Sep 2026
+    const prevMonthRes = resolveBaselineMonth("2026-10-01", "prev_month", months);
+    expect(prevMonthRes).toEqual({
+      dateStr: "2026-09-01",
+      label: "Sep 2026",
+      hasData: true,
+    });
+
+    // Prev year from Oct 2026 -> Oct 2025
+    const prevYearRes = resolveBaselineMonth("2026-10-01", "prev_year", months);
+    expect(prevYearRes).toEqual({
+      dateStr: "2025-10-01",
+      label: "Oct 2025",
+      hasData: true,
+    });
+
+    // Custom mode
+    const customRes = resolveBaselineMonth("2026-10-01", "custom", months, "2026-08-01");
+    expect(customRes).toEqual({
+      dateStr: "2026-08-01",
+      label: "Aug 2026",
+      hasData: true,
+    });
+
+    // Baseline month with no data in mock points
+    const noDataRes = resolveBaselineMonth("2026-10-01", "custom", months, "2020-01-01");
+    expect(noDataRes?.hasData).toBe(false);
   });
 });
