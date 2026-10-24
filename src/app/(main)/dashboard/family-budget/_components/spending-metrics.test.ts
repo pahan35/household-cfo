@@ -21,6 +21,7 @@ import {
   isTransportOrTaxi,
   transformExpenses,
 } from "./expense-transforms";
+import { BUILT_IN_PRESET_IDS, buildDefaultPresets, findCategoryIdsByPattern } from "./use-exclusion-presets";
 import {
   computeTotalNetWorth,
   extractAvailableMonths,
@@ -730,9 +731,13 @@ describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
 
     const oct26 = result.points[2];
     expect(oct26.monthLabel).toBe("Oct'26");
-    expect(oct26.netIncome).toBe(21500);
+    expect(oct26.netIncome).toBe(17000); // availableControllablePool = 21500 - 4500 (rent)
+    expect(oct26.netDisposableIncome).toBe(21500);
+    expect(oct26.availableControllablePool).toBe(17000);
     expect(oct26.controllableExpense).toBe(4001);
     expect(oct26.netCashFlowMargin).toBe(12999);
+    expect(oct26.netIncome - oct26.controllableExpense).toBe(oct26.netCashFlowMargin);
+    expect(oct26.savingsRate).toBe(Math.round((12999 / 21500) * 100)); // 60%
     expect(oct26.liquidBalance).toBe(50000);
     expect(oct26.netWorth).toBe(120000);
 
@@ -806,7 +811,9 @@ describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
         monthIndex: month - 1,
         monthLabel: `M${i}`,
         timestamp: new Date(year, month - 1, 1).getTime(),
-        netIncome: 10000,
+        netIncome: 9000,
+        netDisposableIncome: 10000,
+        availableControllablePool: 9000,
         controllableExpense: 5000,
         netCashFlowMargin: 5000,
         totalExpense: 6000,
@@ -993,5 +1000,171 @@ describe("extractAvailableMonths & resolveBaselineMonth", () => {
     // Baseline month with no data in mock points
     const noDataRes = resolveBaselineMonth("2026-10-01", "custom", months, "2020-01-01");
     expect(noDataRes?.hasData).toBe(false);
+  });
+});
+
+describe("Multi-category exclusions & available controllable pool macro trends", () => {
+  const multiCatCategories: ExternalProviderCategory[] = [
+    { id: "c-salary", name: "Salary", categoryType: CategoryType.Income, amount: 0, limitAmount: 0 },
+    { id: "c-taxes", name: "Taxes ZUS", categoryType: CategoryType.Expense, amount: 0, limitAmount: 0 },
+    { id: "c-rent", name: "Apartment Rent", categoryType: CategoryType.Expense, amount: 0, limitAmount: 0 },
+    { id: "c-insurance", name: "Insurance PLN", categoryType: CategoryType.Expense, amount: 0, limitAmount: 0 },
+    { id: "c-groceries", name: "Groceries", categoryType: CategoryType.Expense, amount: 0, limitAmount: 0 },
+  ];
+
+  const multiCatStatPoints: StatPoint[] = [
+    {
+      id: "2026-10-01",
+      date: "10-2026",
+      categories: [
+        { id: "c-salary", title: "Salary", amount: 30000, value: 30000, currentAmount: 0 },
+        { id: "c-taxes", title: "Taxes ZUS", amount: 5000, value: 5000, currentAmount: 0 },
+        { id: "c-rent", title: "Apartment Rent", amount: 4500, value: 4500, currentAmount: 0 },
+        { id: "c-insurance", title: "Insurance PLN", amount: 1500, value: 1500, currentAmount: 0 },
+        { id: "c-groceries", title: "Groceries", amount: 4000, value: 4000, currentAmount: 0 },
+      ],
+    },
+    {
+      id: "2025-10-01",
+      date: "10-2025",
+      categories: [
+        { id: "c-salary", title: "Salary", amount: 26000, value: 26000, currentAmount: 0 },
+        { id: "c-taxes", title: "Taxes ZUS", amount: 4000, value: 4000, currentAmount: 0 },
+        { id: "c-rent", title: "Apartment Rent", amount: 4000, value: 4000, currentAmount: 0 },
+        { id: "c-insurance", title: "Insurance PLN", amount: 1000, value: 1000, currentAmount: 0 },
+        { id: "c-groceries", title: "Groceries", amount: 3500, value: 3500, currentAmount: 0 },
+      ],
+    },
+  ];
+
+  it("deducts multiple excluded categories (Rent + Insurance) from the controllable income pool", () => {
+    const multiExclusionPreset: ExclusionPreset = {
+      id: "rent-and-insurance-excluded",
+      name: "Rent & Insurance Excluded",
+      incomeDeductions: ["c-taxes"],
+      expenseExclusions: ["c-rent", "c-insurance"],
+      isBuiltIn: false,
+    };
+
+    const trends = transformChronologicalTrends({
+      points: multiCatStatPoints,
+      categories: multiCatCategories,
+      activePreset: multiExclusionPreset,
+      currentLiquidBalance: 40000,
+      currentNetWorth: 80000,
+    });
+
+    const oct26 = trends.points.find((p) => p.dateStr === "2026-10-01");
+    expect(oct26).toBeDefined();
+
+    // Gross = 30000, Taxes = 5000 -> Net Disposable = 25000
+    expect(oct26?.grossIncome).toBe(30000);
+    expect(oct26?.taxDeductions).toBe(5000);
+    expect(oct26?.netDisposableIncome).toBe(25000);
+
+    // Excluded = Rent (4500) + Insurance (1500) = 6000
+    expect(oct26?.excludedExpenseSum).toBe(6000);
+
+    // Controllable Expense = Groceries (4000)
+    expect(oct26?.controllableExpense).toBe(4000);
+
+    // Available Controllable Pool = Net Disposable (25000) - Excluded (6000) = 19000
+    expect(oct26?.availableControllablePool).toBe(19000);
+    // netIncome plotted on the curve reflects availableControllablePool
+    expect(oct26?.netIncome).toBe(19000);
+
+    // Invariant Net Cash Flow Margin = 25000 - (4000 + 6000) = 15000
+    expect(oct26?.netCashFlowMargin).toBe(15000);
+
+    // Crucial curve invariant: plotted income curve minus plotted expense curve EXACTLY equals net cash flow margin
+    if (oct26) {
+      expect(oct26.netIncome - oct26.controllableExpense).toBe(oct26.netCashFlowMargin);
+    }
+
+    // Savings rate is bottom-line margin over net disposable income: (15000 / 25000) * 100 = 60%
+    expect(oct26?.savingsRate).toBe(60);
+  });
+
+  it("maintains invariant curve delta matching net cash flow margin in YoY multi-year metrics", () => {
+    const multiExclusionPreset: ExclusionPreset = {
+      id: "rent-and-insurance-excluded",
+      name: "Rent & Insurance Excluded",
+      incomeDeductions: ["c-taxes"],
+      expenseExclusions: ["c-rent", "c-insurance"],
+      isBuiltIn: false,
+    };
+
+    const yoy = transformYoYPoints({
+      points: multiCatStatPoints,
+      categories: multiCatCategories,
+      activePreset: multiExclusionPreset,
+    });
+
+    const oct = yoy.monthlyData[9];
+    const y2026 = oct?.years[2026];
+    const y2025 = oct?.years[2025];
+
+    expect(y2026).toBeDefined();
+    expect(y2025).toBeDefined();
+
+    if (y2026 && y2025) {
+      // 2026: Available Pool = 25000 - 6000 = 19000; Controllable = 4000; Margin = 15000
+      expect(y2026.netIncome).toBe(19000);
+      expect(y2026.controllableExpense).toBe(4000);
+      expect(y2026.netCashFlowMargin).toBe(15000);
+      expect(y2026.netIncome - y2026.controllableExpense).toBe(y2026.netCashFlowMargin);
+      expect(y2026.savingsRate).toBe(60);
+
+      // 2025: Net Disposable = 26000 - 4000 = 22000. Excluded = 4000 + 1000 = 5000.
+      // Available Pool = 22000 - 5000 = 17000. Controllable = 3500. Margin = 13500.
+      expect(y2025.netIncome).toBe(17000);
+      expect(y2025.controllableExpense).toBe(3500);
+      expect(y2025.netCashFlowMargin).toBe(13500);
+      expect(y2025.netIncome - y2025.controllableExpense).toBe(y2025.netCashFlowMargin);
+      // Savings rate: 13500 / 22000 * 100 = 61%
+      expect(y2025.savingsRate).toBe(Math.round((13500 / 22000) * 100));
+    }
+  });
+
+  it("builds default presets with proper IDs and classifications", () => {
+    const taxIds = findCategoryIdsByPattern(multiCatCategories, /(tax)/i);
+    const rentIds = findCategoryIdsByPattern(multiCatCategories, /(rent)/i);
+
+    expect(taxIds).toEqual(["c-taxes"]);
+    expect(rentIds).toEqual(["c-rent"]);
+
+    const defaults = buildDefaultPresets(taxIds, rentIds);
+    expect(defaults).toHaveLength(3);
+    expect(defaults[0].id).toBe(BUILT_IN_PRESET_IDS.ALL_ACTIVITY);
+    expect(defaults[1].id).toBe(BUILT_IN_PRESET_IDS.NET_LIVING);
+    expect(defaults[1].incomeDeductions).toEqual(["c-taxes"]);
+    expect(defaults[2].id).toBe(BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES);
+    expect(defaults[2].expenseExclusions).toEqual(["c-rent"]);
+  });
+
+  it("handles zero exclusions smoothly by equating availableControllablePool to netDisposableIncome", () => {
+    const allActivityPreset: ExclusionPreset = {
+      id: "all-activity",
+      name: "All Activity",
+      incomeDeductions: [],
+      expenseExclusions: [],
+      isBuiltIn: true,
+    };
+
+    const trends = transformChronologicalTrends({
+      points: multiCatStatPoints,
+      categories: multiCatCategories,
+      activePreset: allActivityPreset,
+      currentLiquidBalance: 40000,
+      currentNetWorth: 80000,
+    });
+
+    const oct26 = trends.points.find((p) => p.dateStr === "2026-10-01");
+    expect(oct26).toBeDefined();
+
+    // When exclusions are empty:
+    expect(oct26?.excludedExpenseSum).toBe(0);
+    expect(oct26?.availableControllablePool).toBe(oct26?.netDisposableIncome);
+    expect(oct26?.netIncome).toBe(oct26?.netDisposableIncome);
   });
 });

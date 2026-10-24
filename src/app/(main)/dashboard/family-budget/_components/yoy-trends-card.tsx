@@ -50,7 +50,7 @@ export const MACRO_METRIC_CONFIG: Record<MacroTrendMetric, { label: string; shor
     expenses_income: {
       label: "Expenses & Income",
       shortLabel: "Exp & Inc",
-      description: "Dual-curve overlay of controllable spending vs. net disposable income",
+      description: "Dual-curve overlay of controllable spending vs. controllable income pool",
     },
     controllable: {
       label: "Expenses",
@@ -60,7 +60,7 @@ export const MACRO_METRIC_CONFIG: Record<MacroTrendMetric, { label: string; shor
     netIncome: {
       label: "Income",
       shortLabel: "Income",
-      description: "Net disposable household income after tax deductions",
+      description: "Controllable income pool after tax deductions and fixed obligations (Rent, Insurance)",
     },
     balance: {
       label: "Balance",
@@ -209,10 +209,37 @@ function CustomYoYTooltip({ active, payload, currency, activeMetric, availableYe
               )}
 
               {activeMetric === "controllable" && (
-                <div className="text-muted-foreground flex items-center justify-between text-[10px]">
-                  <span>Savings Rate:</span>
-                  <span className="text-foreground font-medium">{yearMetric.savingsRate}%</span>
-                </div>
+                <>
+                  {yearMetric.excludedExpenseSum > 0 && (
+                    <div className="text-muted-foreground flex items-center justify-between text-[10px]">
+                      <span>Excluded Fixed:</span>
+                      <span className="text-foreground font-medium">
+                        {formatMoney(yearMetric.excludedExpenseSum, currency)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="text-muted-foreground flex items-center justify-between text-[10px]">
+                    <span>Savings Rate:</span>
+                    <span className="text-foreground font-medium">{yearMetric.savingsRate}%</span>
+                  </div>
+                </>
+              )}
+
+              {activeMetric === "netIncome" && yearMetric.excludedExpenseSum > 0 && (
+                <>
+                  <div className="text-muted-foreground flex items-center justify-between text-[10px]">
+                    <span>Net Disposable:</span>
+                    <span className="text-foreground font-medium">
+                      {formatMoney(yearMetric.netDisposableIncome, currency)}
+                    </span>
+                  </div>
+                  <div className="text-muted-foreground flex items-center justify-between text-[10px]">
+                    <span>Excluded Fixed:</span>
+                    <span className="text-rose-500 font-medium">
+                      -{formatMoney(yearMetric.excludedExpenseSum, currency)}
+                    </span>
+                  </div>
+                </>
               )}
             </div>
           );
@@ -283,12 +310,24 @@ function TimelineTooltipContent({
           <div className="bg-muted/30 flex items-center justify-between rounded-md p-1.5">
             <span className="flex items-center gap-1.5">
               <span className="size-2 rounded-full bg-emerald-500" />
-              <span>Net Disposable Income:</span>
+              <span>Controllable Income:</span>
             </span>
             <span className="font-semibold text-emerald-600 dark:text-emerald-400">
               +{formatMoney(point.netIncome, currency)}
             </span>
           </div>
+          {point.excludedExpenseSum > 0 && (
+            <>
+              <div className="text-muted-foreground flex items-center justify-between px-1 text-[11px]">
+                <span>Net Disposable:</span>
+                <span>{formatMoney(point.netDisposableIncome, currency)}</span>
+              </div>
+              <div className="text-muted-foreground flex items-center justify-between px-1 text-[11px]">
+                <span>Excluded Fixed Obligations:</span>
+                <span className="text-rose-500 font-medium">-{formatMoney(point.excludedExpenseSum, currency)}</span>
+              </div>
+            </>
+          )}
           <div className="bg-muted/30 flex items-center justify-between rounded-md p-1.5">
             <span className="flex items-center gap-1.5">
               <span className="size-2 rounded-full bg-rose-500" />
@@ -312,7 +351,7 @@ function TimelineTooltipContent({
               {formatMoney(point.netCashFlowMargin, currency)}
             </span>
           </div>
-          {point.netIncome > 0 && (
+          {point.netDisposableIncome > 0 && (
             <div className="text-muted-foreground flex items-center justify-between px-1 text-[11px]">
               <span>Savings Rate:</span>
               <span className="text-foreground font-medium">{point.savingsRate}%</span>
@@ -399,7 +438,7 @@ function TimelineTooltipContent({
       return (
         <>
           <div className="bg-muted/30 flex items-center justify-between rounded-md p-1.5">
-            <span className="text-muted-foreground">Net Disposable:</span>
+            <span className="text-muted-foreground">Controllable Income:</span>
             <span className="font-semibold text-emerald-600 dark:text-emerald-400">
               {formatMoney(point.netIncome, currency)}
             </span>
@@ -413,6 +452,18 @@ function TimelineTooltipContent({
               <span>Tax Deductions:</span>
               <span className="font-medium text-rose-500">-{formatMoney(point.taxDeductions, currency)}</span>
             </div>
+          )}
+          {point.excludedExpenseSum > 0 && (
+            <>
+              <div className="text-muted-foreground flex items-center justify-between px-1 text-[11px]">
+                <span>Net Disposable Income:</span>
+                <span className="font-medium">{formatMoney(point.netDisposableIncome, currency)}</span>
+              </div>
+              <div className="text-muted-foreground flex items-center justify-between px-1 text-[11px]">
+                <span>Excluded Fixed Obligations:</span>
+                <span className="font-medium text-rose-500">-{formatMoney(point.excludedExpenseSum, currency)}</span>
+              </div>
+            </>
           )}
         </>
       );
@@ -497,7 +548,7 @@ function renderTimelineLines(activeMetric: MacroTrendMetric) {
         <Line
           type="monotone"
           dataKey="netIncome"
-          name="Net Income"
+          name="Controllable Income"
           stroke="#10b981"
           strokeWidth={2.5}
           dot={{ r: 2.5, fill: "#10b981" }}

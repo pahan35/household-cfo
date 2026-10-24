@@ -34,11 +34,14 @@ export interface YoYYearMetric {
   pointId: string;
   controllableExpense: number;
   netIncome: number;
+  netDisposableIncome: number;
+  availableControllablePool: number;
   totalExpense: number;
   savingsRate: number;
   netCashFlowMargin: number;
   taxDeductions: number;
   excludedExpenseSum: number;
+  grossIncome?: number;
 }
 
 export interface YoYDelta {
@@ -340,10 +343,12 @@ export function transformYoYPoints(input: TransformYoYInput): TransformYoYResult
         });
 
         const controllable = transformed.totalControllableExpense;
-        const netIncome = transformed.netDisposableIncome;
+        const netDisposableIncome = transformed.netDisposableIncome;
+        const availableControllablePool = transformed.availableControllablePool;
+        const netIncome = availableControllablePool;
         const margin = transformed.netCashFlowMargin;
         const totalExp = transformed.totalGrossExpense;
-        const savingsRate = netIncome > 0 ? Math.round(((netIncome - controllable) / netIncome) * 100) : 0;
+        const savingsRate = netDisposableIncome > 0 ? Math.round((margin / netDisposableIncome) * 100) : 0;
 
         const metric: YoYYearMetric = {
           year,
@@ -351,11 +356,14 @@ export function transformYoYPoints(input: TransformYoYInput): TransformYoYResult
           pointId: pointItem.dateStr,
           controllableExpense: controllable,
           netIncome,
+          netDisposableIncome,
+          availableControllablePool,
           totalExpense: totalExp,
           savingsRate,
           netCashFlowMargin: margin,
           taxDeductions: transformed.totalTaxDeductions,
           excludedExpenseSum: transformed.excludedExpenseSum,
+          grossIncome: transformed.grossIncome,
         };
 
         monthRecord.years[year] = metric;
@@ -443,6 +451,8 @@ export interface ChronologicalTrendPoint {
   monthLabel: string;
   timestamp: number;
   netIncome: number;
+  netDisposableIncome: number;
+  availableControllablePool: number;
   controllableExpense: number;
   netCashFlowMargin: number;
   totalExpense: number;
@@ -490,11 +500,12 @@ export function transformChronologicalTrends(input: TransformChronologicalInput)
     currentNetWorth,
   } = input;
 
-  const categoriesArray = Array.isArray(categories)
-    ? categories
-    : categories instanceof Map
-      ? Array.from(categories.values())
-      : [];
+  let categoriesArray: ExternalProviderCategory[] = [];
+  if (Array.isArray(categories)) {
+    categoriesArray = categories;
+  } else if (categories instanceof Map) {
+    categoriesArray = Array.from(categories.values());
+  }
 
   // 1. Parse and validate candidate date points
   const parsedPoints: ParsedStatPoint[] = [];
@@ -542,10 +553,12 @@ export function transformChronologicalTrends(input: TransformChronologicalInput)
     });
 
     const controllable = transformed.totalControllableExpense;
-    const netIncome = transformed.netDisposableIncome;
+    const netDisposableIncome = transformed.netDisposableIncome;
+    const availableControllablePool = transformed.availableControllablePool;
+    const netIncome = availableControllablePool;
     const margin = transformed.netCashFlowMargin;
     const totalExp = transformed.totalGrossExpense;
-    const savingsRate = netIncome > 0 ? Math.round(((netIncome - controllable) / netIncome) * 100) : 0;
+    const savingsRate = netDisposableIncome > 0 ? Math.round((margin / netDisposableIncome) * 100) : 0;
     const monthLabel = `${MONTH_LABELS[item.monthIndex]}'${String(item.year).slice(-2)}`;
 
     chronologicalPoints.push({
@@ -555,6 +568,8 @@ export function transformChronologicalTrends(input: TransformChronologicalInput)
       monthLabel,
       timestamp: item.timestamp,
       netIncome,
+      netDisposableIncome,
+      availableControllablePool,
       controllableExpense: controllable,
       netCashFlowMargin: margin,
       totalExpense: totalExp,

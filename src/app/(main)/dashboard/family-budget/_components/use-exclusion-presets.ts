@@ -97,7 +97,10 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
   }, []);
 
   const allPresets = useMemo(() => {
-    return [...defaultPresets, ...customPresets];
+    const customMap = new Map(customPresets.map((p) => [p.id, p]));
+    const defaults = defaultPresets.map((dp) => customMap.get(dp.id) ?? dp);
+    const nonDefaultCustom = customPresets.filter((cp) => !defaultPresets.some((dp) => dp.id === cp.id));
+    return [...defaults, ...nonDefaultCustom];
   }, [defaultPresets, customPresets]);
 
   const rawActivePreset = useMemo(() => {
@@ -150,28 +153,92 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
     }
   }, []);
 
+  const updatePreset = useCallback((presetToUpdate: ExclusionPreset) => {
+    const presetToSave: ExclusionPreset = {
+      ...presetToUpdate,
+      isBuiltIn: false,
+    };
+
+    setCustomPresets((prev) => {
+      const next = [...prev.filter((p) => p.id !== presetToSave.id), presetToSave];
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // Ignore localStorage write failures
+        }
+      }
+      return next;
+    });
+
+    setRentExclusionOverride(null);
+  }, []);
+
   const savePreset = useCallback(
     (newPreset: ExclusionPreset) => {
-      const presetToSave: ExclusionPreset = {
-        ...newPreset,
+      updatePreset(newPreset);
+      setActivePresetId(newPreset.id);
+    },
+    [updatePreset, setActivePresetId],
+  );
+
+  const createPreset = useCallback(
+    (name: string, expenseExclusions: string[] = [], incomeDeductions: string[] = []) => {
+      const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const newPreset: ExclusionPreset = {
+        id,
+        name: name.trim() || "Custom Preset",
+        expenseExclusions,
+        incomeDeductions,
         isBuiltIn: false,
       };
-
-      setCustomPresets((prev) => {
-        const next = [...prev.filter((p) => p.id !== presetToSave.id), presetToSave];
-        if (typeof window !== "undefined") {
-          try {
-            window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(next));
-          } catch {
-            // Ignore localStorage write failures
-          }
-        }
-        return next;
-      });
-
-      setActivePresetId(presetToSave.id);
+      savePreset(newPreset);
+      return newPreset;
     },
-    [setActivePresetId],
+    [savePreset],
+  );
+
+  const renamePreset = useCallback(
+    (presetId: string, newName: string) => {
+      const target = allPresets.find((p) => p.id === presetId);
+      if (!target) return;
+      updatePreset({ ...target, name: newName.trim() });
+    },
+    [allPresets, updatePreset],
+  );
+
+  const toggleCategoryExclusion = useCallback(
+    (categoryId: string, presetId = activePresetId) => {
+      const targetPreset = allPresets.find((p) => p.id === presetId) ?? rawActivePreset;
+      const currentExclusions = new Set(targetPreset.expenseExclusions);
+      if (currentExclusions.has(categoryId)) {
+        currentExclusions.delete(categoryId);
+      } else {
+        currentExclusions.add(categoryId);
+      }
+      updatePreset({
+        ...targetPreset,
+        expenseExclusions: Array.from(currentExclusions),
+      });
+    },
+    [activePresetId, allPresets, rawActivePreset, updatePreset],
+  );
+
+  const setCategoryExclusion = useCallback(
+    (categoryId: string, excluded: boolean, presetId = activePresetId) => {
+      const targetPreset = allPresets.find((p) => p.id === presetId) ?? rawActivePreset;
+      const currentExclusions = new Set(targetPreset.expenseExclusions);
+      if (excluded) {
+        currentExclusions.add(categoryId);
+      } else {
+        currentExclusions.delete(categoryId);
+      }
+      updatePreset({
+        ...targetPreset,
+        expenseExclusions: Array.from(currentExclusions),
+      });
+    },
+    [activePresetId, allPresets, rawActivePreset, updatePreset],
   );
 
   const deletePreset = useCallback(
@@ -208,6 +275,11 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
     activePresetId,
     setActivePresetId,
     savePreset,
+    updatePreset,
+    createPreset,
+    renamePreset,
+    toggleCategoryExclusion,
+    setCategoryExclusion,
     deletePreset,
     isRentExcluded,
     toggleRentExclusion,
