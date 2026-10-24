@@ -16,6 +16,7 @@ import {
   type LucideIcon,
   Mail,
   MessageSquare,
+  Package,
   PiggyBank,
   ReceiptText,
   Server,
@@ -25,7 +26,7 @@ import {
   Users,
 } from "lucide-react";
 
-export type NavBadge = "new" | "soon";
+export type NavBadge = "new" | "updated" | "soon";
 
 export interface NavSubItem {
   id: string;
@@ -147,6 +148,13 @@ export const sidebarItems: NavGroup[] = [
     label: "Pages",
     items: [
       {
+        id: "products",
+        title: "Products",
+        url: "/dashboard/products",
+        icon: Package,
+        badge: "new",
+      },
+      {
         id: "email",
         title: "Email",
         url: "/dashboard/mail",
@@ -169,6 +177,7 @@ export const sidebarItems: NavGroup[] = [
         title: "Kanban",
         url: "/dashboard/kanban",
         icon: Kanban,
+        badge: "updated",
       },
       {
         id: "tasks",
