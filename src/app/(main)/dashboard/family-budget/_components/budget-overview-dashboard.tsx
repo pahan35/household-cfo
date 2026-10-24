@@ -33,7 +33,7 @@ import {
 import { ExpensePieCard } from "./expense-pie-card";
 import { transformExpenses } from "./expense-transforms";
 import { useExclusionPresets } from "./use-exclusion-presets";
-import { MONTH_LABELS } from "./yoy-transforms";
+import { MONTH_LABELS, parsePointDate } from "./yoy-transforms";
 import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 
 export function BudgetOverviewDashboard() {
@@ -199,7 +199,7 @@ export function BudgetOverviewDashboard() {
   const statCategories = useMemo(() => {
     const points = statData?.selection?.points ?? [];
     if (points.length === 0) return [];
-    const activePoint = points.find((p) => p.id === fromDate) ?? points[0];
+    const activePoint = points.find((p) => p.id === fromDate || parsePointDate(p)?.dateStr === fromDate) ?? points[0];
     return activePoint?.categories ?? [];
   }, [statData, fromDate]);
 

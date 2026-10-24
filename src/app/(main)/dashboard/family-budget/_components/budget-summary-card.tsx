@@ -24,6 +24,7 @@ import {
 } from "./external-provider-data";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
+import { parsePointDate } from "./yoy-transforms";
 
 export type BudgetPeriodMonth = "current" | "previous";
 export type BudgetSortMode = "custom" | "percent";
@@ -48,7 +49,7 @@ export function computeBudgetSummaryItems(
   if (points.length === 0) return [];
 
   // Find point matching selected month fromDate or default to latest point (points[0])
-  const activePoint = points.find((p) => p.id === fromDate) ?? points[0];
+  const activePoint = points.find((p) => p.id === fromDate || parsePointDate(p)?.dateStr === fromDate) ?? points[0];
 
   if (!activePoint?.categories) return [];
 
@@ -58,13 +59,13 @@ export function computeBudgetSummaryItems(
     .filter((cat: StatCategoryPoint) => {
       if (includeAll) return true;
       const limit = Number(cat.limitAmount) || 0;
-      const rawSpend = cat.amount ?? cat.currentAmount ?? cat.value;
+      const rawSpend = cat.value ?? cat.amount ?? cat.currentAmount;
       const current = Math.max(0, Number(rawSpend) || 0);
       return limit > 0 || current > 0;
     })
     .map((cat: StatCategoryPoint) => {
       const limit = Number(cat.limitAmount) || 0;
-      const rawSpend = cat.amount ?? cat.currentAmount ?? cat.value;
+      const rawSpend = cat.value ?? cat.amount ?? cat.currentAmount;
       const current = Math.max(0, Number(rawSpend) || 0);
       const rawTitle = typeof cat.title === "string" ? cat.title.trim() : "";
       const rawName = typeof cat.name === "string" ? cat.name.trim() : "";

@@ -65,7 +65,7 @@ export function transformExpenses(input: TransformExpensesInput): TransformedExp
   for (const statCat of statCategories) {
     const catId = statCat.id;
     const catMeta = categoryMap.get(catId);
-    const rawSpend = statCat.amount ?? statCat.currentAmount ?? statCat.value;
+    const rawSpend = statCat.value ?? statCat.amount ?? statCat.currentAmount;
     const amount = Math.max(0, Number(rawSpend) || 0);
     const limitAmount = Number(statCat.limitAmount) || 0;
     const rawTitle = typeof statCat.title === "string" ? statCat.title.trim() : "";
@@ -130,7 +130,7 @@ export function transformExpenses(input: TransformExpensesInput): TransformedExp
     item.percentage = totalControllableExpense > 0 ? (item.amount / totalControllableExpense) * 100 : 0;
   }
 
-  const grossIncome = rawGrossIncome > 0 ? rawGrossIncome : computedIncome;
+  const grossIncome = computedIncome > 0 ? computedIncome : Math.max(0, rawGrossIncome);
   const netDisposableIncome = grossIncome - totalTaxDeductions;
   const netCashFlowMargin = netDisposableIncome - totalControllableExpense;
 

@@ -143,8 +143,8 @@ const MOEXT_STAT_POINTS: StatPoint[] = [
       {
         id: "cat-groceries",
         title: "Groceries",
-        amount: 2100,
-        value: 2100,
+        amount: 2450.75, // Static current-month snapshot
+        value: 2100, // Historical month spending
         currentAmount: 0.0,
         limitAmount: 3000,
       },
@@ -157,16 +157,16 @@ const MOEXT_STAT_POINTS: StatPoint[] = [
       {
         id: "cat-groceries",
         title: "Groceries",
-        amount: 2000,
-        value: 2000,
+        amount: 2450.75, // Static current-month snapshot
+        value: 2000, // Historical month spending
         currentAmount: 0.0,
         limitAmount: 2800,
       },
       {
         id: "cat-dining",
         title: "Dining Out",
-        amount: 1000,
-        value: 1000,
+        amount: 1250.25, // Static current-month snapshot
+        value: 1000, // Historical month spending
         currentAmount: 0.0,
         limitAmount: 1000,
       },
@@ -239,6 +239,34 @@ describe("transformExpenses", () => {
     expect(result.controllableCategories[1]?.name).toBe("Dining Out");
   });
 
+  it("prioritizes `value` over static `amount` and prefers `/stat/ping` reporting-currency `computedIncome` when non-zero", () => {
+    const historicalCategories: StatCategoryPoint[] = [
+      {
+        id: "cat-income-salary",
+        title: "Salary",
+        amount: 25000, // static current month
+        value: 18000, // historical month value
+      },
+      {
+        id: "cat-groceries",
+        title: "Groceries",
+        amount: 3000, // static current month
+        value: 1250, // historical month value
+      },
+    ];
+
+    const result = transformExpenses({
+      statCategories: historicalCategories,
+      categories: MOEXT_CATEGORIES,
+      activePreset: MOCK_PRESET,
+      rawGrossIncome: 5000, // should be overridden by computedIncome (18000)
+    });
+
+    expect(result.grossIncome).toBe(18000);
+    expect(result.totalControllableExpense).toBe(1250);
+    expect(result.controllableCategories[0]?.amount).toBe(1250);
+  });
+
   it("resolves category names from `statCat.title` when category metadata is missing", () => {
     const result = transformExpenses({
       statCategories: MOEXT_OCTOBER_STAT_CATEGORIES,
@@ -293,6 +321,46 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
     expect(groceries).toBeDefined();
     expect(groceries?.current).toBe(2450.75);
   });
+
+  it("prioritizes `value` over static `amount` and resolves point by normalized `parsePointDate(p)?.dateStr === fromDate`", () => {
+    const multiMonthData: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            date: "10-2026",
+            categories: [
+              {
+                id: "cat-groceries",
+                title: "Groceries",
+                amount: 3000,
+                value: 3000,
+                limitAmount: 3000,
+              },
+            ],
+          },
+          {
+            id: "9-2026",
+            date: "9-2026",
+            categories: [
+              {
+                id: "cat-groceries",
+                title: "Groceries",
+                amount: 3000, // static snapshot
+                value: 1950, // actual historical spend
+                limitAmount: 3000,
+              },
+            ],
+          },
+        ],
+      },
+    };
+
+    const items = computeBudgetSummaryItems(multiMonthData, "2026-09-01", categoryNameMap);
+    const groceries = items.find((item) => item.id === "cat-groceries");
+    expect(groceries).toBeDefined();
+    expect(groceries?.current).toBe(1950);
+  });
 });
 
 describe("parsePointDate & transformYoYPoints", () => {
@@ -346,9 +414,93 @@ describe("parsePointDate & transformYoYPoints", () => {
     expect(october?.deltas[2026]).toBeDefined();
     expect(october?.deltas[2026]?.controllableDeltaAbs).toBe(1001);
   });
+
+  it("computes YoY metrics from historical `value` when `amount` holds static current-month snapshot across all points", () => {
+    const staticAmountMultiYearPoints: StatPoint[] = [
+      {
+        id: "2026-05-01",
+        date: "5-2026",
+        categories: [
+          {
+            id: "cat-groceries",
+            title: "Groceries",
+            amount: 8451.47, // Constant current-month snapshot
+            value: 5000, // May 2026 spending
+            limitAmount: 6000,
+          },
+        ],
+      },
+      {
+        id: "2025-05-01",
+        date: "5-2025",
+        categories: [
+          {
+            id: "cat-groceries",
+            title: "Groceries",
+            amount: 8451.47, // Constant current-month snapshot (identical to 2026)
+            value: 4000, // May 2025 spending
+            limitAmount: 6000,
+          },
+        ],
+      },
+    ];
+
+    const yoy = transformYoYPoints({
+      points: staticAmountMultiYearPoints,
+      categories: MOEXT_CATEGORIES,
+      activePreset: MOCK_PRESET,
+    });
+
+    const may = yoy.monthlyData[4]; // May is monthIndex 4
+    expect(may?.years[2026]?.controllableExpense).toBe(5000);
+    expect(may?.years[2025]?.controllableExpense).toBe(4000);
+    expect(may?.deltas[2026]?.controllableDeltaAbs).toBe(1000);
+    expect(may?.deltas[2026]?.controllableDeltaPercent).toBe(25); // +25% YoY, not 0.0%
+  });
 });
 
 describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
+  it("derives chronological trend points from `value` when `amount` is constant across historical periods", () => {
+    const staticAmountPoints: StatPoint[] = [
+      {
+        id: "2026-01-01",
+        date: "1-2026",
+        categories: [
+          {
+            id: "cat-groceries",
+            title: "Groceries",
+            amount: 8451.47,
+            value: 3200,
+            limitAmount: 5000,
+          },
+        ],
+      },
+      {
+        id: "2026-02-01",
+        date: "2-2026",
+        categories: [
+          {
+            id: "cat-groceries",
+            title: "Groceries",
+            amount: 8451.47,
+            value: 4100,
+            limitAmount: 5000,
+          },
+        ],
+      },
+    ];
+
+    const trends = transformChronologicalTrends({
+      points: staticAmountPoints,
+      categories: MOEXT_CATEGORIES,
+      activePreset: MOCK_PRESET,
+      currentLiquidBalance: 50000,
+      currentNetWorth: 100000,
+    });
+
+    expect(trends.points[0]?.controllableExpense).toBe(3200);
+    expect(trends.points[1]?.controllableExpense).toBe(4100);
+  });
   it("builds a chronological timeline with backward-reconstructed liquid balance and net worth", () => {
     const result = transformChronologicalTrends({
       points: MOEXT_STAT_POINTS,

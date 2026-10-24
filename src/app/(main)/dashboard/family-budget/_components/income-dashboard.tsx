@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { format } from "date-fns";
+import { format, startOfMonth } from "date-fns";
 import { Banknote, RotateCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import {
   hasRecognizedTaxTag,
   matchTaxBucket,
 } from "./tax-transforms";
+import { parsePointDate } from "./yoy-transforms";
 
 export function IncomeDashboard() {
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
@@ -101,15 +102,20 @@ export function IncomeDashboard() {
   const controllableExpenses = useMemo(() => {
     const points = statData?.selection?.points ?? [];
     if (points.length === 0) return 0;
-    const latestCategories = points[points.length - 1]?.categories ?? [];
+    const currentMonthStart = format(startOfMonth(new Date()), "yyyy-MM-dd");
+    const activePoint =
+      points.find((p) => p.id === currentMonthStart || parsePointDate(p)?.dateStr === currentMonthStart) ?? points[0];
+    const categoryMap = new Map(categories.map((c) => [c.id, c]));
     let sum = 0;
-    for (const cat of latestCategories) {
+    for (const cat of activePoint?.categories ?? []) {
+      const catMeta = categoryMap.get(cat.id);
+      if (catMeta?.categoryType === CategoryType.Income) continue;
       if (!taxCategoryIds.has(cat.id)) {
-        sum += Number(cat.amount ?? cat.value) || 0;
+        sum += Number(cat.value ?? cat.amount) || 0;
       }
     }
     return sum;
-  }, [statData, taxCategoryIds]);
+  }, [statData, categories, taxCategoryIds]);
 
   // Tax breakdown & audit
   const taxBreakdown = useMemo(
