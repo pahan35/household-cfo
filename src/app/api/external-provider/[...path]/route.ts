@@ -98,7 +98,7 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
   }
 
   let requestBody = method === "GET" ? undefined : await request.arrayBuffer();
-  if (webCreds !== undefined && requestBody !== undefined && upstreamPath === "/api/transaction/get") {
+  if (webCreds !== undefined && requestBody !== undefined && upstreamPath.startsWith("/api/transaction/")) {
     requestBody = injectUserId(requestBody, webCreds.userId);
   }
 
@@ -118,13 +118,25 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
     }
   }
 
+  const isTransactionWrite =
+    method === "POST" && (upstreamPath === "/api/transaction/create" || upstreamPath === "/api/transaction/update");
+
   if (isExchangeWritePayload) {
     invalidateProxyCacheByPathPrefix("/Exchange/Ping");
   }
+  if (isTransactionWrite) {
+    invalidateProxyCacheByPathPrefix("/api/transaction");
+    invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+    invalidateProxyCacheByPathPrefix("/stat/ping");
+  }
 
   const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
-  const bypassCache = cacheControl.includes("no-cache") || cacheControl.includes("max-age=0") || isExchangeWritePayload;
-  const isCacheable = (method === "GET" || method === "POST") && !isExchangeWritePayload;
+  const bypassCache =
+    cacheControl.includes("no-cache") ||
+    cacheControl.includes("max-age=0") ||
+    isExchangeWritePayload ||
+    isTransactionWrite;
+  const isCacheable = (method === "GET" || method === "POST") && !isExchangeWritePayload && !isTransactionWrite;
 
   try {
     if (!isCacheable) {
@@ -138,6 +150,11 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
 
       if (isExchangeWritePayload) {
         invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+      }
+      if (isTransactionWrite) {
+        invalidateProxyCacheByPathPrefix("/api/transaction");
+        invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+        invalidateProxyCacheByPathPrefix("/stat/ping");
       }
 
       if (!upstreamResponse.ok) {

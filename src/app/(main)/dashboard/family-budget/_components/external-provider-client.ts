@@ -2,6 +2,7 @@ import {
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
+  type ExternalProviderTransaction,
   ExchangeKey,
   type ExchangePingResponseEnvelope,
   extractExchangeEntities,
@@ -292,6 +293,42 @@ export async function updateCategoriesOrder(
     });
   } else {
     invalidateExternalProviderClientCache("categories");
+  }
+
+  return body;
+}
+
+/**
+ * Creates a double-entry ExternalProvider transaction via POST /api/external-provider/api/transaction/create
+ * bypassing cache with Cache-Control: no-cache, and invalidates client cache entries
+ * for categories and transactions.
+ */
+export async function createTransaction(
+  tx: ExternalProviderTransaction,
+  options?: {
+    signal?: AbortSignal;
+  },
+): Promise<{ isSuccess?: boolean; data?: unknown; [key: string]: unknown }> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "Cache-Control": "no-cache",
+  };
+
+  const response = await fetch("/api/external-provider/api/transaction/create", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(tx),
+    signal: options?.signal,
+  });
+
+  const body = await handleResponse<{ isSuccess?: boolean; data?: unknown }>(response);
+
+  invalidateExternalProviderClientCache("categories");
+  for (const key of Array.from(clientCacheState.entries.keys())) {
+    if (key.startsWith("tx:") || key.startsWith("stat:")) {
+      clientCacheState.entries.delete(key);
+    }
   }
 
   return body;

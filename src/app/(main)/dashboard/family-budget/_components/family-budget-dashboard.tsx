@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { AccountLiquidityStrip } from "./account-liquidity-strip";
 import { AccountsCard } from "./accounts-card";
 import {
+  createTransaction,
   getCategories,
   getCurrencies,
   getSettings,
@@ -21,15 +22,19 @@ import {
 import {
   archiveAccountCategory,
   buildLastTransactionMap,
+  buildNewDebtAccountCategory,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
   computeAccountLiquiditySummary,
+  isThrowawayDebtAccount,
   moveAccountsAboveArchived,
   reorderCategoriesSubset,
   unarchiveAccountCategory,
 } from "./external-provider-data";
+import { DebtAccountInitDialog } from "./debt-account-init-dialog";
+import { DebtClearingPanel } from "./debt-clearing-panel";
 import { RecentTransactionsCard } from "./recent-transactions-card";
 
 export function FamilyBudgetDashboard() {
@@ -40,6 +45,7 @@ export function FamilyBudgetDashboard() {
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
   const [baseDataError, setBaseDataError] = useState<Error | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [isInitDebtDialogOpen, setIsInitDebtDialogOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const loadBaseData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
@@ -134,10 +140,10 @@ export function FamilyBudgetDashboard() {
   );
 
   const handleArchiveAccount = useCallback(
-    async (accountId: string) => {
+    async (accountId: string, options?: { exceptFromBalance?: boolean }) => {
       const prevCategories = categories;
       const target = categories.find((c) => c.id === accountId);
-      const { updatedCategories, modifiedCategories } = archiveAccountCategory(categories, accountId);
+      const { updatedCategories, modifiedCategories } = archiveAccountCategory(categories, accountId, options);
 
       if (modifiedCategories.length === 0) return;
 
@@ -148,13 +154,48 @@ export function FamilyBudgetDashboard() {
           allUpdatedCategories: updatedCategories,
         });
         toast.success(`Archived "${target?.name ?? "account"}"`);
+        void loadBaseData(undefined, true);
+        setRefreshKey((k) => k + 1);
       } catch (err) {
         setCategories(prevCategories);
         toast.error(err instanceof Error ? err.message : "Failed to archive account");
         throw err;
       }
     },
-    [categories],
+    [categories, loadBaseData],
+  );
+
+  const handleCreateDebtAccount = useCallback(
+    async (input: { name: string; currencyId: string; exceptFromBalance: boolean }) => {
+      const prevCategories = categories;
+      const { newAccount, updatedCategories, modifiedCategories } = buildNewDebtAccountCategory(categories, input);
+
+      setCategories(updatedCategories);
+
+      try {
+        await updateCategoriesOrder(modifiedCategories, {
+          allUpdatedCategories: updatedCategories,
+        });
+        setSelectedAccountId(newAccount.id);
+        toast.success(`Created "${newAccount.name}"`);
+        void loadBaseData(undefined, true);
+        setRefreshKey((k) => k + 1);
+      } catch (err) {
+        setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to create debt account");
+        throw err;
+      }
+    },
+    [categories, loadBaseData],
+  );
+
+  const handleCreateClearingTransaction = useCallback(
+    async (tx: ExternalProviderTransaction) => {
+      await createTransaction(tx);
+      void loadBaseData(undefined, true);
+      setRefreshKey((k) => k + 1);
+    },
+    [loadBaseData],
   );
 
   const handleUnarchiveAccount = useCallback(
@@ -256,9 +297,21 @@ export function FamilyBudgetDashboard() {
             lastTransactionByCategoryId={lastTransactionByCategoryId}
             selectedAccountId={selectedAccountId}
             onSelectAccount={setSelectedAccountId}
+            onOpenNewDebtDialog={() => setIsInitDebtDialogOpen(true)}
           />
         </div>
-        <div className="xl:col-span-7">
+        <div className="xl:col-span-7 flex flex-col gap-4">
+          {selectedAccount && isThrowawayDebtAccount(selectedAccount) && (
+            <DebtClearingPanel
+              debtAccount={selectedAccount}
+              allCategories={categories}
+              currencies={currencies}
+              defaultCurrency={defaultCurrency}
+              onClose={() => setSelectedAccountId(null)}
+              onCreateTransaction={handleCreateClearingTransaction}
+              onArchiveSettledAccount={handleArchiveAccount}
+            />
+          )}
           <RecentTransactionsCard
             key={refreshKey}
             defaultCurrency={defaultCurrency}
@@ -268,6 +321,14 @@ export function FamilyBudgetDashboard() {
           />
         </div>
       </div>
+
+      <DebtAccountInitDialog
+        open={isInitDebtDialogOpen}
+        onOpenChange={setIsInitDebtDialogOpen}
+        defaultCurrency={defaultCurrency}
+        currencies={currencies}
+        onSubmit={handleCreateDebtAccount}
+      />
     </div>
   );
 }

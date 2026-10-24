@@ -15,6 +15,8 @@ import {
   GripVertical,
   Landmark,
   MoreHorizontal,
+  Plus,
+  Scale,
   Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -49,6 +51,7 @@ import {
   filterAndClassifyAccounts,
   findAccountsBelowArchived,
   formatMoney,
+  isThrowawayDebtAccount,
   type LastTransactionSummary,
   moveAccountsAboveArchived,
   unarchiveAccountCategory,
@@ -70,6 +73,8 @@ interface AccountsCardProps {
   currencies?: ExternalProviderCurrency[];
   selectedAccountId?: string | null;
   onSelectAccount?: (accountId: string | null) => void;
+  onOpenNewDebtDialog?: () => void;
+  onOpenClearingLedger?: (accountId: string) => void;
 }
 
 export function AccountsCard({
@@ -86,6 +91,8 @@ export function AccountsCard({
   currencies = [],
   selectedAccountId = null,
   onSelectAccount,
+  onOpenNewDebtDialog,
+  onOpenClearingLedger,
 }: AccountsCardProps) {
   const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -290,7 +297,19 @@ export function AccountsCard({
         description="Active accounts, cards, and liquid balances"
         action={
           !isLoading && !error && classifiedAccounts.length > 0 ? (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              {onOpenNewDebtDialog && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={onOpenNewDebtDialog}
+                  className="h-6 gap-1 px-2 text-[11px]"
+                >
+                  <Plus className="size-3" />
+                  <span>New Debt</span>
+                </Button>
+              )}
               {(hiddenArchivedCount > 0 || showArchived) && (
                 <Button
                   type="button"
@@ -369,6 +388,9 @@ export function AccountsCard({
                     onSelectAccount
                       ? () => onSelectAccount(selectedAccountId === account.id ? null : account.id)
                       : undefined
+                  }
+                  onOpenClearingLedger={
+                    onOpenClearingLedger ?? (onSelectAccount ? (accId) => onSelectAccount(accId) : undefined)
                   }
                   onRequestArchive={(acc, bal, curr) =>
                     setAccountToArchive({ account: acc, balance: bal, currency: curr })
@@ -467,6 +489,7 @@ interface SortableAccountRowProps {
   onRequestArchive?: (account: ExternalProviderCategory, balance: number, currency: string) => void;
   onUnarchive?: (accountId: string) => void;
   onMoveAboveArchived?: (accountId: string) => void;
+  onOpenClearingLedger?: (accountId: string) => void;
 }
 
 function SortableAccountRow({
@@ -486,6 +509,7 @@ function SortableAccountRow({
   onRequestArchive,
   onUnarchive,
   onMoveAboveArchived,
+  onOpenClearingLedger,
 }: SortableAccountRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -574,6 +598,15 @@ function SortableAccountRow({
               {getCategoryTypeName(typeNum)}
             </Badge>
 
+            {isThrowawayDebtAccount(account) && (
+              <Badge
+                variant="outline"
+                className="border-purple-500/30 bg-purple-500/10 text-purple-600 dark:text-purple-400 px-1.5 py-0 text-[10px] font-normal"
+              >
+                Clearing
+              </Badge>
+            )}
+
             {lastTx && (
               <span className="relative z-10">
                 <LastTransactionBadge summary={lastTx} />
@@ -588,7 +621,7 @@ function SortableAccountRow({
           {formatMoney(balance, currency)}
         </span>
 
-        {Boolean(onRequestArchive ?? onUnarchive ?? onMoveAboveArchived) && (
+        {Boolean(onRequestArchive ?? onUnarchive ?? onMoveAboveArchived ?? onOpenClearingLedger) && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -604,6 +637,12 @@ function SortableAccountRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
+              {isThrowawayDebtAccount(account) && onOpenClearingLedger && (
+                <DropdownMenuItem onClick={() => onOpenClearingLedger(account.id)}>
+                  <Scale className="size-4 text-purple-500" />
+                  <span>Open Clearing Ledger</span>
+                </DropdownMenuItem>
+              )}
               {!isArchived && isBelowArchived && onMoveAboveArchived && (
                 <DropdownMenuItem onClick={() => onMoveAboveArchived(account.id)}>
                   <ArrowUpToLine className="size-4" />

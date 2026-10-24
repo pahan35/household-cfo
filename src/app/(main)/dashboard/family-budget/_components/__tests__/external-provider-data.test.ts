@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   archiveAccountCategory,
+  buildFeeTransaction,
+  buildFxReconciliationTransaction,
   buildLastTransactionMap,
+  buildNewDebtAccountCategory,
+  buildPrincipalOutflowTransaction,
+  buildSettlementTransaction,
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
@@ -12,12 +17,15 @@ import {
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
   findAccountsBelowArchived,
+  formatThrowawayDebtAccountName,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
+  isThrowawayDebtAccount,
   moveAccountsAboveArchived,
   reorderCategoriesSubset,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
+  toDotNetTicks,
   unarchiveAccountCategory,
 } from "../external-provider-data";
 
@@ -534,5 +542,357 @@ describe("moveAccountsAboveArchived", () => {
     const result = moveAccountsAboveArchived(categories, ["acc-1"]);
     expect(result.modifiedCategories).toEqual([]);
     expect(result.updatedCategories).toEqual(categories);
+  });
+});
+
+describe("formatThrowawayDebtAccountName", () => {
+  it("formats bare names into 'Debt: <Name>'", () => {
+    expect(formatThrowawayDebtAccountName("Alex")).toBe("Debt: Alex");
+    expect(formatThrowawayDebtAccountName("Laptop Deal")).toBe("Debt: Laptop Deal");
+  });
+
+  it("normalizes names that already contain 'Debt:' or leading underscores", () => {
+    expect(formatThrowawayDebtAccountName("Debt: Alex")).toBe("Debt: Alex");
+    expect(formatThrowawayDebtAccountName("debt: Alex")).toBe("Debt: Alex");
+    expect(formatThrowawayDebtAccountName("_Debt: Alex")).toBe("Debt: Alex");
+    expect(formatThrowawayDebtAccountName("___debt:  Alex  ")).toBe("Debt: Alex");
+    expect(formatThrowawayDebtAccountName("_Alex")).toBe("Debt: Alex");
+  });
+
+  it("falls back to 'Debt: Deal' if input is empty or whitespace", () => {
+    expect(formatThrowawayDebtAccountName("")).toBe("Debt: Deal");
+    expect(formatThrowawayDebtAccountName("   ")).toBe("Debt: Deal");
+  });
+});
+
+describe("isThrowawayDebtAccount", () => {
+  it("identifies active and archived debt accounts", () => {
+    expect(
+      isThrowawayDebtAccount({
+        id: "1",
+        name: "Debt: Alex",
+        categoryType: CategoryType.Account,
+      }),
+    ).toBe(true);
+
+    expect(
+      isThrowawayDebtAccount({
+        id: "2",
+        name: "_Debt: Alex",
+        categoryType: CategoryType.Account,
+      }),
+    ).toBe(true);
+
+    expect(
+      isThrowawayDebtAccount({
+        id: "3",
+        name: "_debt: Laptop Deal",
+        categoryType: CategoryType.BankAccount,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for non-debt accounts or non-account categories", () => {
+    expect(
+      isThrowawayDebtAccount({
+        id: "4",
+        name: "Main Card",
+        categoryType: CategoryType.BankAccount,
+      }),
+    ).toBe(false);
+
+    expect(
+      isThrowawayDebtAccount({
+        id: "5",
+        name: "Debt: Alex",
+        categoryType: CategoryType.Expense, // expense category, not account
+      }),
+    ).toBe(false);
+
+    expect(
+      isThrowawayDebtAccount({
+        id: "6",
+        name: "Debt: Alex",
+        categoryType: CategoryType.Account,
+        deleted: true,
+      }),
+    ).toBe(false);
+
+    expect(isThrowawayDebtAccount(null)).toBe(false);
+  });
+});
+
+describe("toDotNetTicks", () => {
+  it("converts Date to .NET DateTime ticks formula", () => {
+    // 1970-01-01T00:00:00.000Z is 0 ms epoch
+    const epoch = new Date("1970-01-01T00:00:00.000Z");
+    expect(toDotNetTicks(epoch)).toBe(621355968000000000);
+
+    // 1 ms later
+    const plus1ms = new Date(1);
+    expect(toDotNetTicks(plus1ms)).toBe(621355968000010000);
+  });
+});
+
+describe("buildNewDebtAccountCategory", () => {
+  it("creates account named 'Debt: <Name>' inserted immediately before the first archived account", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "Savings", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "_ArchivedOld", categoryType: CategoryType.Account, order: 2 },
+    ];
+
+    const result = buildNewDebtAccountCategory(categories, {
+      name: "Alex",
+      currencyId: "USD",
+      id: "debt-alex-1",
+    });
+
+    expect(result.newAccount.name).toBe("Debt: Alex");
+    expect(result.newAccount.categoryType).toBe(CategoryType.Account);
+    expect(result.newAccount.currencyId).toBe("USD");
+    expect(result.newAccount.amount).toBe(0);
+    expect(result.newAccount.order).toBe(2);
+
+    expect(result.updatedCategories.map((c) => ({ name: c.name, order: c.order }))).toEqual([
+      { name: "Checking", order: 0 },
+      { name: "Savings", order: 1 },
+      { name: "Debt: Alex", order: 2 },
+      { name: "_ArchivedOld", order: 3 },
+    ]);
+
+    expect(result.modifiedCategories.map((c) => c.name)).toContain("Debt: Alex");
+    expect(result.modifiedCategories.map((c) => c.name)).toContain("_ArchivedOld");
+  });
+
+  it("normalizes prefixed user input and respects exceptFromBalance option", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Cash", categoryType: CategoryType.Account, order: 0 },
+    ];
+
+    const result = buildNewDebtAccountCategory(categories, {
+      name: "  _Debt: Laptop Deal  ",
+      currencyId: "EUR",
+      exceptFromBalance: true,
+      id: "debt-deal-2",
+    });
+
+    expect(result.newAccount.name).toBe("Debt: Laptop Deal");
+    expect(result.newAccount.exceptFromBalance).toBe(true);
+    expect(result.newAccount.order).toBe(1);
+    expect(result.updatedCategories.map((c) => c.name)).toEqual(["Cash", "Debt: Laptop Deal"]);
+  });
+});
+
+describe("archiveAccountCategory with exceptFromBalance", () => {
+  it("updates exceptFromBalance to true when specified in options", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Main", categoryType: CategoryType.Account, order: 0 },
+      { id: "debt-1", name: "Debt: Alex", categoryType: CategoryType.Account, order: 1, exceptFromBalance: false },
+    ];
+
+    const result = archiveAccountCategory(categories, "debt-1", { exceptFromBalance: true });
+    const archived = result.updatedCategories.find((c) => c.id === "debt-1");
+
+    expect(archived?.name).toBe("_Debt: Alex");
+    expect(archived?.exceptFromBalance).toBe(true);
+    expect(result.modifiedCategories.some((c) => c.id === "debt-1" && c.exceptFromBalance === true)).toBe(true);
+  });
+});
+
+describe("Clearing Transaction Builders", () => {
+  const sourceAccount: ExternalProviderCategory = {
+    id: "card-pln",
+    name: "PLN Card",
+    categoryType: CategoryType.BankAccount,
+    currencyId: "PLN",
+  };
+
+  const debtAccount: ExternalProviderCategory = {
+    id: "debt-alex",
+    name: "Debt: Alex",
+    categoryType: CategoryType.Account,
+    currencyId: "USD",
+  };
+
+  const feeCategory: ExternalProviderCategory = {
+    id: "cat-fees",
+    name: "Bank Fees",
+    categoryType: CategoryType.Expense,
+    currencyId: "PLN",
+  };
+
+  const expenseCategory: ExternalProviderCategory = {
+    id: "cat-taxi",
+    name: "Taxi / Delivery",
+    categoryType: CategoryType.Expense,
+    currencyId: "PLN",
+  };
+
+  const familyAccount: ExternalProviderCategory = {
+    id: "acc-wife",
+    name: "Wife Card",
+    categoryType: CategoryType.BankAccount,
+    currencyId: "UAH",
+  };
+
+  describe("buildPrincipalOutflowTransaction", () => {
+    it("builds a transfer from personal account to debt account with cross-currency amounts", () => {
+      const fixedDate = new Date("2026-10-24T12:00:00.000Z");
+      const tx = buildPrincipalOutflowTransaction({
+        id: "tx-outflow-1",
+        date: fixedDate,
+        sourceAccount,
+        debtAccount,
+        sourceAmount: 1000,
+        destinationAmount: 250,
+        comment: "Monitor purchase",
+      });
+
+      expect(tx.id).toBe("tx-outflow-1");
+      expect(tx.sourceId).toBe("card-pln");
+      expect(tx.sourceType).toBe(CategoryType.BankAccount);
+      expect(tx.sourceAmount).toBe(1000);
+      expect(tx.sourceCurrencyId).toBe("PLN");
+      expect(tx.destinationId).toBe("debt-alex");
+      expect(tx.destinationType).toBe(CategoryType.Account);
+      expect(tx.destinationAmount).toBe(250);
+      expect(tx.destinationCurrencyId).toBe("USD");
+      expect(tx.comment).toBe("Monitor purchase");
+      expect(tx.dateTimestamp).toBe(toDotNetTicks(fixedDate));
+    });
+  });
+
+  describe("buildFeeTransaction", () => {
+    it("builds debtor-absorbed fee as transfer to debt account", () => {
+      const tx = buildFeeTransaction({
+        sourceAccount,
+        debtAccount,
+        absorbedBy: "debtor",
+        feeAmount: 120,
+        convertedFeeAmount: 30,
+        comment: "Wire fee (debtor)",
+      });
+
+      expect(tx.sourceId).toBe("card-pln");
+      expect(tx.destinationId).toBe("debt-alex");
+      expect(tx.destinationType).toBe(CategoryType.Account);
+      expect(tx.sourceAmount).toBe(120);
+      expect(tx.destinationAmount).toBe(30);
+      expect(tx.comment).toBe("Wire fee (debtor)");
+    });
+
+    it("builds user-absorbed fee as expense to fee expense category", () => {
+      const tx = buildFeeTransaction({
+        sourceAccount,
+        debtAccount,
+        feeExpenseCategory: feeCategory,
+        absorbedBy: "me",
+        feeAmount: 120,
+        comment: "Wire fee (absorbed by me)",
+      });
+
+      expect(tx.sourceId).toBe("card-pln");
+      expect(tx.destinationId).toBe("cat-fees");
+      expect(tx.destinationType).toBe(CategoryType.Expense);
+      expect(tx.sourceAmount).toBe(120);
+      expect(tx.destinationAmount).toBe(120);
+      expect(tx.comment).toBe("Wire fee (absorbed by me)");
+    });
+  });
+
+  describe("buildSettlementTransaction", () => {
+    it("builds Case A shared expense settlement from debt account to expense category", () => {
+      const tx = buildSettlementTransaction({
+        debtAccount,
+        destinationCategory: expenseCategory,
+        deductedDebtAmount: 20,
+        settledAmount: 80,
+        comment: "Taxi dinner share",
+      });
+
+      expect(tx.sourceId).toBe("debt-alex");
+      expect(tx.sourceType).toBe(CategoryType.Account);
+      expect(tx.sourceAmount).toBe(20);
+      expect(tx.destinationId).toBe("cat-taxi");
+      expect(tx.destinationType).toBe(CategoryType.Expense);
+      expect(tx.destinationAmount).toBe(80);
+      expect(tx.destinationCurrencyId).toBe("PLN");
+    });
+
+    it("builds Case C transfer settlement from debt account to family account", () => {
+      const tx = buildSettlementTransaction({
+        debtAccount,
+        destinationCategory: familyAccount,
+        deductedDebtAmount: 150,
+        settledAmount: 6200,
+        comment: "Repayment to wife card",
+      });
+
+      expect(tx.sourceId).toBe("debt-alex");
+      expect(tx.sourceAmount).toBe(150);
+      expect(tx.destinationId).toBe("acc-wife");
+      expect(tx.destinationType).toBe(CategoryType.BankAccount);
+      expect(tx.destinationAmount).toBe(6200);
+      expect(tx.destinationCurrencyId).toBe("UAH");
+    });
+  });
+
+  describe("buildFxReconciliationTransaction", () => {
+    it("returns null if balance is already 0", () => {
+      expect(
+        buildFxReconciliationTransaction({
+          debtAccount,
+          balance: 0,
+          reconciliationCategory: feeCategory,
+        }),
+      ).toBeNull();
+
+      expect(
+        buildFxReconciliationTransaction({
+          debtAccount,
+          balance: 0.002,
+          reconciliationCategory: feeCategory,
+        }),
+      ).toBeNull();
+    });
+
+    it("builds expense adjustment when balance > 0 (forgiven remainder / FX loss)", () => {
+      const tx = buildFxReconciliationTransaction({
+        debtAccount,
+        balance: 1.45,
+        reconciliationCategory: feeCategory,
+      });
+
+      expect(tx).not.toBeNull();
+      expect(tx?.sourceId).toBe("debt-alex");
+      expect(tx?.destinationId).toBe("cat-fees");
+      expect(tx?.sourceAmount).toBe(1.45);
+      expect(tx?.destinationAmount).toBe(1.45);
+      expect(tx?.destinationType).toBe(CategoryType.Expense);
+    });
+
+    it("builds income adjustment when balance < 0 (FX gain / overpayment)", () => {
+      const incomeCategory: ExternalProviderCategory = {
+        id: "cat-fx-gain",
+        name: "FX Gain",
+        categoryType: CategoryType.Income,
+        currencyId: "USD",
+      };
+
+      const tx = buildFxReconciliationTransaction({
+        debtAccount,
+        balance: -2.1,
+        reconciliationCategory: incomeCategory,
+      });
+
+      expect(tx).not.toBeNull();
+      expect(tx?.sourceId).toBe("cat-fx-gain");
+      expect(tx?.sourceType).toBe(CategoryType.Income);
+      expect(tx?.destinationId).toBe("debt-alex");
+      expect(tx?.destinationType).toBe(CategoryType.Account);
+      expect(tx?.sourceAmount).toBe(2.1);
+      expect(tx?.destinationAmount).toBe(2.1);
+    });
   });
 });

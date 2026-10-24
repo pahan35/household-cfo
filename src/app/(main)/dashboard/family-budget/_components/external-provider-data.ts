@@ -29,6 +29,31 @@ export function isAccountType(type: number | undefined | null): boolean {
   const t = Number(type);
   return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
 }
+
+/**
+ * Normalizes user input into standard "Debt: <Person/Deal>" format,
+ * removing any duplicate "Debt:" or leading "_" prefixes.
+ */
+export function formatThrowawayDebtAccountName(rawName: string): string {
+  const clean = rawName
+    .trim()
+    .replace(/^_+/, "")
+    .trim()
+    .replace(/^debt:\s*/i, "")
+    .trim();
+  return clean.length > 0 ? `Debt: ${clean}` : "Debt: Deal";
+}
+
+/**
+ * Returns true if the category is a non-deleted account-type category whose name
+ * starts with "Debt:" or "_Debt:" (case-insensitive after leading underscores).
+ */
+export function isThrowawayDebtAccount(category: ExternalProviderCategory | null | undefined): boolean {
+  if (!category || category.deleted) return false;
+  if (!isAccountType(category.categoryType)) return false;
+  const nameWithoutUnderscores = category.name.trim().replace(/^_+/, "").trim();
+  return /^debt:\s*/i.test(nameWithoutUnderscores);
+}
 export interface ExternalProviderSettings {
   language?: string;
   licenseType?: number;
@@ -388,7 +413,12 @@ function applyAccountGroupUpdates(
     const updatedCat: ExternalProviderCategory = { ...cat, order: idx };
     updatedGroupMap.set(cat.id, updatedCat);
 
-    if (!orig || orig.order !== idx || orig.name !== updatedCat.name) {
+    if (
+      !orig ||
+      orig.order !== idx ||
+      orig.name !== updatedCat.name ||
+      orig.exceptFromBalance !== updatedCat.exceptFromBalance
+    ) {
       modifiedCategories.push(updatedCat);
     }
   }
@@ -407,8 +437,86 @@ function applyAccountGroupUpdates(
 }
 
 /**
+ * Converts a JavaScript Date (or current time) to .NET DateTime ticks.
+ * Formula: ticks = date.getTime() * 10^4 + 621355968000000000
+ */
+export function toDotNetTicks(date: Date = new Date()): number {
+  return Number(BigInt(date.getTime()) * BigInt(10000) + BigInt("621355968000000000"));
+}
+
+export interface NewDebtAccountInput {
+  name: string;
+  currencyId: string;
+  exceptFromBalance?: boolean;
+  id?: string;
+  createdDate?: Date;
+}
+
+export interface BuildNewDebtAccountResult extends ReorderCategoriesResult {
+  newAccount: ExternalProviderCategory;
+}
+
+/**
+ * Creates a new ExternalProviderCategory entity of type CategoryType.Account (2) named "Debt: <Person/Deal>",
+ * places it immediately before the first archived ("_"-prefixed) account (or at the end of active accounts),
+ * and re-indexes sequential integer order values (0, 1, 2, ...).
+ * Returns the new category along with updatedCategories and modifiedCategories.
+ */
+export function buildNewDebtAccountCategory(
+  allCategories: ExternalProviderCategory[],
+  input: NewDebtAccountInput,
+): BuildNewDebtAccountResult {
+  const newAccount: ExternalProviderCategory = {
+    id:
+      input.id ??
+      (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `debt-${Date.now()}`),
+    name: formatThrowawayDebtAccountName(input.name),
+    currencyId: input.currencyId,
+    categoryType: CategoryType.Account,
+    amount: 0,
+    limitAmount: 0,
+    periodizedLimitAmount: 0,
+    deleted: false,
+    deletedWithTransactions: false,
+    goalClosed: false,
+    icon: "Miscellaneous",
+    parentUid: null,
+    exceptFromBalance: Boolean(input.exceptFromBalance),
+    createdTimestamp: toDotNetTicks(input.createdDate ?? new Date()),
+  };
+
+  const accounts = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isAccountType(c.categoryType)));
+
+  const firstArchivedIdx = accounts.findIndex((c) => isArchivedCategoryName(c.name));
+  const insertIdx = firstArchivedIdx === -1 ? accounts.length : firstArchivedIdx;
+
+  const newAccountGroup = [...accounts.slice(0, insertIdx), newAccount, ...accounts.slice(insertIdx)];
+
+  const baseCategoriesWithNew = [...allCategories, newAccount];
+  const reorderResult = applyAccountGroupUpdates(baseCategoriesWithNew, newAccountGroup);
+
+  const finalizedNewAccount = reorderResult.updatedCategories.find((c) => c.id === newAccount.id) ?? {
+    ...newAccount,
+    order: insertIdx,
+  };
+
+  const modifiedCategories = reorderResult.modifiedCategories.some((c) => c.id === newAccount.id)
+    ? reorderResult.modifiedCategories
+    : [finalizedNewAccount, ...reorderResult.modifiedCategories];
+
+  return {
+    newAccount: finalizedNewAccount,
+    updatedCategories: reorderResult.updatedCategories,
+    modifiedCategories,
+  };
+}
+
+/**
  * Archives an account category:
  * - Prefixes its name with "_"
+ * - Sets exceptFromBalance if specified in options
  * - Moves it to the end of the accounts group
  * - Re-indexes sequential integer orders (0, 1, 2, ...)
  * - Returns updated and modified categories
@@ -416,6 +524,7 @@ function applyAccountGroupUpdates(
 export function archiveAccountCategory(
   allCategories: ExternalProviderCategory[],
   accountId: string,
+  options?: { exceptFromBalance?: boolean },
 ): ReorderCategoriesResult {
   const target = allCategories.find((c) => c.id === accountId && !c.deleted && isAccountType(c.categoryType));
   if (!target) {
@@ -424,7 +533,11 @@ export function archiveAccountCategory(
 
   const cleanName = target.name.replace(/^_+/, "").trim();
   const newName = cleanName.length > 0 ? `_${cleanName}` : "_";
-  const updatedTarget: ExternalProviderCategory = { ...target, name: newName };
+  const updatedTarget: ExternalProviderCategory = {
+    ...target,
+    name: newName,
+    ...(options?.exceptFromBalance !== undefined ? { exceptFromBalance: options.exceptFromBalance } : {}),
+  };
 
   const accounts = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isAccountType(c.categoryType)));
 
@@ -432,6 +545,227 @@ export function archiveAccountCategory(
   const newGroup = [...remaining, updatedTarget];
 
   return applyAccountGroupUpdates(allCategories, newGroup);
+}
+
+export interface PrincipalOutflowParams {
+  id?: string;
+  date?: Date;
+  sourceAccount: ExternalProviderCategory;
+  debtAccount: ExternalProviderCategory;
+  sourceAmount: number;
+  destinationAmount: number;
+  comment?: string | null;
+  tags?: string[];
+}
+
+export function buildPrincipalOutflowTransaction(params: PrincipalOutflowParams): ExternalProviderTransaction {
+  const date = params.date ?? new Date();
+  const id =
+    params.id ??
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `tx-${Date.now()}`);
+
+  return {
+    id,
+    deleted: false,
+    dateTimestamp: toDotNetTicks(date),
+    dateTimestampISO: date.toISOString(),
+    sourceId: params.sourceAccount.id,
+    sourceType: params.sourceAccount.categoryType,
+    sourceAmount: Math.abs(params.sourceAmount),
+    sourceCurrencyId: params.sourceAccount.currencyId,
+    sourceName: params.sourceAccount.name,
+    destinationId: params.debtAccount.id,
+    destinationType: params.debtAccount.categoryType,
+    destinationAmount: Math.abs(params.destinationAmount),
+    destinationCurrencyId: params.debtAccount.currencyId,
+    destinationName: params.debtAccount.name,
+    comment: params.comment?.trim() || null,
+    tags: params.tags ?? [],
+  };
+}
+
+export interface FeeTransactionParams {
+  id?: string;
+  date?: Date;
+  sourceAccount: ExternalProviderCategory;
+  debtAccount: ExternalProviderCategory;
+  feeExpenseCategory?: ExternalProviderCategory;
+  absorbedBy: "debtor" | "me";
+  feeAmount: number;
+  convertedFeeAmount?: number;
+  comment?: string | null;
+  tags?: string[];
+}
+
+export function buildFeeTransaction(params: FeeTransactionParams): ExternalProviderTransaction {
+  const date = params.date ?? new Date();
+  const id =
+    params.id ??
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `tx-${Date.now()}`);
+
+  const feeAmount = Math.abs(params.feeAmount);
+  const convertedAmount = Math.abs(params.convertedFeeAmount ?? params.feeAmount);
+
+  if (params.absorbedBy === "debtor") {
+    // Transfer from payment account to debt account (increases debt balance)
+    return {
+      id,
+      deleted: false,
+      dateTimestamp: toDotNetTicks(date),
+      dateTimestampISO: date.toISOString(),
+      sourceId: params.sourceAccount.id,
+      sourceType: params.sourceAccount.categoryType,
+      sourceAmount: feeAmount,
+      sourceCurrencyId: params.sourceAccount.currencyId,
+      sourceName: params.sourceAccount.name,
+      destinationId: params.debtAccount.id,
+      destinationType: params.debtAccount.categoryType,
+      destinationAmount: convertedAmount,
+      destinationCurrencyId: params.debtAccount.currencyId,
+      destinationName: params.debtAccount.name,
+      comment: params.comment?.trim() || null,
+      tags: params.tags ?? [],
+    };
+  }
+
+  // Absorbed by user: Expense from payment account to feeExpenseCategory
+  const targetCategory = params.feeExpenseCategory;
+  return {
+    id,
+    deleted: false,
+    dateTimestamp: toDotNetTicks(date),
+    dateTimestampISO: date.toISOString(),
+    sourceId: params.sourceAccount.id,
+    sourceType: params.sourceAccount.categoryType,
+    sourceAmount: feeAmount,
+    sourceCurrencyId: params.sourceAccount.currencyId,
+    sourceName: params.sourceAccount.name,
+    destinationId: targetCategory?.id,
+    destinationType: targetCategory?.categoryType ?? CategoryType.Expense,
+    destinationAmount: convertedAmount,
+    destinationCurrencyId: targetCategory?.currencyId ?? params.sourceAccount.currencyId,
+    destinationName: targetCategory?.name ?? "Fees / Commissions",
+    comment: params.comment?.trim() || null,
+    tags: params.tags ?? [],
+  };
+}
+
+export interface SettlementTransactionParams {
+  id?: string;
+  date?: Date;
+  debtAccount: ExternalProviderCategory;
+  destinationCategory: ExternalProviderCategory;
+  deductedDebtAmount: number;
+  settledAmount: number;
+  comment?: string | null;
+  tags?: string[];
+}
+
+export function buildSettlementTransaction(params: SettlementTransactionParams): ExternalProviderTransaction {
+  const date = params.date ?? new Date();
+  const id =
+    params.id ??
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `tx-${Date.now()}`);
+
+  const deductedAmount = Math.abs(params.deductedDebtAmount);
+  const settledAmount = Math.abs(params.settledAmount);
+
+  return {
+    id,
+    deleted: false,
+    dateTimestamp: toDotNetTicks(date),
+    dateTimestampISO: date.toISOString(),
+    sourceId: params.debtAccount.id,
+    sourceType: params.debtAccount.categoryType,
+    sourceAmount: deductedAmount,
+    sourceCurrencyId: params.debtAccount.currencyId,
+    sourceName: params.debtAccount.name,
+    destinationId: params.destinationCategory.id,
+    destinationType: params.destinationCategory.categoryType,
+    destinationAmount: settledAmount,
+    destinationCurrencyId: params.destinationCategory.currencyId ?? params.debtAccount.currencyId,
+    destinationName: params.destinationCategory.name,
+    comment: params.comment?.trim() || null,
+    tags: params.tags ?? [],
+  };
+}
+
+export interface FxReconciliationParams {
+  id?: string;
+  date?: Date;
+  debtAccount: ExternalProviderCategory;
+  balance: number;
+  reconciliationCategory: ExternalProviderCategory;
+  convertedAmount?: number;
+  comment?: string | null;
+  tags?: string[];
+}
+
+export function buildFxReconciliationTransaction(params: FxReconciliationParams): ExternalProviderTransaction | null {
+  if (Math.abs(params.balance) < 0.005) {
+    return null;
+  }
+
+  const date = params.date ?? new Date();
+  const id =
+    params.id ??
+    (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `tx-${Date.now()}`);
+
+  if (params.balance > 0) {
+    // Forgiven remainder / FX loss: Expense from debt account to reconciliationCategory
+    const balanceAmount = Math.abs(params.balance);
+    const converted = Math.abs(params.convertedAmount ?? balanceAmount);
+
+    return {
+      id,
+      deleted: false,
+      dateTimestamp: toDotNetTicks(date),
+      dateTimestampISO: date.toISOString(),
+      sourceId: params.debtAccount.id,
+      sourceType: params.debtAccount.categoryType,
+      sourceAmount: balanceAmount,
+      sourceCurrencyId: params.debtAccount.currencyId,
+      sourceName: params.debtAccount.name,
+      destinationId: params.reconciliationCategory.id,
+      destinationType: params.reconciliationCategory.categoryType ?? CategoryType.Expense,
+      destinationAmount: converted,
+      destinationCurrencyId: params.reconciliationCategory.currencyId ?? params.debtAccount.currencyId,
+      destinationName: params.reconciliationCategory.name,
+      comment: params.comment?.trim() || "FX loss remainder reconciliation",
+      tags: params.tags ?? [],
+    };
+  }
+
+  // FX gain / overpayment: Income from reconciliationCategory to debt account
+  const gainAmount = Math.abs(params.balance);
+  const converted = Math.abs(params.convertedAmount ?? gainAmount);
+
+  return {
+    id,
+    deleted: false,
+    dateTimestamp: toDotNetTicks(date),
+    dateTimestampISO: date.toISOString(),
+    sourceId: params.reconciliationCategory.id,
+    sourceType: params.reconciliationCategory.categoryType ?? CategoryType.Income,
+    sourceAmount: converted,
+    sourceCurrencyId: params.reconciliationCategory.currencyId ?? params.debtAccount.currencyId,
+    sourceName: params.reconciliationCategory.name,
+    destinationId: params.debtAccount.id,
+    destinationType: params.debtAccount.categoryType,
+    destinationAmount: gainAmount,
+    destinationCurrencyId: params.debtAccount.currencyId,
+    destinationName: params.debtAccount.name,
+    comment: params.comment?.trim() || "FX gain remainder reconciliation",
+    tags: params.tags ?? [],
+  };
 }
 
 /**

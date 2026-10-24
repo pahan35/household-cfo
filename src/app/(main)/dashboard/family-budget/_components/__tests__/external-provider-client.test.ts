@@ -10,11 +10,12 @@ import {
 } from "@/server/external-provider/cache";
 
 import {
+  createTransaction,
   getExternalProviderClientCacheEntry,
   invalidateExternalProviderClientCache,
   updateCategoriesOrder,
 } from "../external-provider-client";
-import { CategoryType, type ExternalProviderCategory, ExchangeKey } from "../external-provider-data";
+import { CategoryType, type ExternalProviderCategory, type ExternalProviderTransaction, ExchangeKey } from "../external-provider-data";
 
 describe("Proxy Cache Invalidation (invalidateProxyCacheByPathPrefix)", () => {
   beforeEach(() => {
@@ -156,5 +157,87 @@ describe("Client updateCategoriesOrder", () => {
 
     const cached = getExternalProviderClientCacheEntry<ExternalProviderCategory[]>("categories");
     expect(cached).toBeUndefined();
+  });
+
+  it("createTransaction POSTs to /api/external-provider/api/transaction/create and invalidates client cache", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    let capturedHeaders: Headers | undefined;
+    let capturedBody: unknown = null;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = typeof input === "string" ? input : input.toString();
+      capturedMethod = init?.method ?? "GET";
+      capturedHeaders = new Headers(init?.headers);
+      capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+
+      return new Response(JSON.stringify({ isSuccess: true, data: { id: "tx-created-1" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    const txPayload: ExternalProviderTransaction = {
+      id: "tx-created-1",
+      sourceId: "src-1",
+      destinationId: "dest-1",
+      sourceAmount: 100,
+      destinationAmount: 100,
+    };
+
+    const result = await createTransaction(txPayload);
+
+    expect(result.isSuccess).toBe(true);
+    expect(capturedUrl).toBe("/api/external-provider/api/transaction/create");
+    expect(capturedMethod).toBe("POST");
+    expect(capturedHeaders?.get("cache-control")).toBe("no-cache");
+    expect(capturedBody).toEqual(txPayload);
+  });
+});
+
+describe("Transaction Write Proxy Invalidation", () => {
+  beforeEach(() => {
+    clearProxyCache();
+  });
+
+  afterEach(() => {
+    clearProxyCache();
+  });
+
+  it("invalidates /api/transaction, /Exchange/Ping, and /stat/ping upon transaction write", () => {
+    const dummyBody = new Uint8Array([1, 2, 3]);
+
+    setProxyCachedResponse("POST:/api/transaction/get::h1", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    setProxyCachedResponse("POST:/Exchange/Ping::h2", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    setProxyCachedResponse("GET:/stat/ping:?data=xyz:h3", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    setProxyCachedResponse("GET:/settings::h4", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    invalidateProxyCacheByPathPrefix("/api/transaction");
+    invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+    invalidateProxyCacheByPathPrefix("/stat/ping");
+
+    expect(getProxyCachedResponse("POST:/api/transaction/get::h1")).toBeUndefined();
+    expect(getProxyCachedResponse("POST:/Exchange/Ping::h2")).toBeUndefined();
+    expect(getProxyCachedResponse("GET:/stat/ping:?data=xyz:h3")).toBeUndefined();
+    expect(getProxyCachedResponse("GET:/settings::h4")).toBeDefined();
   });
 });
