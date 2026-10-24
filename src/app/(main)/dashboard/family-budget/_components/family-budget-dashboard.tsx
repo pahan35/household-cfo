@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "cn";
 import { RotateCw } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -18,13 +19,16 @@ import {
   updateCategoriesOrder,
 } from "./external-provider-client";
 import {
+  archiveAccountCategory,
   buildLastTransactionMap,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
   computeAccountLiquiditySummary,
+  moveAccountsAboveArchived,
   reorderCategoriesSubset,
+  unarchiveAccountCategory,
 } from "./external-provider-data";
 import { RecentTransactionsCard } from "./recent-transactions-card";
 
@@ -122,6 +126,83 @@ export function FamilyBudgetDashboard() {
         });
       } catch (err) {
         setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to update category order");
+        throw err;
+      }
+    },
+    [categories],
+  );
+
+  const handleArchiveAccount = useCallback(
+    async (accountId: string) => {
+      const prevCategories = categories;
+      const target = categories.find((c) => c.id === accountId);
+      const { updatedCategories, modifiedCategories } = archiveAccountCategory(categories, accountId);
+
+      if (modifiedCategories.length === 0) return;
+
+      setCategories(updatedCategories);
+
+      try {
+        await updateCategoriesOrder(modifiedCategories, {
+          allUpdatedCategories: updatedCategories,
+        });
+        toast.success(`Archived "${target?.name ?? "account"}"`);
+      } catch (err) {
+        setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to archive account");
+        throw err;
+      }
+    },
+    [categories],
+  );
+
+  const handleUnarchiveAccount = useCallback(
+    async (accountId: string) => {
+      const prevCategories = categories;
+      const target = categories.find((c) => c.id === accountId);
+      const { updatedCategories, modifiedCategories } = unarchiveAccountCategory(categories, accountId);
+
+      if (modifiedCategories.length === 0) return;
+
+      setCategories(updatedCategories);
+
+      try {
+        await updateCategoriesOrder(modifiedCategories, {
+          allUpdatedCategories: updatedCategories,
+        });
+        const unarchivedName = target?.name.replace(/^_+/, "").trim() || "account";
+        toast.success(`Unarchived "${unarchivedName}"`);
+      } catch (err) {
+        setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to unarchive account");
+        throw err;
+      }
+    },
+    [categories],
+  );
+
+  const handleMoveAccountsAboveArchived = useCallback(
+    async (accountIds?: string[]) => {
+      const prevCategories = categories;
+      const { updatedCategories, modifiedCategories } = moveAccountsAboveArchived(categories, accountIds);
+
+      if (modifiedCategories.length === 0) return;
+
+      setCategories(updatedCategories);
+
+      try {
+        await updateCategoriesOrder(modifiedCategories, {
+          allUpdatedCategories: updatedCategories,
+        });
+        toast.success(
+          accountIds && accountIds.length === 1
+            ? "Account moved above archived"
+            : "Moved active accounts above archived",
+        );
+      } catch (err) {
+        setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to reposition accounts");
         throw err;
       }
     },
@@ -169,6 +250,9 @@ export function FamilyBudgetDashboard() {
             error={baseDataError}
             onRetry={() => void loadBaseData(undefined, true)}
             onReorderCategories={handleReorderCategories}
+            onArchiveAccount={handleArchiveAccount}
+            onUnarchiveAccount={handleUnarchiveAccount}
+            onMoveAccountsAboveArchived={handleMoveAccountsAboveArchived}
             lastTransactionByCategoryId={lastTransactionByCategoryId}
             selectedAccountId={selectedAccountId}
             onSelectAccount={setSelectedAccountId}

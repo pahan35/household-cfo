@@ -6,21 +6,52 @@ import { RestrictToVerticalAxis } from "@dnd-kit/abstract/modifiers";
 import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { cn } from "cn";
-import { AlertTriangle, Archive, CreditCard, GripVertical, Landmark, Wallet } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  ArchiveRestore,
+  ArrowUpToLine,
+  CreditCard,
+  GripVertical,
+  Landmark,
+  MoreHorizontal,
+  Wallet,
+} from "lucide-react";
+import { toast } from "sonner";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
-import { getCategories } from "./external-provider-client";
+import { getCategories, updateCategoriesOrder } from "./external-provider-client";
 import {
+  archiveAccountCategory,
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   computeAccountLiquiditySummary,
   filterAndClassifyAccounts,
+  findAccountsBelowArchived,
   formatMoney,
   type LastTransactionSummary,
+  moveAccountsAboveArchived,
+  unarchiveAccountCategory,
 } from "./external-provider-data";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
@@ -32,6 +63,9 @@ interface AccountsCardProps {
   error?: Error | null;
   onRetry?: () => void;
   onReorderCategories?: (reorderedVisibleIds: string[]) => Promise<void>;
+  onArchiveAccount?: (accountId: string) => Promise<void>;
+  onUnarchiveAccount?: (accountId: string) => Promise<void>;
+  onMoveAccountsAboveArchived?: (accountIds?: string[]) => Promise<void>;
   lastTransactionByCategoryId?: Map<string, LastTransactionSummary>;
   currencies?: ExternalProviderCurrency[];
   selectedAccountId?: string | null;
@@ -45,6 +79,9 @@ export function AccountsCard({
   error: controlledError,
   onRetry: controlledOnRetry,
   onReorderCategories,
+  onArchiveAccount,
+  onUnarchiveAccount,
+  onMoveAccountsAboveArchived,
   lastTransactionByCategoryId,
   currencies = [],
   selectedAccountId = null,
@@ -54,6 +91,12 @@ export function AccountsCard({
   const [internalIsLoading, setInternalIsLoading] = useState(true);
   const [internalError, setInternalError] = useState<Error | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [accountToArchive, setAccountToArchive] = useState<{
+    account: ExternalProviderCategory;
+    balance: number;
+    currency: string;
+  } | null>(null);
+  const [isMutating, setIsMutating] = useState(false);
 
   const isControlled = controlledCategories !== undefined;
   const categories = isControlled ? controlledCategories : internalCategories;
@@ -116,6 +159,114 @@ export function AccountsCard({
     }).length;
   }, [categories]);
 
+  const accountsBelowArchived = useMemo(() => {
+    return findAccountsBelowArchived(categories);
+  }, [categories]);
+
+  const accountsBelowArchivedIdSet = useMemo(() => {
+    return new Set(accountsBelowArchived.map((c) => c.id));
+  }, [accountsBelowArchived]);
+
+  const handleArchive = useCallback(
+    async (accountId: string) => {
+      if (onArchiveAccount) {
+        setIsMutating(true);
+        try {
+          await onArchiveAccount(accountId);
+        } finally {
+          setIsMutating(false);
+        }
+        return;
+      }
+
+      const prev = categories;
+      const target = categories.find((c) => c.id === accountId);
+      const { updatedCategories, modifiedCategories } = archiveAccountCategory(categories, accountId);
+      if (modifiedCategories.length === 0) return;
+
+      setInternalCategories(updatedCategories);
+      setIsMutating(true);
+      try {
+        await updateCategoriesOrder(modifiedCategories, { allUpdatedCategories: updatedCategories });
+        toast.success(`Archived "${target?.name ?? "account"}"`);
+      } catch (err) {
+        setInternalCategories(prev);
+        toast.error(err instanceof Error ? err.message : "Failed to archive account");
+      } finally {
+        setIsMutating(false);
+      }
+    },
+    [categories, onArchiveAccount],
+  );
+
+  const handleUnarchive = useCallback(
+    async (accountId: string) => {
+      if (onUnarchiveAccount) {
+        setIsMutating(true);
+        try {
+          await onUnarchiveAccount(accountId);
+        } finally {
+          setIsMutating(false);
+        }
+        return;
+      }
+
+      const prev = categories;
+      const target = categories.find((c) => c.id === accountId);
+      const { updatedCategories, modifiedCategories } = unarchiveAccountCategory(categories, accountId);
+      if (modifiedCategories.length === 0) return;
+
+      setInternalCategories(updatedCategories);
+      setIsMutating(true);
+      try {
+        await updateCategoriesOrder(modifiedCategories, { allUpdatedCategories: updatedCategories });
+        const cleanName = target?.name.replace(/^_+/, "").trim() || "account";
+        toast.success(`Unarchived "${cleanName}"`);
+      } catch (err) {
+        setInternalCategories(prev);
+        toast.error(err instanceof Error ? err.message : "Failed to unarchive account");
+      } finally {
+        setIsMutating(false);
+      }
+    },
+    [categories, onUnarchiveAccount],
+  );
+
+  const handleMoveAboveArchived = useCallback(
+    async (accountIds?: string[]) => {
+      if (onMoveAccountsAboveArchived) {
+        setIsMutating(true);
+        try {
+          await onMoveAccountsAboveArchived(accountIds);
+        } finally {
+          setIsMutating(false);
+        }
+        return;
+      }
+
+      const prev = categories;
+      const { updatedCategories, modifiedCategories } = moveAccountsAboveArchived(categories, accountIds);
+      if (modifiedCategories.length === 0) return;
+
+      setInternalCategories(updatedCategories);
+      setIsMutating(true);
+      try {
+        await updateCategoriesOrder(modifiedCategories, { allUpdatedCategories: updatedCategories });
+        toast.success(
+          accountIds && accountIds.length === 1
+            ? "Account moved above archived"
+            : "Moved active accounts above archived",
+        );
+      } catch (err) {
+        setInternalCategories(prev);
+        toast.error(err instanceof Error ? err.message : "Failed to reposition accounts");
+      } finally {
+        setIsMutating(false);
+      }
+    },
+    [categories, onMoveAccountsAboveArchived],
+  );
+
   function handleDragEnd(event: DragEndEvent) {
     const { source } = event.operation;
 
@@ -168,6 +319,32 @@ export function AccountsCard({
         emptyIcon={<Wallet className="text-muted-foreground size-6" />}
         skeletonCount={4}
       >
+        {accountsBelowArchived.length > 0 && !isLoading && !error && (
+          <div className="border-amber-500/20 bg-amber-500/10 mb-2 flex items-center justify-between rounded-lg border px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+              <span className="text-foreground">
+                <span className="font-medium">
+                  {accountsBelowArchived.length === 1
+                    ? "1 active account is positioned below archived accounts"
+                    : `${accountsBelowArchived.length} active accounts are positioned below archived accounts`}
+                </span>
+              </span>
+            </div>
+            <Button
+              type="button"
+              size="xs"
+              variant="outline"
+              onClick={() => void handleMoveAboveArchived()}
+              disabled={isMutating}
+              className="border-amber-500/30 hover:bg-amber-500/15 h-7 gap-1.5 text-xs font-medium"
+            >
+              <ArrowUpToLine className="size-3.5" />
+              <span>Move above archived</span>
+            </Button>
+          </div>
+        )}
+
         <DragDropProvider onDragEnd={handleDragEnd}>
           <div className="flex flex-col gap-0.5">
             {classifiedAccounts.map(({ account, isArchived, hasUnreconciledBalance, balance }, index) => {
@@ -183,19 +360,67 @@ export function AccountsCard({
                   currency={account.currencyId || currency}
                   isArchived={isArchived}
                   hasUnreconciledBalance={hasUnreconciledBalance}
+                  isBelowArchived={accountsBelowArchivedIdSet.has(account.id)}
                   lastTx={lastTx}
                   canReorder={Boolean(onReorderCategories)}
                   isSelected={selectedAccountId === account.id}
+                  disabled={isMutating}
                   onSelect={
                     onSelectAccount
                       ? () => onSelectAccount(selectedAccountId === account.id ? null : account.id)
                       : undefined
                   }
+                  onRequestArchive={(acc, bal, curr) =>
+                    setAccountToArchive({ account: acc, balance: bal, currency: curr })
+                  }
+                  onUnarchive={(id) => void handleUnarchive(id)}
+                  onMoveAboveArchived={(id) => void handleMoveAboveArchived([id])}
                 />
               );
             })}
           </div>
         </DragDropProvider>
+
+        <AlertDialog open={accountToArchive !== null} onOpenChange={(open) => !open && setAccountToArchive(null)}>
+          <AlertDialogContent size="sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Archive &quot;{accountToArchive?.account.name}&quot;?</AlertDialogTitle>
+              <AlertDialogDescription asChild>
+                <div className="text-muted-foreground flex flex-col gap-2 text-xs">
+                  <p>
+                    This account will be renamed to &quot;_{accountToArchive?.account.name.replace(/^_+/, "").trim()}
+                    &quot; and moved to the end of your accounts list.
+                  </p>
+                  {accountToArchive && Math.abs(accountToArchive.balance) >= 0.005 && (
+                    <div className="border-amber-500/20 bg-amber-500/10 text-amber-800 dark:text-amber-300 mt-1 flex items-start gap-2 rounded-md border p-2.5">
+                      <AlertTriangle className="size-4 shrink-0 text-amber-500 mt-0.5" />
+                      <div>
+                        <span className="font-semibold">Unreconciled Balance Warning:</span> This account has a non-zero
+                        balance ({formatMoney(accountToArchive.balance, accountToArchive.currency)}). In ExternalProvider,
+                        archived accounts with non-zero balances remain visible with a reconciliation warning.
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isMutating}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={isMutating}
+                onClick={() => {
+                  if (accountToArchive) {
+                    const id = accountToArchive.account.id;
+                    setAccountToArchive(null);
+                    void handleArchive(id);
+                  }
+                }}
+              >
+                Archive account
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SectionShell>
     </TooltipProvider>
   );
@@ -233,10 +458,15 @@ interface SortableAccountRowProps {
   currency: string;
   isArchived: boolean;
   hasUnreconciledBalance: boolean;
+  isBelowArchived: boolean;
   lastTx?: LastTransactionSummary | null;
   canReorder: boolean;
   isSelected?: boolean;
+  disabled?: boolean;
   onSelect?: () => void;
+  onRequestArchive?: (account: ExternalProviderCategory, balance: number, currency: string) => void;
+  onUnarchive?: (accountId: string) => void;
+  onMoveAboveArchived?: (accountId: string) => void;
 }
 
 function SortableAccountRow({
@@ -247,10 +477,15 @@ function SortableAccountRow({
   currency,
   isArchived,
   hasUnreconciledBalance,
+  isBelowArchived,
   lastTx,
   canReorder,
   isSelected = false,
+  disabled = false,
   onSelect,
+  onRequestArchive,
+  onUnarchive,
+  onMoveAboveArchived,
 }: SortableAccountRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -259,7 +494,7 @@ function SortableAccountRow({
     accept: "account-row",
     group: "accounts",
     modifiers: [RestrictToVerticalAxis],
-    disabled: !canReorder,
+    disabled: !canReorder || disabled,
   });
 
   const typeNum = Number(account.categoryType);
@@ -281,6 +516,7 @@ function SortableAccountRow({
             type="button"
             variant="ghost"
             size="icon-xs"
+            disabled={disabled}
             className="text-muted-foreground/40 hover:text-foreground relative z-10 -ml-1 cursor-grab opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 active:cursor-grabbing"
             aria-label={`Reorder ${account.name}`}
           >
@@ -347,10 +583,48 @@ function SortableAccountRow({
         </div>
       </div>
 
-      <div className="shrink-0 pl-3 text-right">
+      <div className="flex shrink-0 items-center gap-1.5 pl-3">
         <span className={balance < 0 ? "text-destructive text-sm font-medium" : "text-foreground text-sm font-medium"}>
           {formatMoney(balance, currency)}
         </span>
+
+        {Boolean(onRequestArchive ?? onUnarchive ?? onMoveAboveArchived) && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                disabled={disabled}
+                onClick={(e) => e.stopPropagation()}
+                className="text-muted-foreground/60 hover:text-foreground relative z-10 size-7"
+                aria-label={`Actions for ${account.name}`}
+              >
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              {!isArchived && isBelowArchived && onMoveAboveArchived && (
+                <DropdownMenuItem onClick={() => onMoveAboveArchived(account.id)}>
+                  <ArrowUpToLine className="size-4" />
+                  <span>Move above archived</span>
+                </DropdownMenuItem>
+              )}
+              {!isArchived && onRequestArchive && (
+                <DropdownMenuItem onClick={() => onRequestArchive(account, balance, currency)}>
+                  <Archive className="size-4" />
+                  <span>Archive account</span>
+                </DropdownMenuItem>
+              )}
+              {isArchived && onUnarchive && (
+                <DropdownMenuItem onClick={() => onUnarchive(account.id)}>
+                  <ArchiveRestore className="size-4" />
+                  <span>Unarchive account</span>
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </div>
   );

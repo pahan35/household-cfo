@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  archiveAccountCategory,
   buildLastTransactionMap,
   CategoryType,
   type ExternalProviderCategory,
@@ -10,11 +11,14 @@ import {
   convertCurrencyAmount,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
+  findAccountsBelowArchived,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
+  moveAccountsAboveArchived,
   reorderCategoriesSubset,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
+  unarchiveAccountCategory,
 } from "../external-provider-data";
 
 describe("sortCategoriesByOrder", () => {
@@ -328,5 +332,207 @@ describe("computeTransactionsWithRunningBalance", () => {
     expect(first.sourceBalanceAfter).toBe(70);
     expect(second.direction).toBe("income");
     expect(second.destinationBalanceAfter).toBe(100);
+  });
+});
+
+describe("archiveAccountCategory", () => {
+  it("prefixes name with '_' and moves to the end of accounts group with re-indexed orders", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "exp-1", name: "Groceries", categoryType: CategoryType.Expense, order: 0 },
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "Savings", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "_Old Account", categoryType: CategoryType.BankAccount, order: 2 },
+    ];
+
+    const result = archiveAccountCategory(categories, "acc-1");
+
+    // Accounts order should be: Checking moved to end -> [Savings (0), _Old Account (1), _Checking (2)]
+    const updatedAccounts = result.updatedCategories.filter((c) => c.categoryType === CategoryType.BankAccount);
+    expect(updatedAccounts.map((c) => c.name)).toEqual(["Savings", "_Old Account", "_Checking"]);
+    expect(updatedAccounts.map((c) => c.order)).toEqual([0, 1, 2]);
+
+    // Expense is preserved untouched
+    const exp = result.updatedCategories.find((c) => c.id === "exp-1");
+    expect(exp).toBeDefined();
+
+    // Modified categories should include all shifted/renamed accounts
+    expect(result.modifiedCategories.map((c) => c.id)).toEqual(["acc-2", "acc-3", "acc-1"]);
+    const archived = result.modifiedCategories.find((c) => c.id === "acc-1");
+    expect(archived?.name).toBe("_Checking");
+    expect(archived?.order).toBe(2);
+  });
+
+  it("handles accounts already prefixed with underscores gracefully", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "_AlreadyArchived", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "Active", categoryType: CategoryType.BankAccount, order: 1 },
+    ];
+
+    const result = archiveAccountCategory(categories, "acc-1");
+    const updated = result.updatedCategories.filter((c) => c.categoryType === CategoryType.BankAccount);
+    expect(updated.map((c) => c.name)).toEqual(["Active", "_AlreadyArchived"]);
+    expect(updated.map((c) => c.order)).toEqual([0, 1]);
+  });
+
+  it("returns unchanged categories when account is not found", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+    ];
+
+    const result = archiveAccountCategory(categories, "non-existent");
+    expect(result.modifiedCategories).toEqual([]);
+    expect(result.updatedCategories).toEqual(categories);
+  });
+});
+
+describe("unarchiveAccountCategory", () => {
+  it("strips leading '_' and places as the last non-archived account before first archived", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Active 1", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "Active 2", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "_Archived 1", categoryType: CategoryType.BankAccount, order: 2 },
+      { id: "acc-4", name: "_TargetArchived", categoryType: CategoryType.BankAccount, order: 3 },
+      { id: "acc-5", name: "_Archived 2", categoryType: CategoryType.BankAccount, order: 4 },
+    ];
+
+    const result = unarchiveAccountCategory(categories, "acc-4");
+
+    const updated = result.updatedCategories;
+    expect(updated.map((c) => c.name)).toEqual([
+      "Active 1",
+      "Active 2",
+      "TargetArchived",
+      "_Archived 1",
+      "_Archived 2",
+    ]);
+    expect(updated.map((c) => c.order)).toEqual([0, 1, 2, 3, 4]);
+
+    const target = result.modifiedCategories.find((c) => c.id === "acc-4");
+    expect(target?.name).toBe("TargetArchived");
+    expect(target?.order).toBe(2);
+  });
+
+  it("places at the end of accounts group when no other archived accounts exist", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Active 1", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_SoleArchived", categoryType: CategoryType.BankAccount, order: 1 },
+    ];
+
+    const result = unarchiveAccountCategory(categories, "acc-2");
+    const updated = result.updatedCategories;
+    expect(updated.map((c) => c.name)).toEqual(["Active 1", "SoleArchived"]);
+    expect(updated.map((c) => c.order)).toEqual([0, 1]);
+    expect(result.modifiedCategories.length).toBe(1);
+    expect(result.modifiedCategories[0].name).toBe("SoleArchived");
+  });
+
+  it("returns unchanged categories when target account is not found", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "_Archived", categoryType: CategoryType.BankAccount, order: 0 },
+    ];
+
+    const result = unarchiveAccountCategory(categories, "missing");
+    expect(result.modifiedCategories).toEqual([]);
+    expect(result.updatedCategories).toEqual(categories);
+  });
+});
+
+describe("findAccountsBelowArchived", () => {
+  it("identifies active accounts positioned below the first archived account", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_Archived1", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "Cash", categoryType: CategoryType.Account, order: 2 },
+      { id: "acc-4", name: "_Archived2", categoryType: CategoryType.BankAccount, order: 3 },
+      { id: "acc-5", name: "Revolut", categoryType: CategoryType.BankAccount, order: 4 },
+    ];
+
+    const below = findAccountsBelowArchived(categories);
+    expect(below.map((c) => c.id)).toEqual(["acc-3", "acc-5"]);
+  });
+
+  it("returns empty array when no archived accounts exist", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "Savings", categoryType: CategoryType.BankAccount, order: 1 },
+    ];
+
+    expect(findAccountsBelowArchived(categories)).toEqual([]);
+  });
+
+  it("returns empty array when all accounts after the first archived are also archived", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_Archived1", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "_Archived2", categoryType: CategoryType.BankAccount, order: 2 },
+    ];
+
+    expect(findAccountsBelowArchived(categories)).toEqual([]);
+  });
+});
+
+describe("moveAccountsAboveArchived", () => {
+  it("moves all misplaced active accounts above the first archived account preserving relative order in batch mode", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_Archived1", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "Cash", categoryType: CategoryType.Account, order: 2 },
+      { id: "acc-4", name: "_Archived2", categoryType: CategoryType.BankAccount, order: 3 },
+      { id: "acc-5", name: "Revolut", categoryType: CategoryType.BankAccount, order: 4 },
+    ];
+
+    const result = moveAccountsAboveArchived(categories);
+    expect(result.updatedCategories.map((c) => c.name)).toEqual([
+      "Checking",
+      "Cash",
+      "Revolut",
+      "_Archived1",
+      "_Archived2",
+    ]);
+    expect(result.updatedCategories.map((c) => c.order)).toEqual([0, 1, 2, 3, 4]);
+    expect(result.modifiedCategories.map((c) => c.name)).toEqual(["Cash", "Revolut", "_Archived1", "_Archived2"]);
+  });
+
+  it("moves a single specified account above the first archived account", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_Archived1", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "Cash", categoryType: CategoryType.Account, order: 2 },
+      { id: "acc-4", name: "_Archived2", categoryType: CategoryType.BankAccount, order: 3 },
+      { id: "acc-5", name: "Revolut", categoryType: CategoryType.BankAccount, order: 4 },
+    ];
+
+    const result = moveAccountsAboveArchived(categories, ["acc-5"]);
+    expect(result.updatedCategories.map((c) => c.name)).toEqual([
+      "Checking",
+      "Revolut",
+      "_Archived1",
+      "Cash",
+      "_Archived2",
+    ]);
+    expect(result.updatedCategories.map((c) => c.order)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("returns unchanged when no accounts are below archived", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_Archived1", categoryType: CategoryType.BankAccount, order: 1 },
+    ];
+
+    const result = moveAccountsAboveArchived(categories);
+    expect(result.modifiedCategories).toEqual([]);
+    expect(result.updatedCategories).toEqual(categories);
+  });
+
+  it("returns unchanged when specified accountIds are already above archived", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-1", name: "Checking", categoryType: CategoryType.BankAccount, order: 0 },
+      { id: "acc-2", name: "_Archived1", categoryType: CategoryType.BankAccount, order: 1 },
+      { id: "acc-3", name: "Cash", categoryType: CategoryType.Account, order: 2 },
+    ];
+
+    const result = moveAccountsAboveArchived(categories, ["acc-1"]);
+    expect(result.modifiedCategories).toEqual([]);
+    expect(result.updatedCategories).toEqual(categories);
   });
 });

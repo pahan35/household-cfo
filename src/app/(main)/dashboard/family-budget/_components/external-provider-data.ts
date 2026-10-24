@@ -25,6 +25,10 @@ export const CategoryType = {
 
 export type CategoryType = (typeof CategoryType)[keyof typeof CategoryType];
 
+export function isAccountType(type: number | undefined | null): boolean {
+  const t = Number(type);
+  return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
+}
 export interface ExternalProviderSettings {
   language?: string;
   licenseType?: number;
@@ -362,6 +366,156 @@ export function reorderCategoriesSubset(
   };
 }
 
+function applyAccountGroupUpdates(
+  allCategories: ExternalProviderCategory[],
+  newAccountGroup: ExternalProviderCategory[],
+): ReorderCategoriesResult {
+  const groupIndices: number[] = [];
+  for (let i = 0; i < allCategories.length; i++) {
+    const c = allCategories[i];
+    if (!c.deleted && isAccountType(c.categoryType)) {
+      groupIndices.push(i);
+    }
+  }
+
+  const originalMap = new Map(allCategories.map((c) => [c.id, c]));
+  const modifiedCategories: ExternalProviderCategory[] = [];
+  const updatedGroupMap = new Map<string, ExternalProviderCategory>();
+
+  for (let idx = 0; idx < newAccountGroup.length; idx++) {
+    const cat = newAccountGroup[idx];
+    const orig = originalMap.get(cat.id);
+    const updatedCat: ExternalProviderCategory = { ...cat, order: idx };
+    updatedGroupMap.set(cat.id, updatedCat);
+
+    if (!orig || orig.order !== idx || orig.name !== updatedCat.name) {
+      modifiedCategories.push(updatedCat);
+    }
+  }
+
+  const updatedCategories = [...allCategories];
+  for (let k = 0; k < groupIndices.length && k < newAccountGroup.length; k++) {
+    const cat = newAccountGroup[k];
+    const updated = updatedGroupMap.get(cat.id) ?? { ...cat, order: k };
+    updatedCategories[groupIndices[k]] = updated;
+  }
+
+  return {
+    updatedCategories,
+    modifiedCategories,
+  };
+}
+
+/**
+ * Archives an account category:
+ * - Prefixes its name with "_"
+ * - Moves it to the end of the accounts group
+ * - Re-indexes sequential integer orders (0, 1, 2, ...)
+ * - Returns updated and modified categories
+ */
+export function archiveAccountCategory(
+  allCategories: ExternalProviderCategory[],
+  accountId: string,
+): ReorderCategoriesResult {
+  const target = allCategories.find((c) => c.id === accountId && !c.deleted && isAccountType(c.categoryType));
+  if (!target) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const cleanName = target.name.replace(/^_+/, "").trim();
+  const newName = cleanName.length > 0 ? `_${cleanName}` : "_";
+  const updatedTarget: ExternalProviderCategory = { ...target, name: newName };
+
+  const accounts = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isAccountType(c.categoryType)));
+
+  const remaining = accounts.filter((c) => c.id !== accountId);
+  const newGroup = [...remaining, updatedTarget];
+
+  return applyAccountGroupUpdates(allCategories, newGroup);
+}
+
+/**
+ * Unarchives an account category:
+ * - Strips leading "_" prefix from name
+ * - Places it as the last non-archived account (immediately preceding the first archived account)
+ * - Re-indexes sequential integer orders (0, 1, 2, ...)
+ * - Returns updated and modified categories
+ */
+export function unarchiveAccountCategory(
+  allCategories: ExternalProviderCategory[],
+  accountId: string,
+): ReorderCategoriesResult {
+  const target = allCategories.find((c) => c.id === accountId && !c.deleted && isAccountType(c.categoryType));
+  if (!target) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const cleanName = target.name.replace(/^_+/, "").trim();
+  const newName = cleanName.length > 0 ? cleanName : target.name;
+  const updatedTarget: ExternalProviderCategory = { ...target, name: newName };
+
+  const accounts = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isAccountType(c.categoryType)));
+
+  const remaining = accounts.filter((c) => c.id !== accountId);
+  const firstArchivedIdx = remaining.findIndex((c) => isArchivedCategoryName(c.name));
+  const insertIdx = firstArchivedIdx === -1 ? remaining.length : firstArchivedIdx;
+
+  const newGroup = [...remaining.slice(0, insertIdx), updatedTarget, ...remaining.slice(insertIdx)];
+
+  return applyAccountGroupUpdates(allCategories, newGroup);
+}
+
+/**
+ * Finds all active (non-archived) accounts that are positioned below any archived account.
+ */
+export function findAccountsBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+  const accounts = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isAccountType(c.categoryType)));
+
+  const firstArchivedIdx = accounts.findIndex((c) => isArchivedCategoryName(c.name));
+  if (firstArchivedIdx === -1) {
+    return [];
+  }
+
+  return accounts.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+}
+
+/**
+ * Moves specified or all active accounts that are positioned below archived accounts
+ * to immediately preceding the first archived account, preserving their relative order.
+ */
+export function moveAccountsAboveArchived(
+  allCategories: ExternalProviderCategory[],
+  accountIds?: string[],
+): ReorderCategoriesResult {
+  const accounts = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isAccountType(c.categoryType)));
+
+  const firstArchivedIdx = accounts.findIndex((c) => isArchivedCategoryName(c.name));
+  if (firstArchivedIdx === -1) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const accountsBelow = accounts.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+  if (accountsBelow.length === 0) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const targetIdSet = accountIds ? new Set(accountIds) : null;
+  const toMove = targetIdSet ? accountsBelow.filter((c) => targetIdSet.has(c.id)) : accountsBelow;
+
+  if (toMove.length === 0) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const toMoveIdSet = new Set(toMove.map((c) => c.id));
+  const remaining = accounts.filter((c) => !toMoveIdSet.has(c.id));
+  const insertIdx = remaining.findIndex((c) => isArchivedCategoryName(c.name));
+  const targetInsertIdx = insertIdx === -1 ? remaining.length : insertIdx;
+
+  const newGroup = [...remaining.slice(0, targetInsertIdx), ...toMove, ...remaining.slice(targetInsertIdx)];
+
+  return applyAccountGroupUpdates(allCategories, newGroup);
+}
+
 export interface ClassifiedAccount {
   account: ExternalProviderCategory;
   isArchived: boolean;
@@ -638,11 +792,6 @@ export function convertCurrencyAmount(
 
 function firstNonEmpty(...values: (string | null | undefined)[]): string | undefined {
   return values.find((v): v is string => typeof v === "string" && v.length > 0);
-}
-
-function isAccountType(type: number | undefined | null): boolean {
-  const t = Number(type);
-  return t === CategoryType.Account || t === CategoryType.BankAccount || t === CategoryType.DebtAccount;
 }
 
 export interface AccountLiquiditySummary {

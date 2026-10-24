@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { cn } from "cn";
 import { endOfMonth, format, isValid, parseISO, startOfMonth, subMonths } from "date-fns";
 import { RotateCw, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -230,6 +231,7 @@ export function BudgetOverviewDashboard() {
         });
       } catch (err) {
         setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to update category order");
         throw err;
       }
     },
