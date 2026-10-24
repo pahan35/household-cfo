@@ -16,6 +16,7 @@ import {
   type LucideIcon,
   Mail,
   MessageSquare,
+  PiggyBank,
   ReceiptText,
   Server,
   ShoppingBag,
@@ -84,6 +85,12 @@ export const sidebarItems: NavGroup[] = [
         title: "Finance",
         url: "/dashboard/finance",
         icon: Banknote,
+      },
+      {
+        id: "family-budget",
+        title: "Family Budget",
+        url: "/dashboard/family-budget",
+        icon: PiggyBank,
       },
       {
         id: "analytics",
