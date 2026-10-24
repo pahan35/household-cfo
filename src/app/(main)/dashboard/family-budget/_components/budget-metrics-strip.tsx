@@ -16,6 +16,8 @@ interface BudgetMetricsStripProps {
   totalTaxDeductions: number;
   excludedExpenseSum: number;
   netCashFlowMargin: number;
+  availableControllablePool?: number;
+  controllableCashLeft?: number;
   currency: string;
   isLoading?: boolean;
   comparison?: PeriodComparisonResult | null;
@@ -59,6 +61,8 @@ export function BudgetMetricsStrip({
   totalTaxDeductions,
   excludedExpenseSum,
   netCashFlowMargin,
+  availableControllablePool,
+  controllableCashLeft,
   currency,
   isLoading = false,
   comparison = null,
@@ -75,6 +79,8 @@ export function BudgetMetricsStrip({
 
   const isMarginPositive = netCashFlowMargin >= 0;
   const savingsRate = netDisposableIncome > 0 ? Math.round((netCashFlowMargin / netDisposableIncome) * 100) : 0;
+  const availablePool = availableControllablePool ?? netDisposableIncome - excludedExpenseSum;
+  const cashLeft = controllableCashLeft ?? availablePool - totalControllableExpense;
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -135,10 +141,8 @@ export function BudgetMetricsStrip({
                 invertFavorable={true}
               />
             </div>
-            <span className="text-muted-foreground text-[11px]">
-              {excludedExpenseSum > 0
-                ? `Fixed omitted: -${formatMoney(excludedExpenseSum, currency)}`
-                : "All expenses included"}
+            <span className="text-muted-foreground text-[11px] tabular-nums">
+              Pool: {formatMoney(availablePool, currency)} • Left: {formatMoney(cashLeft, currency)}
             </span>
           </div>
           <div className="rounded-lg bg-amber-500/10 p-2 text-amber-500">

@@ -24,7 +24,8 @@ import { type ExternalProviderCategory, formatMoney, type StatCategoryPoint } fr
 import {
   assignChartColors,
   type ExpenseSlice,
-  groupSmallSlices,
+  groupSmartSlices,
+  isTaxiCategory,
   type PeriodComparisonResult,
   transformExpenses,
 } from "./expense-transforms";
@@ -160,10 +161,30 @@ export function ExpensePieCard({
     totalControllableExpense,
     totalTaxDeductions,
     excludedExpenseSum,
+    controllableCashLeft,
   } = transformed;
 
+  // Chart slices: smart group Transport & Taxi and group small slices (< 3%) into "Other"
+  const chartSlices = useMemo(() => {
+    const grouped = groupSmartSlices(controllableCategories, 3);
+    return assignChartColors(grouped);
+  }, [controllableCategories]);
+
+  const smartTransportGroup = useMemo(() => {
+    return chartSlices.find((s) => s.isSmartGroup);
+  }, [chartSlices]);
+
   const displayedCategories = useMemo(() => {
-    const items = [...controllableCategories];
+    let items: ExpenseSlice[];
+
+    if (smartTransportGroup && sortMode === "spend") {
+      const childIds = new Set(smartTransportGroup.children?.map((c) => c.id) ?? []);
+      const nonGrouped = controllableCategories.filter((c) => !childIds.has(c.id));
+      items = [...nonGrouped, smartTransportGroup].sort((a, b) => b.amount - a.amount);
+    } else {
+      items = [...controllableCategories];
+    }
+
     if (!comparison) return items;
 
     if (sortMode === "increase") {
@@ -183,13 +204,7 @@ export function ExpensePieCard({
     }
 
     return items;
-  }, [controllableCategories, comparison, sortMode]);
-
-  // Chart slices: group very small slices (< 3%) into "Other"
-  const chartSlices = useMemo(() => {
-    const grouped = groupSmallSlices(controllableCategories, 3);
-    return assignChartColors(grouped);
-  }, [controllableCategories]);
+  }, [controllableCategories, comparison, sortMode, smartTransportGroup]);
 
   // Construct chartConfig for shadcn ChartContainer
   const chartConfig = useMemo(() => {
@@ -210,7 +225,7 @@ export function ExpensePieCard({
 
   return (
     <SectionShell
-      title="Controllable Expenses Breakdown"
+      title="Expenses Breakdown"
       description={`Active preset: ${activePreset.name} • ${controllableCategories.length} categories`}
       action={
         <div className="flex flex-wrap items-center gap-3">
@@ -252,7 +267,7 @@ export function ExpensePieCard({
       error={error}
       onRetry={onRetry}
       isEmpty={controllableCategories.length === 0}
-      emptyTitle="No controllable expenses"
+      emptyTitle="No expenses"
       emptyDescription="No spending activity matching the active preset criteria was found for this period."
       emptyIcon={<PieChartIcon className="text-muted-foreground size-6" />}
       skeletonCount={3}
@@ -277,6 +292,19 @@ export function ExpensePieCard({
               Rent Excluded: {formatMoney(excludedExpenseSum, currency)}
             </Badge>
           )}
+
+          <Badge
+            variant="outline"
+            className={cn(
+              "text-[11px] font-medium tabular-nums",
+              controllableCashLeft >= 0
+                ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                : "border-destructive/20 bg-destructive/10 text-destructive",
+            )}
+          >
+            Cash Left: {controllableCashLeft >= 0 ? "+" : ""}
+            {formatMoney(controllableCashLeft, currency)}
+          </Badge>
         </div>
 
         {/* Donut chart + Legend container */}
@@ -305,7 +333,7 @@ export function ExpensePieCard({
                       return (
                         <text dominantBaseline="middle" textAnchor="middle" x={viewBox.cx} y={viewBox.cy}>
                           <tspan className="fill-muted-foreground text-xs" x={viewBox.cx} y={(viewBox.cy ?? 0) - 10}>
-                            Controllable
+                            Expenses
                           </tspan>
                           <tspan
                             className="fill-foreground text-base font-semibold tabular-nums"
@@ -380,36 +408,84 @@ export function ExpensePieCard({
               const catDelta = comparison?.categoryDeltaMap.get(cat.id);
 
               return (
-                <div
-                  key={cat.id}
-                  className="border-border/40 bg-muted/20 hover:bg-muted/40 flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors"
-                >
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="size-2 shrink-0 rounded-xs" style={{ backgroundColor: colorVar }} />
-                    <span className="truncate font-medium">{cat.name}</span>
-                    {cat.isOverrun && (
-                      <Badge variant="destructive" className="h-4 px-1 text-[9px] font-normal">
-                        Over
-                      </Badge>
-                    )}
+                <div key={cat.id} className="flex flex-col gap-1">
+                  <div className="border-border/40 bg-muted/20 hover:bg-muted/40 flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-xs transition-colors">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="size-2 shrink-0 rounded-xs" style={{ backgroundColor: colorVar }} />
+                      <span className="truncate font-medium">{cat.name}</span>
+                      {cat.isSmartGroup && (
+                        <Badge variant="secondary" className="h-4 px-1 text-[9px] font-normal">
+                          Group
+                        </Badge>
+                      )}
+                      {cat.isOverrun && (
+                        <Badge variant="destructive" className="h-4 px-1 text-[9px] font-normal">
+                          Over
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      {catDelta && catDelta.deltaAbs !== 0 && (
+                        <span
+                          className={cn(
+                            "text-[10px] tabular-nums font-medium",
+                            catDelta.deltaAbs > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400",
+                          )}
+                        >
+                          {formatCategoryDelta(catDelta, currency)}
+                        </span>
+                      )}
+                      <span className="font-semibold tabular-nums">{formatMoney(cat.amount, currency)}</span>
+                      <span className="text-muted-foreground w-10 text-right text-[11px] tabular-nums">
+                        {cat.percentage.toFixed(0)}%
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="flex shrink-0 items-center gap-2">
-                    {catDelta && catDelta.deltaAbs !== 0 && (
-                      <span
-                        className={cn(
-                          "text-[10px] tabular-nums font-medium",
-                          catDelta.deltaAbs > 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400",
-                        )}
-                      >
-                        {formatCategoryDelta(catDelta, currency)}
-                      </span>
-                    )}
-                    <span className="font-semibold tabular-nums">{formatMoney(cat.amount, currency)}</span>
-                    <span className="text-muted-foreground w-10 text-right text-[11px] tabular-nums">
-                      {cat.percentage.toFixed(0)}%
-                    </span>
-                  </div>
+                  {/* Render child sub-items for smart groups (Transport & Taxi breakdown) */}
+                  {cat.isSmartGroup && cat.children && cat.children.length > 0 && (
+                    <div className="border-border/40 bg-muted/10 ml-4 flex flex-col gap-1 border-l-2 py-0.5 pl-2.5 text-xs">
+                      {cat.children.map((child) => {
+                        const isTaxi = isTaxiCategory(child.name);
+                        const childDelta = comparison?.categoryDeltaMap.get(child.id);
+                        return (
+                          <div key={child.id} className="flex items-center justify-between gap-2 py-0.5 text-[11px]">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <span className="text-muted-foreground size-1.5 rounded-full bg-current" />
+                              <span className="truncate text-foreground/90">{child.name}</span>
+                              <Badge
+                                variant="outline"
+                                className="text-muted-foreground h-3.5 px-1 text-[8px] font-normal"
+                              >
+                                {isTaxi ? "Taxi / Ride-hailing" : "Transit"}
+                              </Badge>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              {childDelta && childDelta.deltaAbs !== 0 && (
+                                <span
+                                  className={cn(
+                                    "text-[9px] tabular-nums font-medium",
+                                    childDelta.deltaAbs > 0
+                                      ? "text-destructive"
+                                      : "text-emerald-600 dark:text-emerald-400",
+                                  )}
+                                >
+                                  {formatCategoryDelta(childDelta, currency)}
+                                </span>
+                              )}
+                              <span className="text-muted-foreground tabular-nums">
+                                {formatMoney(child.amount, currency)}
+                              </span>
+                              <span className="text-muted-foreground w-9 text-right text-[10px] tabular-nums">
+                                {child.percentage.toFixed(0)}%
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}

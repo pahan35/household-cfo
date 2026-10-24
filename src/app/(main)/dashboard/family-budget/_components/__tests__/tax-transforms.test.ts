@@ -18,6 +18,7 @@ import {
   isPfronCashbackCategory,
   matchTaxBucket,
   normalizeTaxTag,
+  TAX_CATEGORY_REGEX,
 } from "../tax-transforms";
 
 describe("tax-transforms", () => {
@@ -30,15 +31,24 @@ describe("tax-transforms", () => {
   const taxCategories: ExternalProviderCategory[] = [
     { id: "cat-tax-pln", name: "Podatki (PLN)", categoryType: CategoryType.Expense, currencyId: "PLN" },
     { id: "cat-tax-usd", name: "Taxes (USD)", categoryType: CategoryType.Expense, currencyId: "USD" },
+    { id: "cat-taxi-pln", name: "Taxi PLN", categoryType: CategoryType.Expense, currencyId: "PLN" },
     { id: "cat-food", name: "Groceries", categoryType: CategoryType.Expense, currencyId: "PLN" },
     { id: "acc-bank", name: "Bank Account", categoryType: CategoryType.BankAccount, currencyId: "PLN" },
     { id: "inc-salary", name: "Main Job", categoryType: CategoryType.Income, currencyId: "PLN", limitAmount: 30000 },
   ];
 
   describe("findTaxCategories & Tag matching", () => {
-    it("finds expense categories matching tax regex", () => {
+    it("finds expense categories matching tax regex without matching Taxi PLN", () => {
       const found = findTaxCategories(taxCategories);
       expect(found.map((c) => c.id)).toEqual(["cat-tax-pln", "cat-tax-usd"]);
+      expect(found.some((c) => c.id === "cat-taxi-pln")).toBe(false);
+
+      expect(TAX_CATEGORY_REGEX.test("Taxi PLN")).toBe(false);
+      expect(TAX_CATEGORY_REGEX.test("Taxi")).toBe(false);
+      expect(TAX_CATEGORY_REGEX.test("Tax PLN")).toBe(true);
+      expect(TAX_CATEGORY_REGEX.test("Taxes & ZUS")).toBe(true);
+      expect(TAX_CATEGORY_REGEX.test("Podatki")).toBe(true);
+      expect(TAX_CATEGORY_REGEX.test("Налоги")).toBe(true);
     });
 
     it("normalizes and matches tax tags properly", () => {

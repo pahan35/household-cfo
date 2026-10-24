@@ -15,6 +15,9 @@ import {
   computePeriodComparison,
   type ExclusionPreset,
   groupSmallSlices,
+  groupSmartSlices,
+  isTaxiCategory,
+  isTransportOrTaxi,
   transformExpenses,
 } from "./expense-transforms";
 import {
@@ -212,12 +215,63 @@ describe("transformExpenses", () => {
     expect(result.excludedExpenseSum).toBe(4500);
     expect(result.totalControllableExpense).toBe(4001);
     expect(result.totalGrossExpense).toBe(12001);
-    expect(result.netCashFlowMargin).toBe(17499);
+    expect(result.netCashFlowMargin).toBe(12999);
+    expect(result.availableControllablePool).toBe(17000);
+    expect(result.controllableCashLeft).toBe(12999);
     expect(result.controllableCategories).toHaveLength(3);
     expect(result.controllableCategories[0]?.name).toBe("Groceries");
     expect(result.controllableCategories[0]?.amount).toBe(2450.75);
     expect(result.controllableCategories[1]?.name).toBe("Dining Out");
     expect(result.controllableCategories[1]?.isOverrun).toBe(true);
+  });
+
+  it("maintains invariant netCashFlowMargin regardless of category exclusions", () => {
+    // Preset with no expense exclusions (All Living)
+    const allLivingPreset: ExclusionPreset = {
+      id: "all-living",
+      name: "All Living",
+      incomeDeductions: ["cat-tax"],
+      expenseExclusions: [],
+      isBuiltIn: true,
+    };
+
+    // Preset with rent excluded (Controllable Expenses)
+    const controllablePreset: ExclusionPreset = {
+      id: "controllable",
+      name: "Controllable Expenses",
+      incomeDeductions: ["cat-tax"],
+      expenseExclusions: ["cat-rent"],
+      isBuiltIn: true,
+    };
+
+    const allLivingResult = transformExpenses({
+      statCategories: MOEXT_OCTOBER_STAT_CATEGORIES,
+      categories: MOEXT_CATEGORIES,
+      activePreset: allLivingPreset,
+    });
+
+    const controllableResult = transformExpenses({
+      statCategories: MOEXT_OCTOBER_STAT_CATEGORIES,
+      categories: MOEXT_CATEGORIES,
+      activePreset: controllablePreset,
+    });
+
+    // Net disposable income is identical (21,500 PLN)
+    expect(allLivingResult.netDisposableIncome).toBe(21500);
+    expect(controllableResult.netDisposableIncome).toBe(21500);
+
+    // Controllable spending differs due to exclusion
+    expect(allLivingResult.totalControllableExpense).toBe(8501); // 4001 + 4500 rent
+    expect(controllableResult.totalControllableExpense).toBe(4001);
+    expect(controllableResult.excludedExpenseSum).toBe(4500);
+
+    // Invariant Net Cash Margin: both must equal 12,999 PLN
+    expect(allLivingResult.netCashFlowMargin).toBe(12999);
+    expect(controllableResult.netCashFlowMargin).toBe(12999);
+
+    // Available pool and cash left
+    expect(controllableResult.availableControllablePool).toBe(17000); // 21500 - 4500
+    expect(controllableResult.controllableCashLeft).toBe(12999); // 17000 - 4001
   });
 
   it("falls back to `currentAmount` or `value` when `amount` is undefined", () => {
@@ -301,6 +355,70 @@ describe("transformExpenses", () => {
     expect(grouped).toHaveLength(4);
     expect(grouped[3]?.id).toBe("other-grouped");
     expect(grouped[3]?.amount).toBe(40);
+  });
+
+  describe("smart grouping for Transport & Taxi (groupSmartSlices)", () => {
+    it("identifies transport and taxi category names correctly", () => {
+      expect(isTransportOrTaxi("Transport PLN")).toBe(true);
+      expect(isTransportOrTaxi("Transport")).toBe(true);
+      expect(isTransportOrTaxi("Taxi PLN")).toBe(true);
+      expect(isTransportOrTaxi("Taxi / Delivery")).toBe(true);
+      expect(isTransportOrTaxi("Uber")).toBe(true);
+      expect(isTransportOrTaxi("Bolt")).toBe(true);
+      expect(isTransportOrTaxi("Groceries")).toBe(false);
+      expect(isTransportOrTaxi("Apartment Rent")).toBe(false);
+
+      expect(isTaxiCategory("Taxi PLN")).toBe(true);
+      expect(isTaxiCategory("Uber Ride")).toBe(true);
+      expect(isTaxiCategory("Bolt")).toBe(true);
+      expect(isTaxiCategory("Transport PLN")).toBe(false);
+      expect(isTaxiCategory("Public Transport")).toBe(false);
+    });
+
+    it("links Transport and Taxi into a unified slice when either is below threshold (< 3%)", () => {
+      const slices = [
+        { id: "cat-groceries", name: "Groceries", amount: 2400, percentage: 60 },
+        { id: "cat-dining", name: "Dining Out", amount: 1200, percentage: 30 },
+        { id: "cat-transport", name: "Transport PLN", amount: 60, percentage: 1.5 },
+        { id: "cat-taxi", name: "Taxi PLN", amount: 40, percentage: 1.0 },
+        { id: "cat-misc-1", name: "Misc Subscriptions", amount: 50, percentage: 1.25 },
+        { id: "cat-misc-2", name: "Office Supplies", amount: 50, percentage: 1.25 },
+      ];
+
+      const grouped = groupSmartSlices(slices, 3);
+
+      // Expect Transport + Taxi combined into a smart group slice
+      const transportGroup = grouped.find((s) => s.id === "group-transport");
+      expect(transportGroup).toBeDefined();
+      expect(transportGroup?.name).toBe("Transport (incl. Taxi)");
+      expect(transportGroup?.amount).toBe(100); // 60 + 40
+      expect(transportGroup?.isSmartGroup).toBe(true);
+      expect(transportGroup?.children).toHaveLength(2);
+      expect(transportGroup?.children?.map((c) => c.name)).toEqual(["Transport PLN", "Taxi PLN"]);
+
+      // Smart group must NOT be collapsed into "other-grouped", while misc-1 & misc-2 ARE collapsed
+      const otherGroup = grouped.find((s) => s.id === "other-grouped");
+      expect(otherGroup).toBeDefined();
+      expect(otherGroup?.amount).toBe(100); // 50 + 50
+
+      // Total grouped slices: Groceries, Dining Out, Transport (incl. Taxi), Other Categories
+      expect(grouped).toHaveLength(4);
+    });
+
+    it("retains independent slices when both Transport and Taxi are >= 3%", () => {
+      const slices = [
+        { id: "cat-groceries", name: "Groceries", amount: 2000, percentage: 50 },
+        { id: "cat-dining", name: "Dining Out", amount: 1200, percentage: 30 },
+        { id: "cat-transport", name: "Transport PLN", amount: 400, percentage: 10 },
+        { id: "cat-taxi", name: "Taxi PLN", amount: 200, percentage: 5 },
+        { id: "cat-misc", name: "Misc", amount: 200, percentage: 5 },
+      ];
+
+      const grouped = groupSmartSlices(slices, 3);
+      expect(grouped.some((s) => s.id === "group-transport")).toBe(false);
+      expect(grouped.some((s) => s.id === "cat-transport")).toBe(true);
+      expect(grouped.some((s) => s.id === "cat-taxi")).toBe(true);
+    });
   });
 });
 
@@ -565,7 +683,7 @@ describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
     expect(oct26.monthLabel).toBe("Oct'26");
     expect(oct26.netIncome).toBe(21500);
     expect(oct26.controllableExpense).toBe(4001);
-    expect(oct26.netCashFlowMargin).toBe(17499);
+    expect(oct26.netCashFlowMargin).toBe(12999);
     expect(oct26.liquidBalance).toBe(50000);
     expect(oct26.netWorth).toBe(120000);
 
@@ -574,14 +692,14 @@ describe("transformChronologicalTrends & Timeline Zoom Helpers", () => {
     expect(sep26.controllableExpense).toBe(2100);
     expect(sep26.netCashFlowMargin).toBe(-2100);
     // Walking backward: sep26 balance = oct26 balance - oct26 margin
-    expect(sep26.liquidBalance).toBe(50000 - 17499); // 32501
-    expect(sep26.netWorth).toBe(120000 - 17499); // 102501
+    expect(sep26.liquidBalance).toBe(50000 - 12999); // 37001
+    expect(sep26.netWorth).toBe(120000 - 12999); // 107001
 
     const oct25 = result.points[0];
     expect(oct25.monthLabel).toBe("Oct'25");
     // oct25 balance = sep26 balance - sep26 margin
-    expect(oct25.liquidBalance).toBe(32501 - -2100); // 34601
-    expect(oct25.netWorth).toBe(102501 - -2100); // 104601
+    expect(oct25.liquidBalance).toBe(37001 - -2100); // 39101
+    expect(oct25.netWorth).toBe(107001 - -2100); // 109101
   });
 
   it("computes current net worth including accounts, debts, and goals while excluding deleted ones", () => {

@@ -14,7 +14,7 @@ export const BUILT_IN_PRESET_IDS = {
   CONTROLLABLE_EXPENSES: "controllable-expenses",
 } as const;
 
-const TAX_CATEGORY_REGEX = /(tax|налог|podat)/i;
+const TAX_CATEGORY_REGEX = /(?:\btax(?:es)?\b|podat|налог)/i;
 const RENT_CATEGORY_REGEX = /(rent|аренд|квартир|найм|czynsz|housing)/i;
 
 /**

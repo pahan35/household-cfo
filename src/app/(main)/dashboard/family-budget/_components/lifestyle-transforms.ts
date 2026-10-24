@@ -649,7 +649,7 @@ export interface ConcertEvent {
 const EXCLUDED_TRAVEL_BOOKEND_TAGS = new Set(["travel", "end-travel", "flight", "hotel", "ticket", "concert"]);
 const TRAVEL_CATEGORY_REGEX =
   /(transport|flight|airline|hotel|hostel|restaurant|cafe|dining|uber|taxi|rail|tour|rent)/i;
-const FIXED_EXPENSE_CATEGORY_REGEX = /(tax|podat|rent|czynsz|flat|apartment|utilit|prąd|gaz|mieszkanie)/i;
+const FIXED_EXPENSE_CATEGORY_REGEX = /(?:\btax(?:es)?\b|podat|rent|czynsz|flat|apartment|utilit|prąd|gaz|mieszkanie)/i;
 
 /**
  * Detects travel episodes from transactions using bookends (#travel/#end-travel),

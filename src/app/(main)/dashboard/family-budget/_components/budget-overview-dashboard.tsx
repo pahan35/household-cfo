@@ -340,6 +340,8 @@ export function BudgetOverviewDashboard() {
         totalTaxDeductions={transformed.totalTaxDeductions}
         excludedExpenseSum={transformed.excludedExpenseSum}
         netCashFlowMargin={transformed.netCashFlowMargin}
+        availableControllablePool={transformed.availableControllablePool}
+        controllableCashLeft={transformed.controllableCashLeft}
         currency={defaultCurrency}
         isLoading={isLoadingPeriodData}
         comparison={comparison}

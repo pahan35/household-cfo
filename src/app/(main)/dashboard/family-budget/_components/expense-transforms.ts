@@ -44,6 +44,8 @@ export interface ExpenseSlice {
   limitAmount?: number;
   isOverrun?: boolean;
   isGrouped?: boolean;
+  isSmartGroup?: boolean;
+  children?: ExpenseSlice[];
 }
 
 export interface TransformExpensesInput {
@@ -64,6 +66,8 @@ export interface TransformedExpenseData {
   grossIncome: number;
   netDisposableIncome: number;
   netCashFlowMargin: number;
+  availableControllablePool: number;
+  controllableCashLeft: number;
 }
 
 /**
@@ -160,7 +164,10 @@ export function transformExpenses(input: TransformExpensesInput): TransformedExp
 
   const grossIncome = computedIncome > 0 ? computedIncome : Math.max(0, rawGrossIncome);
   const netDisposableIncome = grossIncome - totalTaxDeductions;
-  const netCashFlowMargin = netDisposableIncome - totalControllableExpense;
+  const totalLivingExpenses = totalControllableExpense + excludedExpenseSum;
+  const netCashFlowMargin = netDisposableIncome - totalLivingExpenses;
+  const availableControllablePool = netDisposableIncome - excludedExpenseSum;
+  const controllableCashLeft = availableControllablePool - totalControllableExpense;
 
   return {
     controllableCategories: controllableItems,
@@ -173,7 +180,104 @@ export function transformExpenses(input: TransformExpensesInput): TransformedExp
     grossIncome,
     netDisposableIncome,
     netCashFlowMargin,
+    availableControllablePool,
+    controllableCashLeft,
   };
+}
+
+export const TRANSPORT_CATEGORY_REGEX = /(transport|taxi|uber|bolt)/i;
+export const TAXI_CATEGORY_REGEX = /(taxi|uber|bolt)/i;
+
+/**
+ * Checks if a category name relates to transport or ride-hailing.
+ */
+export function isTransportOrTaxi(name: string): boolean {
+  return TRANSPORT_CATEGORY_REGEX.test(name);
+}
+
+/**
+ * Checks if a category name specifically represents ride-hailing / taxi (e.g. Taxi, Uber, Bolt).
+ */
+export function isTaxiCategory(name: string): boolean {
+  return TAXI_CATEGORY_REGEX.test(name);
+}
+
+/**
+ * Links Transport and Taxi categories into a smart group slice on the donut chart
+ * when either falls below the minor-slice threshold (< thresholdPercent, default 3%).
+ * Protects the combined Transport group from being swallowed into "Other Categories".
+ */
+export function groupSmartSlices(slices: ExpenseSlice[], thresholdPercent = 3): ExpenseSlice[] {
+  const transportSlices = slices.filter((s) => isTransportOrTaxi(s.name));
+  const otherSlices = slices.filter((s) => !isTransportOrTaxi(s.name));
+
+  // Smart group condition: multiple transport/taxi categories present, and at least one is < thresholdPercent
+  const shouldSmartGroup = transportSlices.length >= 2 && transportSlices.some((s) => s.percentage < thresholdPercent);
+
+  let candidateSlices: ExpenseSlice[];
+
+  if (shouldSmartGroup) {
+    const combinedAmount = transportSlices.reduce((acc, s) => acc + s.amount, 0);
+    const combinedLimit = transportSlices.reduce((acc, s) => acc + (s.limitAmount ?? 0), 0);
+    const totalAmount = slices.reduce((acc, s) => acc + s.amount, 0);
+    const combinedPercentage = totalAmount > 0 ? (combinedAmount / totalAmount) * 100 : 0;
+    const hasOverrun = transportSlices.some((s) => s.isOverrun);
+
+    const transportGroup: ExpenseSlice = {
+      id: "group-transport",
+      name: "Transport (incl. Taxi)",
+      amount: combinedAmount,
+      percentage: combinedPercentage,
+      limitAmount: combinedLimit > 0 ? combinedLimit : undefined,
+      isOverrun: hasOverrun,
+      isSmartGroup: true,
+      children: transportSlices,
+    };
+
+    candidateSlices = [...otherSlices, transportGroup];
+  } else {
+    candidateSlices = [...slices];
+  }
+
+  // If few slices, return as is (sorted by amount)
+  if (candidateSlices.length <= 4) {
+    return candidateSlices.sort((a, b) => b.amount - a.amount);
+  }
+
+  const primary: ExpenseSlice[] = [];
+  let otherAmount = 0;
+  let otherLimit = 0;
+  let smallSliceCount = 0;
+
+  for (const slice of candidateSlices) {
+    // Smart group slices are protected from generic "Other Categories" collapsing
+    if (slice.isSmartGroup) {
+      primary.push(slice);
+    } else if (slice.percentage < thresholdPercent) {
+      otherAmount += slice.amount;
+      otherLimit += slice.limitAmount ?? 0;
+      smallSliceCount += 1;
+    } else {
+      primary.push(slice);
+    }
+  }
+
+  if (smallSliceCount > 1 && otherAmount > 0) {
+    const totalAmount = slices.reduce((acc, s) => acc + s.amount, 0);
+    const otherPercentage = totalAmount > 0 ? (otherAmount / totalAmount) * 100 : 0;
+    primary.push({
+      id: "other-grouped",
+      name: "Other Categories",
+      amount: otherAmount,
+      percentage: otherPercentage,
+      limitAmount: otherLimit > 0 ? otherLimit : undefined,
+      isGrouped: true,
+    });
+  } else {
+    return candidateSlices.sort((a, b) => b.amount - a.amount);
+  }
+
+  return primary.sort((a, b) => b.amount - a.amount);
 }
 
 /**

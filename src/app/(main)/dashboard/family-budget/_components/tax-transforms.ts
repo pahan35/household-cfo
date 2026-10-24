@@ -58,7 +58,7 @@ export const KNOWN_TAX_BUCKETS: TaxTagBucket[] = [
   },
 ];
 
-export const TAX_CATEGORY_REGEX = /(tax|podat|налог)/i;
+export const TAX_CATEGORY_REGEX = /(?:\btax(?:es)?\b|podat|налог)/i;
 
 export const PFRON_CASHBACK_REGEX = /cashback[\s_-]*taxes/i;
 
