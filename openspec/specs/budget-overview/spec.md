@@ -273,13 +273,13 @@ The application SHALL include automated unit tests verifying the data ingestion 
 
 #### Scenario: Unit tests validate category spend extraction and fallbacks
 
-- **WHEN** `transformExpenses` receives statistics categories with `amount`, `currentAmount`, or `value`, or missing metadata names
-- **THEN** the transformed expenses accurately extract the non-zero spent amounts and category names without defaulting to zero
+- **WHEN** `transformExpenses` and `computeBudgetSummaryItems` receive statistics categories with `value`, `amount`, or `currentAmount`, or missing metadata names
+- **THEN** the transforms prioritize period-specific `value` over static category `amount` snapshots (falling back to `amount` and `currentAmount` only when `value` is absent) and accurately extract non-zero spent amounts and category names without defaulting to zero or repeating current-month snapshots across historical periods
 
 #### Scenario: Unit tests validate date parsing across historical points
 
-- **WHEN** `parsePointDate` and YoY transforms process statistics points with `id` (`"yyyy-MM-dd"`) or `date` (`"M-yyyy"`)
-- **THEN** valid Date objects are returned and historical spending is aggregated without dropping points or producing `Invalid Date`
+- **WHEN** `parsePointDate` and YoY/chronological transforms process statistics points with `id` (`"yyyy-MM-dd"`) or `date` (`"M-yyyy"`) where `amount` holds a constant current-month snapshot while `value` varies per period
+- **THEN** valid Date objects are returned, historical spending is aggregated from `value` without dropping points or producing `Invalid Date`, and YoY deltas reflect true period-over-period variance
 
 #### Scenario: Unit tests validate transaction running balance calculation with upstream payloads
 
