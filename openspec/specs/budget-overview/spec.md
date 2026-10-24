@@ -27,7 +27,7 @@ The dashboard sidebar SHALL include a top-level "Family Budget" group positioned
 
 ### Requirement: Accounts and cards snapshot
 
-The screen SHALL display the user's account-type categories (accounts, bank accounts, cards, debt accounts) with their current balance, obtained through the proxy's categories exchange, grouped or labeled so account types are distinguishable, and sorted ascending by ExternalProvider's `order` property (`category.order`). Money SHALL be presented in the category's currency or the default currency from settings. Users SHALL be able to click an account row to filter the transactions list to that account (and click again or clear the filter to restore the all-accounts view). Users SHALL be able to drag-and-drop reorder accounts, which SHALL persist the updated `order` values upstream via `/Exchange/Ping` so that the order is updated across ExternalProvider mobile and web apps. Accounts whose name starts with `_` and whose balance is `0` SHALL be hidden by default and viewable on demand via a toggle; accounts whose name starts with `_` and whose balance is non-zero SHALL always remain visible with a warning indicator and reconciliation guidance. Each account row SHALL also display the timestamp of its most recent transaction with an interactive hover/focus indicator revealing the transaction's counterpart (source or target), amount, comment, and tags. Users SHALL be able to archive an active account via a row action, which SHALL prompt for confirmation, prefix the account name with `_`, move it to the very end of the account order list, and persist the updated name and sequential orders to `/Exchange/Ping`. Users SHALL be able to unarchive an archived account, which SHALL strip the leading `_` prefix, move it to become the last non-archived account (immediately preceding the first archived account), and persist the updated name and sequential orders to `/Exchange/Ping`. Users SHALL be able to reposition active accounts located below archived accounts to immediately above the first archived account individually via a row action or collectively via a batch action banner, preserving relative order and persisting updated orders to `/Exchange/Ping`.
+The screen SHALL display the user's account-type categories (accounts, bank accounts, cards, debt accounts) with their current balance, obtained through the proxy's categories exchange, grouped or labeled so account types are distinguishable (including badging `Debt:` / `_Debt:` standard accounts as Throwaway Clearing Accounts), and sorted ascending by ExternalProvider's `order` property (`category.order`). Money SHALL be presented in the category's currency or the default currency from settings. Users SHALL be able to click an account row to filter the transactions list to that account (and click again or clear the filter to restore the all-accounts view), and when a Throwaway Clearing Account (`Debt:` or `_Debt:`) is selected, the screen SHALL surface the Clearing Ledger Workbench for that account. Users SHALL also be able to initialize a new Throwaway Clearing Account (`Debt: <Person/Deal>`) directly from the Accounts & Cards header action. Users SHALL be able to drag-and-drop reorder accounts, which SHALL persist the updated `order` values upstream via `/Exchange/Ping` so that the order is updated across ExternalProvider mobile and web apps. Accounts whose name starts with `_` and whose balance is `0` SHALL be hidden by default and viewable on demand via a toggle; accounts whose name starts with `_` and whose balance is non-zero SHALL always remain visible with a warning indicator and reconciliation guidance. Each account row SHALL also display the timestamp of its most recent transaction with an interactive hover/focus indicator revealing the transaction's counterpart (source or target), amount, comment, and tags. Users SHALL be able to archive an active account via a row action, which SHALL prompt for confirmation, prefix the account name with `_`, move it to the very end of the account order list, and persist the updated name and sequential orders to `/Exchange/Ping`. Users SHALL be able to unarchive an archived account, which SHALL strip the leading `_` prefix, move it to become the last non-archived account (immediately preceding the first archived account), and persist the updated name and sequential orders to `/Exchange/Ping`. Users SHALL be able to reposition active accounts located below archived accounts to immediately above the first archived account individually via a row action or collectively via a batch action banner, preserving relative order and persisting updated orders to `/Exchange/Ping`.
 
 #### Scenario: Accounts listed with balances
 
@@ -38,6 +38,11 @@ The screen SHALL display the user's account-type categories (accounts, bank acco
 
 - **WHEN** the user clicks an account row in the accounts list
 - **THEN** the account row is visually marked as selected and the transactions section filters to show all-time transactions involving that account
+
+#### Scenario: Selecting a throwaway debt account opens the clearing ledger workbench
+
+- **WHEN** the user selects a Throwaway Clearing Account (`Debt: <Name>`) in the accounts list or triggers "Open Clearing Ledger" from its row action menu
+- **THEN** the Clearing Ledger Workbench opens for that account alongside its filtered transactions feed
 
 #### Scenario: Clearing the selected account filter
 
@@ -217,7 +222,7 @@ The Family Budget overview dashboard SHALL include an interactive Year-over-Year
 
 ### Requirement: Request deduplication, caching, and on-demand refresh
 
-The Family Budget overview screen and its server proxy SHALL deduplicate concurrent requests and cache upstream ExternalProvider responses with a 5-hour time-to-live (TTL) across component mounts, period switches, Hot Module Replacement (HMR) rebuilds, and page reloads, while allowing explicit on-demand cache invalidation from the UI and automatically invalidating cached category reads whenever a category write (`entityJson !== null`) is sent to `/Exchange/Ping`.
+The Family Budget overview screen and its server proxy SHALL deduplicate concurrent requests and cache upstream ExternalProvider responses with a 5-hour time-to-live (TTL) across component mounts, period switches, Hot Module Replacement (HMR) rebuilds, and page reloads, while allowing explicit on-demand cache invalidation from the UI and automatically invalidating cached category, transaction, and statistics reads whenever a category write (`entityJson !== null` to `/Exchange/Ping`) or transaction write (`/api/transaction/create` or `/api/transaction/update`) is sent through the proxy.
 
 #### Scenario: Initial dashboard load deduplicates shared data across sections
 
@@ -243,6 +248,11 @@ The Family Budget overview screen and its server proxy SHALL deduplicate concurr
 
 - **WHEN** the client sends a category write payload (`entityJson` containing updated categories) to `/api/external-provider/Exchange/Ping`
 - **THEN** the server proxy bypasses caching for the write request, invalidates cached `/Exchange/Ping` entries in the proxy cache, and the client updates its cached `categories` entry with the latest category state
+
+#### Scenario: Transaction write invalidates cached transaction, category, and statistics reads
+
+- **WHEN** the client sends a transaction creation or update request to `/api/external-provider/api/transaction/create` or `/api/external-provider/api/transaction/update`
+- **THEN** the server proxy bypasses caching for the write request and invalidates cached `/api/transaction/get`, `/Exchange/Ping`, and `/stat/ping` entries so subsequent reads reflect updated account balances and transaction history
 
 ### Requirement: Automated regression tests for budget data transforms
 
