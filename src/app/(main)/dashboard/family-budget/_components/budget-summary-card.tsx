@@ -7,10 +7,25 @@ import { DragDropProvider, type DragEndEvent } from "@dnd-kit/react";
 import { isSortable, useSortable } from "@dnd-kit/react/sortable";
 import { cn } from "cn";
 import { format, startOfMonth, subMonths } from "date-fns";
-import { AlertTriangle, Archive, GripVertical, PiggyBank } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  ArchiveRestore,
+  ArrowUpToLine,
+  GripVertical,
+  MoreHorizontal,
+  PiggyBank,
+  Receipt,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
 
 import { getBudgetSelection } from "./external-provider-client";
@@ -18,18 +33,24 @@ import {
   CategoryType,
   type ExternalProviderCategory,
   filterAndClassifyCategories,
+  findExpenseCategoriesBelowArchived,
   formatMoney,
+  getCategoryCurrencyTier,
+  isArchivedCategoryName,
+  isExpenseCategory,
   type LastTransactionSummary,
+  organizeExpenseCategoriesByCurrencyTier,
   type StatCategoryPoint,
   type StatPingData,
 } from "./external-provider-data";
-import type { CategoryComparisonDelta } from "./expense-transforms";
+import type { CategoryComparisonDelta, ExpenseSlice } from "./expense-transforms";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 import { parsePointDate } from "./yoy-transforms";
 
 export type BudgetPeriodMonth = "current" | "previous";
 export type BudgetSortMode = "custom" | "percent";
+export type BudgetViewMode = "active" | "all";
 
 export interface BudgetSummaryItem {
   id: string;
@@ -123,6 +144,11 @@ interface BudgetSummaryCardProps {
   onReorderCategories?: (reorderedVisibleIds: string[]) => Promise<void>;
   lastTransactionByCategoryId?: Map<string, LastTransactionSummary>;
   categoryDeltaMap?: Map<string, CategoryComparisonDelta>;
+  onSelectCategory?: (slice: ExpenseSlice) => void;
+  onArchiveCategory?: (categoryId: string) => Promise<void> | void;
+  onUnarchiveCategory?: (categoryId: string) => Promise<void> | void;
+  onMoveCategoriesAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
+  onOrganizeByCurrencyTier?: () => Promise<void> | void;
 }
 
 export function BudgetSummaryCard({
@@ -138,8 +164,14 @@ export function BudgetSummaryCard({
   onReorderCategories,
   lastTransactionByCategoryId,
   categoryDeltaMap,
+  onSelectCategory,
+  onArchiveCategory,
+  onUnarchiveCategory,
+  onMoveCategoriesAboveArchived,
+  onOrganizeByCurrencyTier,
 }: BudgetSummaryCardProps) {
   const [sortMode, setSortMode] = useState<BudgetSortMode>("custom");
+  const [viewMode, setViewMode] = useState<BudgetViewMode>("active");
   const [showArchived, setShowArchived] = useState(false);
 
   const [internalStatData, setInternalStatData] = useState<StatPingData | null>(null);
@@ -235,10 +267,44 @@ export function BudgetSummaryCard({
     [statData, fromDate, categoryNameMap, categoryTypeMap, showArchived],
   );
 
+  // Every expense category (including zero-spend / zero-limit ones) for the full directory view
+  const expenseCategories = useMemo(() => categories.filter((c) => !c.deleted && isExpenseCategory(c)), [categories]);
+
+  const allCategoryItems = useMemo(() => {
+    const statItems = new Map(
+      computeBudgetSummaryItems(statData, fromDate, categoryNameMap, categoryTypeMap, { includeAll: true }).map(
+        (it) => [it.id, it],
+      ),
+    );
+    return expenseCategories.map<BudgetSummaryItem>(
+      (c) =>
+        statItems.get(c.id) ?? {
+          id: c.id,
+          name: c.name,
+          limit: 0,
+          current: 0,
+          percent: 0,
+          rawPercent: 0,
+          isOverrun: false,
+        },
+    );
+  }, [statData, fromDate, categoryNameMap, categoryTypeMap, expenseCategories]);
+
+  const categoriesBelowArchived = useMemo(() => findExpenseCategoriesBelowArchived(categories), [categories]);
+  const belowArchivedIds = useMemo(() => new Set(categoriesBelowArchived.map((c) => c.id)), [categoriesBelowArchived]);
+
+  const canOrganizeByTier = useMemo(
+    () => organizeExpenseCategoriesByCurrencyTier(categories, defaultCurrency).modifiedCategories.length > 0,
+    [categories, defaultCurrency],
+  );
+
   // Filter archived items
   const classifiedItems = useMemo(() => {
+    if (viewMode === "all") {
+      return allCategoryItems.map((item) => ({ item, isArchived: isArchivedCategoryName(item.name), isActive: true }));
+    }
     return filterAndClassifyCategories(allBudgetItems, { showArchived });
-  }, [allBudgetItems, showArchived]);
+  }, [allBudgetItems, showArchived, viewMode, allCategoryItems]);
 
   // Count hidden inactive archived items
   const hiddenArchivedCount = useMemo(() => {
@@ -252,7 +318,7 @@ export function BudgetSummaryCard({
 
   // Sorted items based on sortMode ("custom" vs "percent")
   const sortedItems = useMemo(() => {
-    if (sortMode === "percent") {
+    if (viewMode !== "all" && sortMode === "percent") {
       return [...classifiedItems].sort((a, b) => b.item.rawPercent - a.item.rawPercent);
     }
     // "custom" mode sorts by ExternalProvider order ascending, tie-breaking by id
@@ -264,9 +330,13 @@ export function BudgetSummaryCard({
       }
       return a.item.id.localeCompare(b.item.id);
     });
-  }, [classifiedItems, sortMode, categoryOrderMap]);
+  }, [classifiedItems, sortMode, viewMode, categoryOrderMap]);
 
-  const canReorder = sortMode === "custom" && Boolean(onReorderCategories);
+  const canReorder = (viewMode === "all" || sortMode === "custom") && Boolean(onReorderCategories);
+
+  function handleSelect(item: BudgetSummaryItem) {
+    onSelectCategory?.({ id: item.id, name: item.name, amount: item.current, percentage: item.rawPercent });
+  }
 
   function handleDragEnd(event: DragEndEvent) {
     const { source } = event.operation;
@@ -290,8 +360,43 @@ export function BudgetSummaryCard({
       description={`Reporting currency: ${currency}`}
       action={
         <div className="flex flex-wrap items-center gap-2">
-          {/* Custom Order vs % Spent Sort Mode Switch */}
+          {/* Active in Month vs All Categories view */}
           <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
+            <button
+              type="button"
+              aria-pressed={viewMode === "active"}
+              className={cn(
+                "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                viewMode === "active"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setViewMode("active")}
+            >
+              Active in Month
+            </button>
+            <button
+              type="button"
+              aria-pressed={viewMode === "all"}
+              className={cn(
+                "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                viewMode === "all"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setViewMode("all")}
+            >
+              All Categories ({expenseCategories.length})
+            </button>
+          </div>
+
+          {/* Custom Order vs % Spent Sort Mode Switch */}
+          <div
+            className={cn(
+              "bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs",
+              viewMode === "all" && "hidden",
+            )}
+          >
             <button
               type="button"
               className={cn(
@@ -318,8 +423,22 @@ export function BudgetSummaryCard({
             </button>
           </div>
 
+          {/* Foreign / legacy currency tier ordering */}
+          {onOrganizeByCurrencyTier && canOrganizeByTier && (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => void onOrganizeByCurrencyTier()}
+              className="h-7 gap-1 px-2 text-[11px]"
+            >
+              <ArrowUpToLine className="size-3" />
+              <span>Foreign currency above archived</span>
+            </Button>
+          )}
+
           {/* Archived Toggle */}
-          {(hiddenArchivedCount > 0 || showArchived) && (
+          {viewMode === "active" && (hiddenArchivedCount > 0 || showArchived) && (
             <Button
               type="button"
               variant={showArchived ? "secondary" : "ghost"}
@@ -343,6 +462,29 @@ export function BudgetSummaryCard({
       skeletonCount={4}
       skeletonHeight="h-14"
     >
+      {categoriesBelowArchived.length > 0 && onMoveCategoriesAboveArchived && (
+        <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+            <span className="text-foreground font-medium">
+              {categoriesBelowArchived.length === 1
+                ? "1 active expense category is positioned below archived categories"
+                : `${categoriesBelowArchived.length} active expense categories are positioned below archived categories`}
+            </span>
+          </div>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            onClick={() => void onMoveCategoriesAboveArchived()}
+            className="h-7 gap-1.5 border-amber-500/30 text-xs font-medium hover:bg-amber-500/15"
+          >
+            <ArrowUpToLine className="size-3.5" />
+            <span>Move above archived</span>
+          </Button>
+        </div>
+      )}
+
       <DragDropProvider onDragEnd={handleDragEnd}>
         <div className="flex flex-col gap-4">
           {sortedItems.map(({ item, isArchived }, index) => {
@@ -360,6 +502,13 @@ export function BudgetSummaryCard({
                 lastTx={lastTx}
                 canReorder={canReorder}
                 delta={delta}
+                order={categoryOrderMap.get(item.id)}
+                isForeign={getCategoryCurrencyTier(item.name, defaultCurrency) === "foreign"}
+                isBelowArchived={belowArchivedIds.has(item.id)}
+                onSelect={onSelectCategory ? () => handleSelect(item) : undefined}
+                onArchive={onArchiveCategory}
+                onUnarchive={onUnarchiveCategory}
+                onMoveAboveArchived={onMoveCategoriesAboveArchived}
               />
             );
           })}
@@ -391,6 +540,13 @@ interface SortableBudgetCategoryRowProps {
   lastTx?: LastTransactionSummary | null;
   canReorder: boolean;
   delta?: CategoryComparisonDelta;
+  order?: number;
+  isForeign?: boolean;
+  isBelowArchived?: boolean;
+  onSelect?: () => void;
+  onArchive?: (categoryId: string) => Promise<void> | void;
+  onUnarchive?: (categoryId: string) => Promise<void> | void;
+  onMoveAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
 }
 
 function SortableBudgetCategoryRow({
@@ -402,6 +558,13 @@ function SortableBudgetCategoryRow({
   lastTx,
   canReorder,
   delta,
+  order,
+  isForeign,
+  isBelowArchived,
+  onSelect,
+  onArchive,
+  onUnarchive,
+  onMoveAboveArchived,
 }: SortableBudgetCategoryRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -437,7 +600,44 @@ function SortableBudgetCategoryRow({
             </Button>
           )}
 
-          <span className="truncate">{item.name}</span>
+          {order !== undefined && (
+            <Badge variant="outline" className="h-4 px-1 font-mono text-[10px] font-normal">
+              #{order}
+            </Badge>
+          )}
+
+          {onSelect ? (
+            <button
+              type="button"
+              onClick={onSelect}
+              aria-label={`Inspect transactions for ${item.name}`}
+              className="focus-visible:ring-ring cursor-pointer truncate rounded-sm text-left outline-none hover:underline focus-visible:ring-2"
+            >
+              {item.name}
+            </button>
+          ) : (
+            <span className="truncate">{item.name}</span>
+          )}
+
+          {isForeign && !isArchived && (
+            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
+              Foreign
+            </Badge>
+          )}
+
+          {isBelowArchived && !isArchived && onMoveAboveArchived && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => void onMoveAboveArchived([id])}
+              className="size-4 text-amber-500 hover:text-amber-600"
+              aria-label={`Move ${item.name} above archived`}
+              title="Positioned below archived categories. Click to move up."
+            >
+              <AlertTriangle className="size-3.5" />
+            </Button>
+          )}
 
           {item.isOverrun && (
             <Badge variant="destructive" className="h-4 gap-1 px-1 text-[10px] font-normal">
@@ -472,6 +672,49 @@ function SortableBudgetCategoryRow({
           <span>/</span>
           <span>{formatMoney(item.limit, currency)}</span>
           <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
+
+          {Boolean(onSelect ?? onArchive ?? onUnarchive) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground/60 hover:text-muted-foreground size-6 shrink-0"
+                  aria-label={`Actions for ${item.name}`}
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                {onSelect && (
+                  <DropdownMenuItem onClick={onSelect}>
+                    <Receipt className="mr-2 size-4" />
+                    <span>Inspect Transactions</span>
+                  </DropdownMenuItem>
+                )}
+                {isBelowArchived && !isArchived && onMoveAboveArchived && (
+                  <DropdownMenuItem onClick={() => void onMoveAboveArchived([id])}>
+                    <ArrowUpToLine className="mr-2 size-4" />
+                    <span>Move above archived</span>
+                  </DropdownMenuItem>
+                )}
+                {isArchived
+                  ? onUnarchive && (
+                      <DropdownMenuItem onClick={() => void onUnarchive(id)}>
+                        <ArchiveRestore className="mr-2 size-4" />
+                        <span>Unarchive</span>
+                      </DropdownMenuItem>
+                    )
+                  : onArchive && (
+                      <DropdownMenuItem onClick={() => void onArchive(id)}>
+                        <Archive className="mr-2 size-4" />
+                        <span>Archive</span>
+                      </DropdownMenuItem>
+                    )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
       <Progress value={item.percent} className={cn("h-2", item.isOverrun && "[&>div]:bg-destructive")} />

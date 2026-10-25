@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "cn";
 import { endOfMonth, format, isValid, parseISO, startOfMonth } from "date-fns";
@@ -11,6 +11,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
+import {
+  applyBudgetOverviewPeriodToParams,
+  BUDGET_OVERVIEW_PERIOD_STORAGE_KEY,
+  resolveBudgetOverviewPeriodState,
+} from "./budget-overview-period-state";
 import { BudgetSummaryCard } from "./budget-summary-card";
 import { CategoryExpenseTraceSheet } from "./category-expense-trace-sheet";
 import { CategoryRenamingDialog } from "./category-renaming-dialog";
@@ -23,14 +28,19 @@ import {
   updateCategoriesOrder,
 } from "./external-provider-client";
 import {
+  archiveExpenseCategory,
   buildLastTransactionMap,
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
+  moveExpenseCategoriesAboveArchived,
+  organizeExpenseCategoriesByCurrencyTier,
+  type ReorderCategoriesResult,
   reorderCategoriesSubset,
   type StatPingData,
+  unarchiveExpenseCategory,
 } from "./external-provider-data";
 import { ExpensePieCard } from "./expense-pie-card";
 import { type CompareMode, computePeriodComparison, type ExpenseSlice, transformExpenses } from "./expense-transforms";
@@ -65,6 +75,11 @@ export function BudgetOverviewDashboard() {
 
   const [selectedTraceCategory, setSelectedTraceCategory] = useState<ExpenseSlice | null>(null);
   const [isRenamingDialogOpen, setIsRenamingDialogOpen] = useState(false);
+
+  // Period/comparison persistence (URL + localStorage)
+  const [isPeriodHydrated, setIsPeriodHydrated] = useState(false);
+  const [traceSyncTick, setTraceSyncTick] = useState(0);
+  const pendingTraceIdRef = useRef<string | null>(null);
 
   const presetController = useExclusionPresets(categories);
 
@@ -287,24 +302,102 @@ export function BudgetOverviewDashboard() {
     [categories],
   );
 
-  const handleSelectCategory = useCallback((slice: ExpenseSlice | null) => {
-    setSelectedTraceCategory(slice);
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      if (slice) {
-        url.searchParams.set("traceCategory", slice.id);
-      } else {
-        url.searchParams.delete("traceCategory");
+  const applyCategoryMutation = useCallback(
+    async ({ updatedCategories, modifiedCategories }: ReorderCategoriesResult) => {
+      if (modifiedCategories.length === 0) return;
+      const prevCategories = categories;
+      setCategories(updatedCategories);
+      try {
+        await updateCategoriesOrder(modifiedCategories, { allUpdatedCategories: updatedCategories });
+      } catch (err) {
+        setCategories(prevCategories);
+        toast.error(err instanceof Error ? err.message : "Failed to update categories");
       }
-      window.history.replaceState(null, "", url.toString());
-    }
+    },
+    [categories],
+  );
+
+  const handleArchiveCategory = useCallback(
+    (id: string) => applyCategoryMutation(archiveExpenseCategory(categories, id)),
+    [applyCategoryMutation, categories],
+  );
+  const handleUnarchiveCategory = useCallback(
+    (id: string) => applyCategoryMutation(unarchiveExpenseCategory(categories, id)),
+    [applyCategoryMutation, categories],
+  );
+  const handleMoveCategoriesAboveArchived = useCallback(
+    (ids?: string[]) => applyCategoryMutation(moveExpenseCategoriesAboveArchived(categories, ids)),
+    [applyCategoryMutation, categories],
+  );
+  const handleOrganizeByCurrencyTier = useCallback(
+    () =>
+      applyCategoryMutation(organizeExpenseCategoriesByCurrencyTier(categories, settings?.defaultCurrency ?? "PLN")),
+    [applyCategoryMutation, categories, settings?.defaultCurrency],
+  );
+
+  const handleSelectCategory = useCallback((slice: ExpenseSlice | null) => {
+    pendingTraceIdRef.current = null;
+    setSelectedTraceCategory(slice);
   }, []);
 
-  // Synchronize URL search params (?traceCategory=<id>) on initial mount or category arrival
+  const applyUrlStateToComponent = useCallback(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.localStorage.getItem(BUDGET_OVERVIEW_PERIOD_STORAGE_KEY);
+    } catch {
+      stored = null;
+    }
+    const resolved = resolveBudgetOverviewPeriodState(
+      window.location.search,
+      stored,
+      format(startOfMonth(new Date()), "yyyy-MM-dd"),
+    );
+    setActiveMonthDateStr(resolved.month);
+    setCompareMode(resolved.compareMode);
+    setCompareCustomDateStr(resolved.compareDate);
+    pendingTraceIdRef.current = resolved.traceCategory;
+    if (!resolved.traceCategory) {
+      setSelectedTraceCategory(null);
+    }
+    setTraceSyncTick((tick) => tick + 1);
+  }, []);
+
+  // Restore month / comparison / trace state on mount (URL first, then localStorage) and on Back/Forward
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const traceId = params.get("traceCategory");
+    applyUrlStateToComponent();
+    setIsPeriodHydrated(true);
+    window.addEventListener("popstate", applyUrlStateToComponent);
+    return () => {
+      window.removeEventListener("popstate", applyUrlStateToComponent);
+    };
+  }, [applyUrlStateToComponent]);
+
+  // Persist month / comparison / trace state to the URL and localStorage whenever it changes
+  const traceCategoryId = selectedTraceCategory?.id ?? null;
+  useEffect(() => {
+    if (!isPeriodHydrated) return;
+    const state = {
+      month: activeMonthDateStr,
+      compareMode,
+      compareDate: compareCustomDateStr,
+      traceCategory: traceCategoryId ?? pendingTraceIdRef.current,
+    };
+    try {
+      window.localStorage.setItem(BUDGET_OVERVIEW_PERIOD_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // localStorage may be unavailable (private mode / quota); URL state still applies
+    }
+    const url = new URL(window.location.href);
+    applyBudgetOverviewPeriodToParams(url.searchParams, state);
+    if (url.toString() !== window.location.href) {
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, [isPeriodHydrated, activeMonthDateStr, compareMode, compareCustomDateStr, traceCategoryId]);
+
+  // Resolve ?traceCategory=<id> into a slice once the category data has arrived
+  // biome-ignore lint/correctness/useExhaustiveDependencies: traceSyncTick re-runs resolution after popstate
+  useEffect(() => {
+    const traceId = pendingTraceIdRef.current;
     if (!traceId || selectedTraceCategory) return;
 
     const findSlice = (slices: ExpenseSlice[]): ExpenseSlice | undefined => {
@@ -324,9 +417,11 @@ export function BudgetOverviewDashboard() {
       findSlice(transformed.taxDeductionCategories);
 
     if (found) {
+      pendingTraceIdRef.current = null;
       setSelectedTraceCategory(found);
     } else if (categories.length > 0) {
       const rawCat = categories.find((c) => c.id === traceId);
+      pendingTraceIdRef.current = null;
       if (rawCat) {
         setSelectedTraceCategory({
           id: rawCat.id,
@@ -336,22 +431,7 @@ export function BudgetOverviewDashboard() {
         });
       }
     }
-  }, [transformed, categories, selectedTraceCategory]);
-
-  // Synchronize browser forward/back buttons
-  useEffect(() => {
-    const onPopState = () => {
-      const params = new URLSearchParams(window.location.search);
-      const traceId = params.get("traceCategory");
-      if (!traceId) {
-        setSelectedTraceCategory(null);
-      }
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => {
-      window.removeEventListener("popstate", onPopState);
-    };
-  }, []);
+  }, [transformed, categories, selectedTraceCategory, traceSyncTick]);
 
   const isLoadingPeriodData = isLoadingStatData || isLoadingPeriodTx;
   const isRefreshing = isLoadingBaseData || isLoadingStatData || isLoadingPeriodTx;
@@ -467,6 +547,11 @@ export function BudgetOverviewDashboard() {
             onReorderCategories={handleReorderCategories}
             lastTransactionByCategoryId={lastTransactionByCategoryId}
             categoryDeltaMap={comparison?.categoryDeltaMap}
+            onSelectCategory={handleSelectCategory}
+            onArchiveCategory={handleArchiveCategory}
+            onUnarchiveCategory={handleUnarchiveCategory}
+            onMoveCategoriesAboveArchived={handleMoveCategoriesAboveArchived}
+            onOrganizeByCurrencyTier={handleOrganizeByCurrencyTier}
           />
         </div>
       </div>
@@ -493,6 +578,7 @@ export function BudgetOverviewDashboard() {
         categories={categories}
         defaultCurrency={defaultCurrency}
         transactions={recentTransactions}
+        defaultScope="expense"
         onRenamed={(updatedCategories) => {
           setCategories(updatedCategories);
           handleRefreshAll();

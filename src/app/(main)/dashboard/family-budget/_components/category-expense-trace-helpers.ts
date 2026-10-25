@@ -198,3 +198,29 @@ export function identifySubcategoryName(
 
   return categoryMap?.get(destinationId)?.name ?? null;
 }
+
+/**
+ * Builds the "Open in Ledger" deep link carrying every resolved category ID (and an optional account filter).
+ */
+export function buildLedgerLink(categoryIds: string[], accountId?: string | null): string {
+  const ids = categoryIds.filter(Boolean);
+  if (ids.length === 0) return "/dashboard/family-budget";
+  const params = [`categoryId=${ids.map(encodeURIComponent).join(",")}`];
+  if (accountId) params.push(`accountId=${encodeURIComponent(accountId)}`);
+  return `/dashboard/family-budget?${params.join("&")}`;
+}
+
+/**
+ * Parses a comma-separated `categoryId` query parameter into a de-duplicated ID list.
+ */
+export function parseLedgerCategoryIds(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return Array.from(
+    new Set(
+      raw
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  );
+}

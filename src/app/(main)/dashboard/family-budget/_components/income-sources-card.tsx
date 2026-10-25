@@ -14,6 +14,7 @@ import {
   Coins,
   GripVertical,
   MoreHorizontal,
+  Sparkles,
   Target,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -76,6 +77,7 @@ export interface IncomeSourcesCardProps {
   selectedSourceId?: string | null;
   onSelectSource?: (sourceId: string | null) => void;
   incomeBySourceId?: Map<string, number>;
+  onOpenNormalizeCategories?: () => void;
 }
 
 export function IncomeSourcesCard({
@@ -92,6 +94,7 @@ export function IncomeSourcesCard({
   selectedSourceId = null,
   onSelectSource,
   incomeBySourceId,
+  onOpenNormalizeCategories,
 }: IncomeSourcesCardProps) {
   const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -277,6 +280,18 @@ export function IncomeSourcesCard({
         action={
           !isLoading && !error ? (
             <div className="flex items-center gap-2">
+              {onOpenNormalizeCategories && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={onOpenNormalizeCategories}
+                  className="h-6 gap-1 px-2 text-[11px]"
+                >
+                  <Sparkles className="text-primary size-3" />
+                  <span>Normalize Categories</span>
+                </Button>
+              )}
               {(hiddenArchivedCount > 0 || showArchived) && (
                 <Button
                   type="button"

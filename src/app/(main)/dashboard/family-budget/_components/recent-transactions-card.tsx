@@ -26,6 +26,8 @@ interface RecentTransactionsCardProps {
   categories?: ExternalProviderCategory[];
   selectedAccountId?: string | null;
   onClearAccountFilter?: () => void;
+  selectedCategoryIds?: string[];
+  onClearCategoryFilter?: () => void;
   filterLabel?: string;
   onClearFilter?: () => void;
   periodFilter?: { from?: string | null; to?: string | null };
@@ -45,6 +47,8 @@ export function RecentTransactionsCard({
   categories = [],
   selectedAccountId = null,
   onClearAccountFilter,
+  selectedCategoryIds,
+  onClearCategoryFilter,
   filterLabel,
   onClearFilter,
   periodFilter,
@@ -71,6 +75,20 @@ export function RecentTransactionsCard({
     [categories, selectedAccountId],
   );
 
+  const categoryIdsKey = (selectedCategoryIds ?? []).join(",");
+  const queryCategoryIds = useMemo(
+    () => (categoryIdsKey ? categoryIdsKey.split(",") : selectedAccountId ? [selectedAccountId] : undefined),
+    [categoryIdsKey, selectedAccountId],
+  );
+
+  const selectedCategoryLabel = useMemo(() => {
+    if (!categoryIdsKey) return undefined;
+    const ids = categoryIdsKey.split(",");
+    const first = categories.find((c) => c.id === ids[0]);
+    if (!first) return "Category";
+    return ids.length > 1 ? `${first.name} +${ids.length - 1}` : first.name;
+  }, [categoryIdsKey, categories]);
+
   useEffect(() => {
     if (initialTransactions !== undefined) {
       setTransactions(initialTransactions);
@@ -87,7 +105,7 @@ export function RecentTransactionsCard({
           skip: 0,
           take: PAGE_SIZE,
           period: periodFilter,
-          categoryIds: selectedAccountId ? [selectedAccountId] : undefined,
+          categoryIds: queryCategoryIds,
           signal,
           forceRefresh,
         });
@@ -102,7 +120,7 @@ export function RecentTransactionsCard({
         setInternalIsLoading(false);
       }
     },
-    [periodFilter, selectedAccountId],
+    [periodFilter, queryCategoryIds],
   );
 
   useEffect(() => {
@@ -130,7 +148,7 @@ export function RecentTransactionsCard({
         skip: transactions.length,
         take: PAGE_SIZE,
         period: periodFilter,
-        categoryIds: selectedAccountId ? [selectedAccountId] : undefined,
+        categoryIds: queryCategoryIds,
       });
 
       setTransactions((prev) => {
@@ -146,42 +164,67 @@ export function RecentTransactionsCard({
     }
   }
 
+  // When both a category and an account filter are active, narrow category results to the account client-side
+  const visibleTransactions = useMemo(() => {
+    if (!categoryIdsKey || !selectedAccountId) return transactions;
+    return transactions.filter((tx) => tx.sourceId === selectedAccountId || tx.destinationId === selectedAccountId);
+  }, [transactions, categoryIdsKey, selectedAccountId]);
+
   const rows = useMemo(
-    () => computeTransactionsWithRunningBalance(transactions, categories, defaultCurrency),
-    [transactions, categories, defaultCurrency],
+    () => computeTransactionsWithRunningBalance(visibleTransactions, categories, defaultCurrency),
+    [visibleTransactions, categories, defaultCurrency],
   );
 
   const categoryMap = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
   const activeFilterLabel = filterLabel ?? selectedAccount?.name;
+  const hasAnyFilter = Boolean(activeFilterLabel || selectedCategoryLabel);
   const handleClear = onClearFilter ?? onClearAccountFilter;
 
   return (
     <SectionShell
       title="Transactions"
       description={
-        activeFilterLabel
-          ? `Filtered transactions for ${activeFilterLabel}`
+        hasAnyFilter
+          ? `Filtered transactions for ${[selectedCategoryLabel, activeFilterLabel].filter(Boolean).join(" · ")}`
           : "All-time stream of household income, spending, and transfers"
       }
       action={
-        activeFilterLabel ? (
-          <Button
-            type="button"
-            variant="secondary"
-            size="xs"
-            onClick={handleClear}
-            className="h-6 gap-1 px-2 text-[11px]"
-          >
-            <span className="max-w-[140px] truncate">{activeFilterLabel}</span>
-            {selectedAccount && !filterLabel && (
-              <span className="text-muted-foreground tabular-nums">
-                {formatMoney(getAccountBalance(selectedAccount), selectedAccount.currencyId || defaultCurrency)}
-              </span>
+        hasAnyFilter ? (
+          <div className="flex items-center gap-1.5">
+            {selectedCategoryLabel && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="xs"
+                onClick={onClearCategoryFilter}
+                className="h-6 gap-1 px-2 text-[11px]"
+              >
+                <span className="text-muted-foreground">Category:</span>
+                <span className="max-w-[140px] truncate">{selectedCategoryLabel}</span>
+                <X className="size-3" />
+                <span className="sr-only">Clear category filter</span>
+              </Button>
             )}
-            <X className="size-3" />
-            <span className="sr-only">Clear filter</span>
-          </Button>
+            {activeFilterLabel && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="xs"
+                onClick={handleClear}
+                className="h-6 gap-1 px-2 text-[11px]"
+              >
+                <span className="max-w-[140px] truncate">{activeFilterLabel}</span>
+                {selectedAccount && !filterLabel && (
+                  <span className="text-muted-foreground tabular-nums">
+                    {formatMoney(getAccountBalance(selectedAccount), selectedAccount.currencyId || defaultCurrency)}
+                  </span>
+                )}
+                <X className="size-3" />
+                <span className="sr-only">Clear filter</span>
+              </Button>
+            )}
+          </div>
         ) : undefined
       }
       isLoading={isLoading}

@@ -7,6 +7,7 @@ import { Banknote, RotateCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
+import { CategoryRenamingDialog } from "./category-renaming-dialog";
 import { getBudgetSelection, getCategories, getCurrencies, getSettings, getTransactionPage } from "./external-provider-client";
 import {
   buildLastTransactionMap,
@@ -45,6 +46,7 @@ export function IncomeDashboard() {
   // Filtering state for embedded transaction ledger
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [selectedTaxTag, setSelectedTaxTag] = useState<string | null>(null);
+  const [isRenamingDialogOpen, setIsRenamingDialogOpen] = useState(false);
 
   const defaultCurrency = settings?.defaultCurrency ?? "PLN";
 
@@ -290,6 +292,7 @@ export function IncomeDashboard() {
             selectedSourceId={selectedSourceId}
             onSelectSource={handleSelectSource}
             incomeBySourceId={incomeBySourceId}
+            onOpenNormalizeCategories={() => setIsRenamingDialogOpen(true)}
           />
         </div>
 
@@ -337,6 +340,19 @@ export function IncomeDashboard() {
             ? `No transactions found matching ${activeFilterLabel}.`
             : "No income, tax, or currency exchange transactions found for the period."
         }
+      />
+
+      <CategoryRenamingDialog
+        open={isRenamingDialogOpen}
+        onOpenChange={setIsRenamingDialogOpen}
+        categories={categories}
+        defaultCurrency={defaultCurrency}
+        transactions={transactions}
+        defaultScope="income"
+        onRenamed={(updatedCategories) => {
+          setCategories(updatedCategories);
+          void loadData(undefined, true);
+        }}
       />
     </div>
   );

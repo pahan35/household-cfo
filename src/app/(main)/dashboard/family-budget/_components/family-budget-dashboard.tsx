@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 
 import { AccountLiquidityStrip } from "./account-liquidity-strip";
 import { AccountsCard } from "./accounts-card";
-import { CategoryRenamingDialog } from "./category-renaming-dialog";
+import { parseLedgerCategoryIds } from "./category-expense-trace-helpers";
 import {
   createTransaction,
   getCategories,
@@ -47,8 +47,8 @@ export function FamilyBudgetDashboard() {
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
   const [baseDataError, setBaseDataError] = useState<Error | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [isInitDebtDialogOpen, setIsInitDebtDialogOpen] = useState(false);
-  const [isRenamingDialogOpen, setIsRenamingDialogOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const loadBaseData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
@@ -96,6 +96,28 @@ export function FamilyBudgetDashboard() {
       controller.abort();
     };
   }, [loadBaseData]);
+
+  // Read ?categoryId (comma-separated) and ?accountId from the URL on mount and browser Back/Forward
+  useEffect(() => {
+    function syncFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const ids = parseLedgerCategoryIds(params.get("categoryId"));
+      setSelectedCategoryIds((prev) => (prev.join(",") === ids.join(",") ? prev : ids));
+      const accountId = params.get("accountId");
+      if (accountId) setSelectedAccountId(accountId);
+    }
+    syncFromUrl();
+    window.addEventListener("popstate", syncFromUrl);
+    return () => window.removeEventListener("popstate", syncFromUrl);
+  }, []);
+
+  const handleClearCategoryFilter = useCallback(() => {
+    setSelectedCategoryIds([]);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("categoryId");
+    url.searchParams.delete("accountId");
+    window.history.replaceState(null, "", url.toString());
+  }, []);
 
   const defaultCurrency = settings?.defaultCurrency ?? "PLN";
 
@@ -301,7 +323,6 @@ export function FamilyBudgetDashboard() {
             selectedAccountId={selectedAccountId}
             onSelectAccount={setSelectedAccountId}
             onOpenNewDebtDialog={() => setIsInitDebtDialogOpen(true)}
-            onOpenNormalizeCategories={() => setIsRenamingDialogOpen(true)}
           />
         </div>
         <div className="xl:col-span-7 flex flex-col gap-4">
@@ -322,6 +343,8 @@ export function FamilyBudgetDashboard() {
             categories={categories}
             selectedAccountId={selectedAccountId}
             onClearAccountFilter={() => setSelectedAccountId(null)}
+            selectedCategoryIds={selectedCategoryIds}
+            onClearCategoryFilter={handleClearCategoryFilter}
           />
         </div>
       </div>
@@ -332,18 +355,6 @@ export function FamilyBudgetDashboard() {
         defaultCurrency={defaultCurrency}
         currencies={currencies}
         onSubmit={handleCreateDebtAccount}
-      />
-
-      <CategoryRenamingDialog
-        open={isRenamingDialogOpen}
-        onOpenChange={setIsRenamingDialogOpen}
-        categories={categories}
-        defaultCurrency={defaultCurrency}
-        transactions={recentTransactions}
-        onRenamed={(updatedCategories) => {
-          setCategories(updatedCategories);
-          void loadBaseData(undefined, true);
-        }}
       />
     </div>
   );

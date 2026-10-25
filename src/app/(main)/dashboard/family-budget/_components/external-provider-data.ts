@@ -1664,6 +1664,22 @@ export function extractCanonicalBaseName(name: string, defaultCurrency = "PLN"):
   return cleaned;
 }
 
+export type CategoryNormalizationScope = "expense" | "income";
+
+export function isExpenseCategory(c: ExternalProviderCategory): boolean {
+  const t = Number(c.categoryType);
+  return t === CategoryType.Expense || t === CategoryType.Goal || t === CategoryType.ClassicGoal;
+}
+
+export function isIncomeCategory(c: ExternalProviderCategory): boolean {
+  return Number(c.categoryType) === CategoryType.Income;
+}
+
+function isInNormalizationScope(c: ExternalProviderCategory, scope: CategoryNormalizationScope): boolean {
+  if (c.deleted) return false;
+  return scope === "income" ? isIncomeCategory(c) : isExpenseCategory(c);
+}
+
 export interface ProposedCategoryRename {
   id: string;
   category: ExternalProviderCategory;
@@ -1672,11 +1688,27 @@ export interface ProposedCategoryRename {
   tags: string[];
   reason?: string;
   isCollision?: boolean;
+  /** 1 = vacates a canonical base name (or independent), 2 = claims a canonical base name. */
+  stepOrder: 1 | 2;
+  /** Lowercase canonical base name this rename vacates. */
+  vacatesBaseName?: string;
+  /** Lowercase canonical base name this rename claims. */
+  claimsBaseName?: string;
+  /** IDs of categories (also being renamed) that currently occupy the name this rename claims. */
+  dependsOnCategoryIds: string[];
 }
 
 export interface GenerateProposedRenamesOptions {
   defaultCurrency?: string;
   transactions?: ExternalProviderTransaction[];
+  scope?: CategoryNormalizationScope;
+}
+
+function splitArchivePrefix(name: string): { prefix: string; stem: string } {
+  const trimmed = name.trim();
+  const match = /^_+/.exec(trimmed);
+  const prefix = match ? match[0] : "";
+  return { prefix, stem: trimmed.slice(prefix.length).trim() };
 }
 
 /**
@@ -1684,18 +1716,22 @@ export interface GenerateProposedRenamesOptions {
  * 1. Default currency suffix (e.g. " PLN") stripped.
  * 2. Ukrainian categories translated and tagged with " UAH".
  * 3. Legacy pre-2022 categories without currency tag appended with " UAH".
- * Performs collision checking so simultaneous renames (e.g. "Hotels PLN" -> "Hotels" and "Hotels" -> "Hotels UAH")
- * resolve cleanly without ID or name conflict.
+ * Strictly partitioned by `options.scope` (default `"expense"`), preserving leading `_` archive prefixes.
+ * Performs collision checking within the scope and annotates coupled rename chains with `stepOrder`.
  */
 export function generateProposedCategoryRenames(
   categories: ExternalProviderCategory[],
   options?: GenerateProposedRenamesOptions,
 ): ProposedCategoryRename[] {
   const defaultCurrency = (options?.defaultCurrency ?? "PLN").toUpperCase();
+  const scope = options?.scope ?? "expense";
   const stripTag = defaultCurrency === "PLN" ? RENAME_TAGS.STRIP_PLN : getStripCurrencyTag(defaultCurrency);
 
-  // Filter for valid active expense/income categories (exclude deleted and account types)
-  const candidateCategories = categories.filter((c) => !c.deleted && !isAccountType(c.categoryType));
+  const scopeCategories = categories.filter((c) => isInNormalizationScope(c, scope));
+  const candidateCategories = scopeCategories;
+
+  const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultCurrency}\\)?$`, "i");
+  const foreignSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()(${KNOWN_FOREIGN_CURRENCY_CODES.join("|")})\\)?$`, "i");
 
   // Identify categories that have explicit transactions in UAH or pre-2022
   const uahCategoryIds = new Set<string>();
@@ -1714,12 +1750,12 @@ export function generateProposedCategoryRenames(
     }
   }
 
-  // Find all category names that have a "${name} ${defaultCurrency}" counterpart
+  // Find all (archive-prefix-agnostic) stems that have a "${name} ${defaultCurrency}" counterpart
   const baseNamesWithDefaultSuffix = new Set<string>();
   for (const cat of candidateCategories) {
-    const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultCurrency}\\)?$`, "i");
-    if (defaultSuffixRegex.test(cat.name.trim())) {
-      const base = cat.name.trim().replace(defaultSuffixRegex, "").trim().toLowerCase();
+    const { stem } = splitArchivePrefix(cat.name);
+    if (defaultSuffixRegex.test(stem)) {
+      const base = stem.replace(defaultSuffixRegex, "").trim().toLowerCase();
       if (base) {
         baseNamesWithDefaultSuffix.add(base);
       }
@@ -1730,63 +1766,74 @@ export function generateProposedCategoryRenames(
 
   for (const cat of candidateCategories) {
     const rawName = cat.name.trim();
+    const { prefix, stem } = splitArchivePrefix(rawName);
     const tags: string[] = [];
-    let proposed = rawName;
+    let proposedStem = stem;
     const reasons: string[] = [];
 
-    const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultCurrency}\\)?$`, "i");
-    const foreignSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()(${KNOWN_FOREIGN_CURRENCY_CODES.join("|")})\\)?$`, "i");
-
-    const endsWithDefault = defaultSuffixRegex.test(rawName);
-    const endsWithForeign = foreignSuffixRegex.test(rawName);
-    const hasCyrillic = isCyrillic(rawName);
+    const endsWithDefault = defaultSuffixRegex.test(stem);
+    const endsWithForeign = foreignSuffixRegex.test(stem);
+    const hasCyrillic = isCyrillic(stem);
     const isPre2022 = isPre2022Timestamp(cat.createdTimestamp) || uahCategoryIds.has(cat.id);
-    const hasModernDefaultCounterpart = baseNamesWithDefaultSuffix.has(rawName.toLowerCase());
+    const hasModernDefaultCounterpart = baseNamesWithDefaultSuffix.has(stem.toLowerCase());
 
     if (endsWithDefault) {
-      // Rule 1: Strip default currency
-      proposed = rawName.replace(defaultSuffixRegex, "").trim();
+      proposedStem = stem.replace(defaultSuffixRegex, "").trim();
       tags.push(stripTag);
       reasons.push(`Strip default ${defaultCurrency} suffix`);
     } else if (hasCyrillic) {
-      // Rule 2: Ukrainian / Cyrillic category
-      const cleaned = rawName.replace(foreignSuffixRegex, "").trim();
-      const lower = cleaned.toLowerCase();
-      const translated = LOCALIZED_CATEGORY_DICTIONARY[lower] ?? cleaned;
+      const cleaned = stem.replace(foreignSuffixRegex, "").trim();
+      const translated = LOCALIZED_CATEGORY_DICTIONARY[cleaned.toLowerCase()] ?? cleaned;
       tags.push(RENAME_TAGS.TRANSLATE_UA);
       tags.push(RENAME_TAGS.ADD_UAH);
-      proposed = `${translated} UAH`;
+      proposedStem = `${translated} UAH`;
       reasons.push("Translate Ukrainian category and add UAH suffix");
     } else if (!endsWithForeign && (isPre2022 || hasModernDefaultCounterpart)) {
-      // Rule 3: Legacy pre-2022 category without currency suffix
-      proposed = `${rawName} UAH`;
+      proposedStem = `${stem} UAH`;
       tags.push(RENAME_TAGS.ADD_UAH);
       reasons.push("Add UAH suffix to legacy pre-2022 category");
     }
 
-    if (proposed !== rawName && tags.length > 0) {
+    if (proposedStem !== stem && tags.length > 0) {
+      const currentLower = stem.toLowerCase();
+      const proposedLower = proposedStem.toLowerCase();
+      const base = extractCanonicalBaseName(stem, defaultCurrency).toLowerCase();
+      const vacates = currentLower === base && proposedLower !== base;
+      const claims = proposedLower === base && currentLower !== base;
       rawProposed.push({
         id: cat.id,
         category: cat,
         currentName: rawName,
-        proposedName: proposed,
+        proposedName: `${prefix}${proposedStem}`,
         tags,
         reason: reasons.join("; "),
+        stepOrder: claims ? 2 : 1,
+        ...(vacates ? { vacatesBaseName: base } : {}),
+        ...(claims ? { claimsBaseName: proposedLower } : {}),
+        dependsOnCategoryIds: [],
       });
     }
   }
 
-  // Collision detection:
-  // Check if any proposed name duplicates another proposed name or an unchanged category
+  // Dependencies: a claiming rename depends on any renaming category currently occupying its target name.
+  const renamingById = new Map(rawProposed.map((r) => [r.id, r]));
+  for (const item of rawProposed) {
+    if (item.stepOrder !== 2) continue;
+    const targetKey = item.proposedName.toLowerCase();
+    item.dependsOnCategoryIds = scopeCategories
+      .filter((c) => c.id !== item.id && renamingById.has(c.id) && c.name.trim().toLowerCase() === targetKey)
+      .map((c) => c.id);
+  }
+
+  // Collision detection (scoped): duplicate proposals or an unchanged category already using the target name
   const proposedCounts = new Map<string, number>();
   for (const item of rawProposed) {
     const key = item.proposedName.toLowerCase();
     proposedCounts.set(key, (proposedCounts.get(key) ?? 0) + 1);
   }
 
-  const renamingIds = new Set(rawProposed.map((r) => r.id));
   const unchangedNames = new Set(
-    categories.filter((c) => !c.deleted && !renamingIds.has(c.id)).map((c) => c.name.trim().toLowerCase()),
+    scopeCategories.filter((c) => !renamingById.has(c.id)).map((c) => c.name.trim().toLowerCase()),
   );
 
   for (const item of rawProposed) {
@@ -1797,4 +1844,257 @@ export function generateProposedCategoryRenames(
   }
 
   return rawProposed;
+}
+
+export type CategoryCurrencyTier = "primary" | "foreign" | "archived";
+
+export function getCategoryCurrencyTier(name: string, defaultCurrency = "PLN"): CategoryCurrencyTier {
+  const { prefix, stem } = splitArchivePrefix(name);
+  if (prefix.length > 0) return "archived";
+  return isForeignCurrencyCategoryName(stem, defaultCurrency) ? "foreign" : "primary";
+}
+
+export function isForeignCurrencyCategoryName(name: string, defaultCurrency = "PLN"): boolean {
+  const { stem } = splitArchivePrefix(name);
+  const defaultUpper = defaultCurrency.toUpperCase();
+  const codes = KNOWN_FOREIGN_CURRENCY_CODES.filter((c) => c !== defaultUpper);
+  if (codes.length === 0) return false;
+  return new RegExp(`(?:\\s+|\\s*\\()(${codes.join("|")})\\)?$`, "i").test(stem);
+}
+
+export interface CategoryImpactRow {
+  id: string;
+  category: ExternalProviderCategory;
+  name: string;
+  order: number;
+  tier: CategoryCurrencyTier;
+  rename?: ProposedCategoryRename;
+}
+
+export interface ConceptRenameGroup {
+  baseName: string;
+  members: CategoryImpactRow[];
+  /** True when at least one member claims a base name occupied by another renaming member. */
+  isCoupled: boolean;
+}
+
+export interface CategoryNormalizationPlan {
+  scope: CategoryNormalizationScope;
+  renames: ProposedCategoryRename[];
+  rows: CategoryImpactRow[];
+  groups: ConceptRenameGroup[];
+}
+
+/**
+ * Full-audit builder: every category in the scope (changed and unchanged) with ExternalProvider `#order`,
+ * currency tier and proposed rename, plus Concept Rename Groups (categories sharing a canonical base name
+ * where at least one is being renamed).
+ */
+export function buildCategoryNormalizationPlan(
+  categories: ExternalProviderCategory[],
+  options?: GenerateProposedRenamesOptions,
+): CategoryNormalizationPlan {
+  const scope = options?.scope ?? "expense";
+  const defaultCurrency = options?.defaultCurrency ?? "PLN";
+  const renames = generateProposedCategoryRenames(categories, options);
+  const renameById = new Map(renames.map((r) => [r.id, r]));
+
+  const rows: CategoryImpactRow[] = sortCategoriesByOrder(
+    categories.filter((c) => isInNormalizationScope(c, scope)),
+  ).map((c, idx) => ({
+    id: c.id,
+    category: c,
+    name: c.name.trim(),
+    order: typeof c.order === "number" ? c.order : idx,
+    tier: getCategoryCurrencyTier(c.name, defaultCurrency),
+    rename: renameById.get(c.id),
+  }));
+
+  const byBase = new Map<string, CategoryImpactRow[]>();
+  for (const row of rows) {
+    const key = extractCanonicalBaseName(splitArchivePrefix(row.name).stem, defaultCurrency).toLowerCase();
+    const list = byBase.get(key) ?? [];
+    list.push(row);
+    byBase.set(key, list);
+  }
+
+  const groups: ConceptRenameGroup[] = [];
+  for (const [baseName, members] of byBase) {
+    if (members.length < 2 || !members.some((m) => m.rename)) continue;
+    const isCoupled = members.some((m) => m.rename && m.rename.dependsOnCategoryIds.length > 0);
+    groups.push({ baseName, members, isCoupled });
+  }
+
+  return { scope, renames, rows, groups };
+}
+
+export interface CategoryRenameEvalItem {
+  id: string;
+  currentName: string;
+  editedName: string;
+  selected: boolean;
+  dependsOnCategoryIds?: string[];
+}
+
+export interface CategoryRenameEvaluation {
+  status: "ok" | "collision" | "broken-chain";
+  message?: string;
+  conflictingCategoryId?: string;
+}
+
+/**
+ * Reactive collision / dependency evaluator. Computes every scope category's effective post-apply name
+ * (selected item -> edited name, otherwise current name) and flags selected items whose target name is
+ * already taken, distinguishing a broken coupled chain (unchecked prerequisite) from a plain collision.
+ */
+export function evaluateCategoryRenameState(
+  allScopeCategories: ExternalProviderCategory[],
+  items: CategoryRenameEvalItem[],
+): Record<string, CategoryRenameEvaluation> {
+  const itemById = new Map(items.map((i) => [i.id, i]));
+  const effective = allScopeCategories
+    .filter((c) => !c.deleted)
+    .map((c) => {
+      const item = itemById.get(c.id);
+      const name = item?.selected ? item.editedName.trim() : c.name.trim();
+      return { category: c, item, name, key: name.toLowerCase() };
+    });
+
+  const result: Record<string, CategoryRenameEvaluation> = {};
+  for (const item of items) {
+    if (!item.selected) {
+      result[item.id] = { status: "ok" };
+      continue;
+    }
+    const key = item.editedName.trim().toLowerCase();
+    if (!key) {
+      result[item.id] = { status: "ok" };
+      continue;
+    }
+    const other = effective.find((e) => e.category.id !== item.id && e.key === key);
+    if (!other) {
+      result[item.id] = { status: "ok" };
+      continue;
+    }
+    const order = typeof other.category.order === "number" ? `#${other.category.order} ` : "";
+    if (other.item && !other.item.selected && item.dependsOnCategoryIds?.includes(other.category.id)) {
+      result[item.id] = {
+        status: "broken-chain",
+        conflictingCategoryId: other.category.id,
+        message: `Blocked: ${order}'${other.category.name.trim()}' is unchecked and still occupies '${item.editedName.trim()}'. Check it or edit the target name.`,
+      };
+    } else {
+      const detail = other.item?.selected ? `(proposed from '${other.category.name.trim()}')` : "(unchanged)";
+      result[item.id] = {
+        status: "collision",
+        conflictingCategoryId: other.category.id,
+        message: `Collides with ${order}'${other.name}' ${detail}`,
+      };
+    }
+  }
+  return result;
+}
+
+/** Sorts renames topologically: step 1 (vacate) before step 2 (claim), tie-broken by ExternalProvider order. */
+export function sortRenamesTopologically<T extends { stepOrder?: number; category?: { order?: number } }>(
+  items: T[],
+): T[] {
+  return [...items].sort((a, b) => {
+    const step = (a.stepOrder ?? 1) - (b.stepOrder ?? 1);
+    if (step !== 0) return step;
+    return (a.category?.order ?? 0) - (b.category?.order ?? 0);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Expense category lifecycle & ExternalProvider order management
+// ---------------------------------------------------------------------------
+
+function sortedActiveExpenseCategories(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+  return sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && isExpenseCategory(c)));
+}
+
+function applyExpenseGroupUpdates(
+  allCategories: ExternalProviderCategory[],
+  newGroup: ExternalProviderCategory[],
+): ReorderCategoriesResult {
+  return applyCategoryGroupUpdates(allCategories, newGroup, isExpenseCategory);
+}
+
+export function archiveExpenseCategory(
+  allCategories: ExternalProviderCategory[],
+  categoryId: string,
+): ReorderCategoriesResult {
+  const target = allCategories.find((c) => c.id === categoryId && !c.deleted && isExpenseCategory(c));
+  if (!target) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+  const cleanName = target.name.replace(/^_+/, "").trim();
+  const updatedTarget: ExternalProviderCategory = { ...target, name: cleanName.length > 0 ? `_${cleanName}` : "_" };
+  const remaining = sortedActiveExpenseCategories(allCategories).filter((c) => c.id !== categoryId);
+  return applyExpenseGroupUpdates(allCategories, [...remaining, updatedTarget]);
+}
+
+export function unarchiveExpenseCategory(
+  allCategories: ExternalProviderCategory[],
+  categoryId: string,
+): ReorderCategoriesResult {
+  const target = allCategories.find((c) => c.id === categoryId && !c.deleted && isExpenseCategory(c));
+  if (!target) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+  const cleanName = target.name.replace(/^_+/, "").trim();
+  const updatedTarget: ExternalProviderCategory = { ...target, name: cleanName.length > 0 ? cleanName : target.name };
+  const remaining = sortedActiveExpenseCategories(allCategories).filter((c) => c.id !== categoryId);
+  const firstArchivedIdx = remaining.findIndex((c) => isArchivedCategoryName(c.name));
+  const insertIdx = firstArchivedIdx === -1 ? remaining.length : firstArchivedIdx;
+  return applyExpenseGroupUpdates(allCategories, [
+    ...remaining.slice(0, insertIdx),
+    updatedTarget,
+    ...remaining.slice(insertIdx),
+  ]);
+}
+
+export function findExpenseCategoriesBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+  const list = sortedActiveExpenseCategories(allCategories);
+  const firstArchivedIdx = list.findIndex((c) => isArchivedCategoryName(c.name));
+  if (firstArchivedIdx === -1) return [];
+  return list.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+}
+
+export function moveExpenseCategoriesAboveArchived(
+  allCategories: ExternalProviderCategory[],
+  categoryIds?: string[],
+): ReorderCategoriesResult {
+  const list = sortedActiveExpenseCategories(allCategories);
+  const below = findExpenseCategoriesBelowArchived(allCategories);
+  const idSet = categoryIds ? new Set(categoryIds) : null;
+  const toMove = idSet ? below.filter((c) => idSet.has(c.id)) : below;
+  if (toMove.length === 0) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+  const moveIds = new Set(toMove.map((c) => c.id));
+  const remaining = list.filter((c) => !moveIds.has(c.id));
+  const insertIdx = remaining.findIndex((c) => isArchivedCategoryName(c.name));
+  const at = insertIdx === -1 ? remaining.length : insertIdx;
+  return applyExpenseGroupUpdates(allCategories, [...remaining.slice(0, at), ...toMove, ...remaining.slice(at)]);
+}
+
+/**
+ * Orders expense categories: primary (default currency) active categories, then foreign/legacy-currency
+ * suffixed active categories, then `_` archived categories. Relative order is preserved within each tier.
+ */
+export function organizeExpenseCategoriesByCurrencyTier(
+  allCategories: ExternalProviderCategory[],
+  defaultCurrency = "PLN",
+): ReorderCategoriesResult {
+  const list = sortedActiveExpenseCategories(allCategories);
+  const primary: ExternalProviderCategory[] = [];
+  const foreign: ExternalProviderCategory[] = [];
+  const archived: ExternalProviderCategory[] = [];
+  for (const c of list) {
+    const tier = getCategoryCurrencyTier(c.name, defaultCurrency);
+    (tier === "archived" ? archived : tier === "foreign" ? foreign : primary).push(c);
+  }
+  return applyExpenseGroupUpdates(allCategories, [...primary, ...foreign, ...archived]);
 }

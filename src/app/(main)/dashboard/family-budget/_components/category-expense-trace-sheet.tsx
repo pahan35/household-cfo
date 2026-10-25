@@ -6,7 +6,7 @@ import Link from "next/link";
 
 import { cn } from "cn";
 import { endOfMonth, format, isValid, parseISO, startOfMonth } from "date-fns";
-import { AlertCircle, ExternalLink, Layers, Receipt, RotateCw, Wallet } from "lucide-react";
+import { AlertCircle, ExternalLink, History, Layers, Receipt, RotateCw, Wallet } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import {
+  buildLedgerLink,
   computeAccountBreakdown,
   computePeriodSpendSummary,
   filterTransactionsByAccount,
@@ -49,6 +50,8 @@ export interface CategoryExpenseTraceSheetProps {
   defaultCurrency?: string;
 }
 
+type PeriodTab = "active" | "baseline" | "combined" | "all-time";
+
 function formatRowDate(tx: ExternalProviderTransaction): string {
   if (tx.dateTimestampISO) {
     return formatTransactionDate(tx.dateTimestampISO);
@@ -73,7 +76,10 @@ export function CategoryExpenseTraceSheet({
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState<Error | null>(null);
 
-  const [periodTab, setPeriodTab] = useState<"active" | "baseline" | "combined">("active");
+  const [allTimeTransactions, setAllTimeTransactions] = useState<ExternalProviderTransaction[]>([]);
+  const [isLoadingAllTime, setIsLoadingAllTime] = useState(false);
+
+  const [periodTab, setPeriodTab] = useState<PeriodTab>("active");
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
 
   const categoryMap = useMemo(() => {
@@ -165,17 +171,53 @@ export function CategoryExpenseTraceSheet({
     };
   }, [open, category, loadTransactions]);
 
-  // Reset tab and account filter when category changes
+  const loadAllTimeTransactions = useCallback(
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      if (!category?.id || categoryIds.length === 0) {
+        setAllTimeTransactions([]);
+        return;
+      }
+      setIsLoadingAllTime(true);
+      setFetchError(null);
+      try {
+        // No period filter: transactions across all years
+        const res = await getTransactionPage({ categoryIds, take: 300, signal, forceRefresh });
+        setAllTimeTransactions(res.transactions ?? []);
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setFetchError(err instanceof Error ? err : new Error("Failed to load all-time transactions for category"));
+      } finally {
+        setIsLoadingAllTime(false);
+      }
+    },
+    [category?.id, categoryIds],
+  );
+
+  useEffect(() => {
+    if (!open || !category || periodTab !== "all-time") return;
+    const controller = new AbortController();
+    void loadAllTimeTransactions(controller.signal);
+    return () => {
+      controller.abort();
+    };
+  }, [open, category, periodTab, loadAllTimeTransactions]);
+
+  // Reset tab and account filter when the inspected category changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset is keyed on the category id only
   useEffect(() => {
     setPeriodTab("active");
     setSelectedAccountId(null);
-  }, []);
+    setAllTimeTransactions([]);
+  }, [category?.id]);
 
   const spendSummary = useMemo(() => {
     return computePeriodSpendSummary(activeTransactions, baselineTransactions);
   }, [activeTransactions, baselineTransactions]);
 
   const currentDisplaySet = useMemo(() => {
+    if (periodTab === "all-time") {
+      return allTimeTransactions.map((tx) => ({ ...tx, periodLabel: "All-Time" }));
+    }
     if (periodTab === "active") {
       return activeTransactions.map((tx) => ({ ...tx, periodLabel: activePeriod.label }));
     }
@@ -190,7 +232,7 @@ export function CategoryExpenseTraceSheet({
       isBaseline: true,
     }));
     return [...a, ...b];
-  }, [periodTab, activeTransactions, baselineTransactions, activePeriod.label, baselinePeriod]);
+  }, [periodTab, activeTransactions, baselineTransactions, allTimeTransactions, activePeriod.label, baselinePeriod]);
 
   const accountBreakdown = useMemo(() => {
     return computeAccountBreakdown(currentDisplaySet, categoryMap);
@@ -206,10 +248,9 @@ export function CategoryExpenseTraceSheet({
     return categoryMap.get(category.id);
   }, [category, categoryMap]);
 
-  const ledgerLink = useMemo(() => {
-    if (!category) return "/dashboard/family-budget";
-    return `/dashboard/family-budget?categoryId=${encodeURIComponent(category.id)}`;
-  }, [category]);
+  const ledgerLink = useMemo(() => buildLedgerLink(categoryIds, selectedAccountId), [categoryIds, selectedAccountId]);
+
+  const isLoadingCurrent = periodTab === "all-time" ? isLoadingAllTime : isLoading;
 
   const currentPeriodTotalSpend = useMemo(() => {
     return filteredTransactions.reduce((acc, tx) => acc + getTransactionSpendAmount(tx), 0);
@@ -223,7 +264,10 @@ export function CategoryExpenseTraceSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex h-full w-full flex-col gap-0 p-0 sm:max-w-xl md:max-w-2xl">
+      <SheetContent
+        side="right"
+        className="flex h-full w-full flex-col gap-0 p-0 data-[side=right]:sm:max-w-xl data-[side=right]:md:max-w-2xl"
+      >
         {/* Header */}
         <SheetHeader className="border-b px-6 py-4">
           <div className="flex items-start justify-between gap-4 pr-8">
@@ -271,31 +315,37 @@ export function CategoryExpenseTraceSheet({
             </div>
           </div>
 
-          {/* Dual-period tab controls if baseline is available */}
-          {baselinePeriod && (
-            <div className="mt-3">
-              <Tabs
-                value={periodTab}
-                onValueChange={(v) => {
-                  setPeriodTab(v as "active" | "baseline" | "combined");
-                  setSelectedAccountId(null);
-                }}
-              >
-                <TabsList className="grid h-8 w-full grid-cols-3">
-                  <TabsTrigger value="active" className="text-xs">
-                    {activePeriod.label} ({formatMoney(spendSummary.activeSpend, defaultCurrency)})
-                  </TabsTrigger>
+          {/* Period tab controls: active month, optional baseline comparison, and all-time history */}
+          <div className="mt-3">
+            <Tabs
+              value={periodTab}
+              onValueChange={(v) => {
+                setPeriodTab(v as PeriodTab);
+                setSelectedAccountId(null);
+              }}
+            >
+              <TabsList className={cn("grid h-8 w-full", baselinePeriod ? "grid-cols-4" : "grid-cols-2")}>
+                <TabsTrigger value="active" className="text-xs">
+                  {activePeriod.label} ({formatMoney(spendSummary.activeSpend, defaultCurrency)})
+                </TabsTrigger>
+                {baselinePeriod && (
                   <TabsTrigger value="baseline" className="text-xs">
                     {baselinePeriod.label} ({formatMoney(spendSummary.baselineSpend, defaultCurrency)})
                   </TabsTrigger>
+                )}
+                {baselinePeriod && (
                   <TabsTrigger value="combined" className="gap-1 text-xs">
                     <Layers className="size-3" />
                     Side-by-Side
                   </TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </div>
-          )}
+                )}
+                <TabsTrigger value="all-time" className="gap-1 text-xs">
+                  <History className="size-3" />
+                  All-Time History
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
         </SheetHeader>
 
         {/* Content Body */}
@@ -350,7 +400,7 @@ export function CategoryExpenseTraceSheet({
           {/* Transaction List / Loading / Empty State */}
           <ScrollArea className="flex-1 px-6">
             <div className="py-4">
-              {isLoading && (
+              {isLoadingCurrent && (
                 <div className="flex flex-col gap-3">
                   {[1, 2, 3, 4, 5].map((i) => (
                     <div key={i} className="border-border/40 flex items-center justify-between rounded-lg border p-3">
@@ -367,14 +417,18 @@ export function CategoryExpenseTraceSheet({
                 </div>
               )}
 
-              {fetchError && !isLoading && (
+              {fetchError && !isLoadingCurrent && (
                 <div className="border-destructive/20 bg-destructive/5 text-destructive my-6 flex flex-col items-center justify-center gap-2 rounded-lg border p-6 text-center">
                   <AlertCircle className="size-8" />
                   <p className="text-sm font-medium">{fetchError.message}</p>
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => void loadTransactions(undefined, true)}
+                    onClick={() =>
+                      void (periodTab === "all-time"
+                        ? loadAllTimeTransactions(undefined, true)
+                        : loadTransactions(undefined, true))
+                    }
                     className="mt-2 gap-1.5 text-xs"
                   >
                     <RotateCw className="size-3.5" />
@@ -383,7 +437,7 @@ export function CategoryExpenseTraceSheet({
                 </div>
               )}
 
-              {!isLoading && !fetchError && filteredTransactions.length === 0 && (
+              {!isLoadingCurrent && !fetchError && filteredTransactions.length === 0 && (
                 <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
                   <div className="bg-muted text-muted-foreground flex size-12 items-center justify-center rounded-full">
                     <Receipt className="size-6" />
@@ -393,7 +447,7 @@ export function CategoryExpenseTraceSheet({
                     <p className="text-muted-foreground max-w-xs text-xs">
                       {selectedAccountId
                         ? "No expenses found for this specific paying account. Try selecting All Accounts."
-                        : `No expenses recorded for ${category?.name ?? "this category"} in the inspected period.`}
+                        : `No expenses recorded for ${category?.name ?? "this category"} ${periodTab === "all-time" ? "across all time" : "in the inspected period"}.`}
                     </p>
                   </div>
                   {selectedAccountId && (
@@ -401,10 +455,21 @@ export function CategoryExpenseTraceSheet({
                       Clear account filter
                     </Button>
                   )}
+                  {periodTab !== "all-time" && !selectedAccountId && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setPeriodTab("all-time")}
+                      className="gap-1.5 text-xs"
+                    >
+                      <History className="size-3" />
+                      View all-time history
+                    </Button>
+                  )}
                 </div>
               )}
 
-              {!isLoading && !fetchError && filteredTransactions.length > 0 && (
+              {!isLoadingCurrent && !fetchError && filteredTransactions.length > 0 && (
                 <div className="divide-border/60 flex flex-col divide-y">
                   {filteredTransactions.map((tx) => {
                     const spendAmount = getTransactionSpendAmount(tx);

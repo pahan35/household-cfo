@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   archiveAccountCategory,
+  archiveExpenseCategory,
   archiveIncomeCategory,
+  buildCategoryNormalizationPlan,
   buildFeeTransaction,
   buildFxReconciliationTransaction,
   buildLastTransactionMap,
@@ -15,6 +17,7 @@ import {
   computeAccountLiquiditySummary,
   computeTransactionsWithRunningBalance,
   convertCurrencyAmount,
+  evaluateCategoryRenameState,
   extractCanonicalBaseName,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
@@ -31,15 +34,19 @@ import {
   isThrowawayDebtAccount,
   KNOWN_FOREIGN_CURRENCY_CODES,
   moveAccountsAboveArchived,
+  moveExpenseCategoriesAboveArchived,
   moveIncomeSourcesAboveArchived,
+  organizeExpenseCategoriesByCurrencyTier,
   parseExternalProviderTimestamp,
   RENAME_TAGS,
   reorderCategoriesSubset,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
+  sortRenamesTopologically,
   toDotNetTicks,
   LOCALIZED_CATEGORY_DICTIONARY,
   unarchiveAccountCategory,
+  unarchiveExpenseCategory,
   unarchiveIncomeCategory,
 } from "../external-provider-data";
 
@@ -1349,5 +1356,85 @@ describe("Clearing Transaction Builders", () => {
         expect(renames.some((r) => r.proposedName === "Transport UAH")).toBe(true);
       });
     });
+  });
+});
+
+describe("scoped category normalization", () => {
+  const cat = (id: string, name: string, type: number, order: number, extra?: Partial<ExternalProviderCategory>) =>
+    ({ id, name, categoryType: type, order, ...extra }) as ExternalProviderCategory;
+
+  it("partitions strictly by scope", () => {
+    const cats = [cat("e1", "Gifts PLN", CategoryType.Expense, 0), cat("i1", "Gifts", CategoryType.Income, 0)];
+    const expense = generateProposedCategoryRenames(cats, { scope: "expense" });
+    expect(expense.map((r) => r.id)).toEqual(["e1"]);
+    expect(expense[0].isCollision).toBeFalsy();
+    expect(generateProposedCategoryRenames(cats, { scope: "income" })).toHaveLength(0);
+  });
+
+  it("preserves leading underscore archive prefixes", () => {
+    const cats = [cat("a", "_Diet PLN", CategoryType.Expense, 0), cat("b", "_Ліки", CategoryType.Expense, 1)];
+    const renames = generateProposedCategoryRenames(cats);
+    expect(renames.find((r) => r.id === "a")?.proposedName).toBe("_Diet");
+    expect(renames.find((r) => r.id === "b")?.proposedName).toBe("_Medicine UAH");
+  });
+
+  it("assigns step orders and dependencies for coupled chains", () => {
+    const cats = [
+      cat("h1", "Hotels", CategoryType.Expense, 12, { createdTimestamp: toDotNetTicks(new Date("2021-05-10")) }),
+      cat("h2", "Hotels PLN", CategoryType.Expense, 3),
+    ];
+    const renames = generateProposedCategoryRenames(cats);
+    const vacate = renames.find((r) => r.id === "h1");
+    const claim = renames.find((r) => r.id === "h2");
+    expect(vacate).toMatchObject({ stepOrder: 1, vacatesBaseName: "hotels" });
+    expect(claim).toMatchObject({ stepOrder: 2, claimsBaseName: "hotels", dependsOnCategoryIds: ["h1"] });
+    expect(sortRenamesTopologically(renames).map((r) => r.id)).toEqual(["h1", "h2"]);
+    expect(buildCategoryNormalizationPlan(cats).groups[0]).toMatchObject({ baseName: "hotels", isCoupled: true });
+  });
+
+  it("flags broken chains and collisions reactively", () => {
+    const cats = [
+      cat("h1", "Hotels", CategoryType.Expense, 12),
+      cat("h2", "Hotels PLN", CategoryType.Expense, 3),
+      cat("m1", "Medicine UAH", CategoryType.Expense, 6),
+      cat("m2", "Medicine PLN", CategoryType.Expense, 7),
+    ];
+    const items = [
+      { id: "h1", currentName: "Hotels", editedName: "Hotels UAH", selected: false },
+      { id: "h2", currentName: "Hotels PLN", editedName: "Hotels", selected: true, dependsOnCategoryIds: ["h1"] },
+      { id: "m2", currentName: "Medicine PLN", editedName: "Medicine UAH", selected: true },
+    ];
+    const state = evaluateCategoryRenameState(cats, items);
+    expect(state.h2.status).toBe("broken-chain");
+    expect(state.m2.status).toBe("collision");
+    items[0].selected = true;
+    expect(evaluateCategoryRenameState(cats, items).h2.status).toBe("ok");
+  });
+});
+
+describe("expense category lifecycle", () => {
+  const cat = (id: string, name: string, order: number, type: number = CategoryType.Expense) =>
+    ({ id, name, categoryType: type, order }) as ExternalProviderCategory;
+
+  it("archives to the end and unarchives above the first archived", () => {
+    const cats = [cat("a", "A", 0), cat("b", "B", 1), cat("c", "_C", 2), cat("i", "Salary", 0, CategoryType.Income)];
+    const archived = archiveExpenseCategory(cats, "a");
+    const names = sortCategoriesByOrder(
+      archived.updatedCategories.filter((c) => c.categoryType === CategoryType.Expense),
+    );
+    expect(names.map((c) => c.name)).toEqual(["B", "_C", "_A"]);
+    const restored = unarchiveExpenseCategory(archived.updatedCategories, "a");
+    const names2 = sortCategoriesByOrder(
+      restored.updatedCategories.filter((c) => c.categoryType === CategoryType.Expense),
+    );
+    expect(names2.map((c) => c.name)).toEqual(["B", "A", "_C"]);
+  });
+
+  it("moves active categories above archived and organizes currency tiers", () => {
+    const cats = [cat("a", "A", 0), cat("x", "_X", 1), cat("h", "Hotels CHF", 2), cat("b", "B", 3)];
+    const moved = moveExpenseCategoriesAboveArchived(cats);
+    expect(sortCategoriesByOrder(moved.updatedCategories).map((c) => c.id)).toEqual(["a", "h", "b", "x"]);
+    const tiers = organizeExpenseCategoriesByCurrencyTier(moved.updatedCategories);
+    expect(sortCategoriesByOrder(tiers.updatedCategories).map((c) => c.id)).toEqual(["a", "b", "h", "x"]);
   });
 });
