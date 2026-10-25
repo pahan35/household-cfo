@@ -7,8 +7,9 @@ The Trips & Concerts analyzer (`/dashboard/family-budget/lifestyle/trips-concert
 2. The current 60-day gap splitting logic fragments genuine trips into multiple 1-day episodes when pre-trip payments (e.g. initial down payment in May 2025, resort balance in August 2025 for a September 2025 Maldives vacation) occur months in advance without `#travel` bookends.
 3. Spurious single-day episodes trigger the untagged candidate scanner on ordinary domestic spending days, presenting dozens of non-travel transactions for review.
 4. Professional software tools and subscriptions (`JetBrains`, `Evernote`, `Google AI Pro`) lack a dedicated category home, leading to distorted `Utility` or `Learning` metrics.
+5. Currency resolution defect: `getConvertedTransactionAmount` fails to inspect destination category or source account currencies when transaction-level currency identifiers are missing, causing foreign-currency payments (e.g. YouTube in UAH: 149 UAH) to be treated 1:1 as native default currency (149 PLN) without FX rate conversion.
 
-Optimizing this detection engine now eliminates dashboard noise, correctly links long-lead pre-trip bookings to their upcoming journeys, and establishes clean category normalization for software tools.
+Optimizing this detection engine now eliminates dashboard noise, correctly links long-lead pre-trip bookings to their upcoming journeys, fixes foreign currency conversions, and establishes clean category normalization for software tools.
 
 ## What Changes
 
@@ -22,6 +23,8 @@ Optimizing this detection engine now eliminates dashboard noise, correctly links
   - **Phase 2: 300-Day Pre-Booking Lookback**:
     - For any detected on-site stay anchor with a destination tag (e.g. `#malediwy`), look back up to 300 days prior to the anchor start date.
     - Attribute transactions with that destination tag in travel/transit categories (`Airplane tickets`, `Railway tickets`, `Hotels`, `Transport`, etc.) as pre-trip bookings of that upcoming episode, even if separated by $>60$-day gaps.
+- **Hierarchical Currency Resolution & Accurate FX Conversion**:
+  - Enhance `getConvertedTransactionAmount` to accept the category map and fall back to destination category or source account currency when `tx.destinationCurrencyId` / `tx.sourceCurrencyId` are absent, guaranteeing accurate conversion (e.g. UAH to PLN) via `convertCurrencyAmount`.
 - **Safe Untagged Review Discovery**:
   - Restrict untagged candidate discovery exclusively to validated multi-day or bookended travel episodes, preventing spurious domestic reviews.
 - **`Software & Tools` Category Support**:

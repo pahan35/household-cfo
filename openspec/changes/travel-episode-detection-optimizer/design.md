@@ -54,6 +54,15 @@ See `proposal.md` for background and motivation.
 * **Choice**: In `normalizeUnifiedCategory`, add recognition for `Software & Tools`, `Software`, `Tools & Software`, and `Dev Tools` to return the canonical unified name `"Software & Tools"`.
 * **Rationale**: Allows the user to introduce this category in ExternalProvider and ensures dashboard filters, lifestyle drill-downs, and category tracers handle it consistently.
 
+### Decision 5: Hierarchical Currency Resolution & Accurate FX Conversion
+
+* **Choice**: Update `getConvertedTransactionAmount` to accept an optional `categoryMap: Map<string, ExternalProviderCategory>`:
+  - If `tx.destinationCurrencyId` or `tx.sourceCurrencyId` is present, use it.
+  - Otherwise, inspect the destination category (`categoryMap.get(tx.destinationId)?.currencyId`) and source account (`categoryMap.get(tx.sourceId)?.currencyId`).
+  - Convert `nativeAmount` from the resolved currency to `defaultCurrency` using `convertCurrencyAmount(nativeAmount, resolvedCurrency, defaultCurrency, currencies)`.
+* **Rationale**: In ExternalProvider, transactions often omit inline currency fields, inheriting their currency from the account or category (e.g. "Subscriptions UAH" or Monobank UAH). Without this lookup, 149 UAH is treated as 149 PLN (a ~10x overstatement).
+* **Alternatives Considered**: Assuming default currency whenever transaction-level fields are absent. Rejected because it produces false PLN amounts for foreign-currency categories and trips.
+
 ## Risks / Trade-offs
 
 - **[Risk] Single-day travel trips (e.g. 1-day day-trip to a nearby city) without `#travel` bookends might be ignored.**

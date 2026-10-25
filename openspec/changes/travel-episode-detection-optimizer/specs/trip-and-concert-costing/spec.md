@@ -11,6 +11,12 @@ The Trips & Concerts analyzer (`/dashboard/family-budget/lifestyle/trips-concert
 3. Look back up to 300 days prior to the on-site stay anchor start date and attribute any transactions sharing that destination tag in travel or transit categories (`Airplane tickets`, `Railway tickets`, `Hotels`, `Transport`, etc.) as pre-trip bookings of that upcoming episode, regardless of gaps exceeding 60 days between pre-trip payments.
 4. Split reused destination tags (e.g. `#Austria`, `#Malediwy`) into separate episodes when separate on-site stay anchors occur across different years or periods.
 5. Reliably decode upstream timestamps in .NET ticks, Unix milliseconds, Unix seconds, or ISO 8601 strings into valid calendar dates without throwing runtime invalid time value errors.
+6. Resolve transaction native currency hierarchically from `tx.destinationCurrencyId`, `tx.sourceCurrencyId`, destination category `currencyId`, or source account `currencyId`, and convert foreign-currency amounts (such as UAH, USD, EUR) to the default reporting currency using exchange rates.
+
+#### Scenario: Foreign-currency transaction amounts converted accurately to default reporting currency
+
+- **WHEN** a transaction is recorded in a foreign currency such as UAH (e.g. 149 UAH) or USD via its category or account without explicit transaction-level currency id
+- **THEN** the analyzer resolves the native currency from the category or account and converts the amount to the default reporting currency (e.g. PLN) via exchange rates rather than displaying the native foreign amount 1:1 in default currency
 
 #### Scenario: Reused destination tag split into separate trip episodes
 

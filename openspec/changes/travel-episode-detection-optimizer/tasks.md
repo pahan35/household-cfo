@@ -4,6 +4,7 @@
 
 - [ ] 1.1 Add `Software & Tools` aliases to `normalizeUnifiedCategory` in `lifestyle-transforms.ts` and verify with existing category normalizer tests.
 - [ ] 1.2 Add `EXCLUDED_LIFESTYLE_DESTINATION_TAGS` and `EXCLUDED_DESTINATION_CATEGORY_REGEX` to `lifestyle-transforms.ts` and filter candidate transactions before building `destinationTxMap`. Verify exclusion by checking `#subscription`, `#tax`, `#zus`, `#vat-7`, `#youtube`, `#evernote` are discarded.
+- [ ] 1.3 Update `getConvertedTransactionAmount` in `lifestyle-transforms.ts` to accept `categoryMap` and resolve currency hierarchically from destination category or source account when `tx.destinationCurrencyId` / `tx.sourceCurrencyId` are absent, converting accurately to `defaultCurrency`.
 
 ## 2. Two-Phase Anchor & Lookback Travel Detection
 
@@ -15,4 +16,5 @@
 
 - [ ] 3.1 Add comprehensive unit tests in `lifestyle-transforms.test.ts` simulating the Maldives scenario (May downpayment, August balance, September on-site stay) to verify single-episode unification.
 - [ ] 3.2 Add unit tests in `lifestyle-transforms.test.ts` verifying that recurring tax and subscription tags (`#zus`, `#vat-7`, `#ppe`, `#youtube`, `#storytel`, `#evernote`) produce zero detected episodes.
-- [ ] 3.3 Run `npm run verify` (`biome check && tsc --noEmit`) and ensure all checks and TypeScript strict typing pass cleanly.
+- [ ] 3.3 Add unit tests in `lifestyle-transforms.test.ts` verifying that foreign-currency transactions lacking transaction-level currency identifiers (e.g. 149 UAH from a UAH category) convert to default reporting currency using exchange rates rather than evaluating 1:1.
+- [ ] 3.4 Run `npm run verify` (`biome check && tsc --noEmit`) and ensure all checks and TypeScript strict typing pass cleanly.
