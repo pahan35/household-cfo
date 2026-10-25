@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import { computeBudgetSummaryItems } from "./budget-summary-card";
 import {
+  buildCategoryOrderDiffItems,
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   ExchangeKey,
   type ExchangePingItem,
   extractExchangeEntities,
+  isExpenseCategory,
+  optimizeCategoryOrderByActivity,
+  organizeExpenseCategoriesByCurrencyTier,
   type StatCategoryPoint,
   type StatPingData,
   type StatPoint,
@@ -742,7 +746,8 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
         points: [
           {
             id: "2026-10-01",
-            categories: [{ id: "cat-foreign-uah", amount: 4000, value: 4000, limitAmount: 5000 }],
+            // Upstream /stat/ping pre-converts spend to reporting currency PLN: 400 PLN (= 4000 UAH)
+            categories: [{ id: "cat-foreign-uah", amount: 400, value: 400, limitAmount: 5000 }],
           },
         ],
       },
@@ -782,7 +787,8 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
             id: "2026-10-01",
             categories: [
               { id: "cat-uber-pln", amount: 100, value: 100, limitAmount: 200 },
-              { id: "cat-uber-uah", amount: 400, value: 400, limitAmount: 800 },
+              // Upstream /stat/ping pre-converts spend to reporting currency PLN: 40 PLN (= 400 UAH)
+              { id: "cat-uber-uah", amount: 40, value: 40, limitAmount: 800 },
             ],
           },
         ],
@@ -1420,5 +1426,242 @@ describe("Multi-category exclusions & available controllable pool macro trends",
     expect(oct26?.excludedExpenseSum).toBe(0);
     expect(oct26?.availableControllablePool).toBe(oct26?.netDisposableIncome);
     expect(oct26?.netIncome).toBe(oct26?.netDisposableIncome);
+  });
+
+  describe("Category Currency Matching & Progress Normalization", () => {
+    const mockCurrencies: ExternalProviderCurrency[] = [
+      { id: "USD", rate: 1.0 },
+      { id: "PLN", rate: 4.0 },
+      { id: "UAH", rate: 40.0 },
+      { id: "EUR", rate: 0.9 },
+    ];
+
+    it("evaluates standalone foreign category progress in native currency without double conversion", () => {
+      // Standalone category Sport UAH with limit 5000 UAH.
+      // Upstream /stat/ping delivered 450 PLN (which corresponds to 4500 UAH at 4 PLN = 40 UAH).
+      const statData: StatPingData = {
+        selection: {
+          params: { currency: "PLN" },
+          points: [
+            {
+              id: "2026-10-01",
+              date: "10-2026",
+              categories: [
+                {
+                  id: "cat-sport-uah",
+                  title: "Sport UAH",
+                  limitAmount: 5000,
+                  value: 450, // 450 PLN
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      const categoryNameMap = new Map([["cat-sport-uah", "Sport UAH"]]);
+      const categoryCurrencyMap = new Map([["cat-sport-uah", "UAH"]]);
+
+      const items = computeBudgetSummaryItems(statData, "2026-10-01", categoryNameMap, {
+        defaultCurrency: "PLN",
+        categoryCurrencyMap,
+        currencies: mockCurrencies,
+        enableSmartGroups: false,
+      });
+
+      expect(items).toHaveLength(1);
+      const sport = items[0];
+
+      // Native values: 4500 UAH / 5000 UAH
+      expect(sport.nativeCurrency).toBe("UAH");
+      expect(sport.isForeign).toBe(true);
+      expect(sport.current).toBe(4500);
+      expect(sport.limit).toBe(5000);
+      expect(sport.rawPercent).toBe(90);
+      expect(sport.percent).toBe(90);
+      expect(sport.isOverrun).toBe(false);
+
+      // Tooltip values in reporting currency (PLN): ~450 PLN / ~500 PLN
+      expect(sport.convertedCurrent).toBe(450);
+      expect(sport.convertedLimit).toBe(500);
+    });
+
+    it("evaluates overrun accurately in native currency for foreign categories", () => {
+      // Standalone category Travel EUR with limit 100 EUR.
+      // Upstream /stat/ping delivered 500 PLN (which corresponds to 112.5 EUR at 4 PLN = 0.9 EUR).
+      const statData: StatPingData = {
+        selection: {
+          params: { currency: "PLN" },
+          points: [
+            {
+              id: "2026-10-01",
+              date: "10-2026",
+              categories: [
+                {
+                  id: "cat-travel-eur",
+                  title: "Travel EUR",
+                  limitAmount: 100,
+                  value: 500, // 500 PLN -> 112.5 EUR
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      const categoryNameMap = new Map([["cat-travel-eur", "Travel EUR"]]);
+      const categoryCurrencyMap = new Map([["cat-travel-eur", "EUR"]]);
+
+      const items = computeBudgetSummaryItems(statData, "2026-10-01", categoryNameMap, {
+        defaultCurrency: "PLN",
+        categoryCurrencyMap,
+        currencies: mockCurrencies,
+        enableSmartGroups: false,
+      });
+
+      expect(items).toHaveLength(1);
+      const travel = items[0];
+
+      expect(travel.nativeCurrency).toBe("EUR");
+      expect(travel.current).toBe(112.5);
+      expect(travel.limit).toBe(100);
+      expect(travel.rawPercent).toBe(113);
+      expect(travel.percent).toBe(100);
+      expect(travel.isOverrun).toBe(true);
+
+      expect(travel.convertedCurrent).toBe(500);
+      expect(travel.convertedLimit).toBeCloseTo(444.44, 1);
+    });
+
+    it("aggregates Smart Groups in reporting currency and exposes children in native currencies", () => {
+      const statData: StatPingData = {
+        selection: {
+          params: { currency: "PLN" },
+          points: [
+            {
+              id: "2026-10-01",
+              date: "10-2026",
+              categories: [
+                {
+                  id: "cat-sport-pln",
+                  title: "Sport PLN",
+                  limitAmount: 300,
+                  value: 200, // 200 PLN
+                },
+                {
+                  id: "cat-sport-uah",
+                  title: "Sport UAH",
+                  limitAmount: 5000,
+                  value: 450, // 450 PLN (= 4500 UAH)
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      const categoryNameMap = new Map([
+        ["cat-sport-pln", "Sport PLN"],
+        ["cat-sport-uah", "Sport UAH"],
+      ]);
+      const categoryCurrencyMap = new Map([
+        ["cat-sport-pln", "PLN"],
+        ["cat-sport-uah", "UAH"],
+      ]);
+
+      const items = computeBudgetSummaryItems(statData, "2026-10-01", categoryNameMap, {
+        defaultCurrency: "PLN",
+        categoryCurrencyMap,
+        currencies: mockCurrencies,
+        enableSmartGroups: true,
+      });
+
+      expect(items).toHaveLength(1);
+      const group = items[0];
+
+      expect(group.isSmartGroup).toBe(true);
+      expect(group.name).toBe("Sport");
+      expect(group.nativeCurrency).toBe("PLN");
+
+      // Combined spend: 200 PLN + 450 PLN = 650 PLN
+      expect(group.current).toBe(650);
+      // Combined limit: 300 PLN + 500 PLN = 800 PLN
+      expect(group.limit).toBe(800);
+      // Combined percent: 650 / 800 * 100 = 81%
+      expect(group.rawPercent).toBe(81);
+      expect(group.isOverrun).toBe(false);
+
+      // Children
+      expect(group.children).toHaveLength(2);
+      const childPln = group.children?.find((c) => c.id === "cat-sport-pln");
+      const childUah = group.children?.find((c) => c.id === "cat-sport-uah");
+
+      expect(childPln?.current).toBe(200);
+      expect(childPln?.limit).toBe(300);
+      expect(childPln?.nativeCurrency).toBe("PLN");
+
+      expect(childUah?.current).toBe(4500);
+      expect(childUah?.limit).toBe(5000);
+      expect(childUah?.nativeCurrency).toBe("UAH");
+      expect(childUah?.convertedCurrent).toBe(450);
+      expect(childUah?.convertedLimit).toBe(500);
+    });
+  });
+
+  describe("Category Organization Dialog & Persistence", () => {
+    const originalCategories: ExternalProviderCategory[] = [
+      { id: "c1", name: "Groceries", categoryType: CategoryType.Expense, order: 0 },
+      { id: "c2", name: "Travel EUR", categoryType: CategoryType.Expense, order: 1 },
+      { id: "c3", name: "_Old Bills", categoryType: CategoryType.Expense, order: 2 },
+      { id: "c4", name: "Coffee", categoryType: CategoryType.Expense, order: 3 }, // active below archived!
+    ];
+
+    it("generates Tier Cleanup diff highlighting moved categories and rank shifts", () => {
+      const result = organizeExpenseCategoriesByCurrencyTier(originalCategories, "PLN");
+      expect(result.modifiedCategories).toHaveLength(3);
+
+      const diff = buildCategoryOrderDiffItems(originalCategories, result.updatedCategories, {
+        defaultCurrency: "PLN",
+        strategy: "tier-cleanup",
+      });
+
+      expect(diff).toHaveLength(4);
+
+      // Expected tier cleanup order:
+      // Primary: Groceries (order 0), Coffee (order 1, moved up from 3 -> delta +2)
+      // Foreign: Travel EUR (order 2, moved down from 1 -> delta -1)
+      // Archived: _Old Bills (order 3, moved down from 2 -> delta -1)
+      const coffee = diff.find((d) => d.category.id === "c4");
+      expect(coffee?.hasMoved).toBe(true);
+      expect(coffee?.previousOrder).toBe(3);
+      expect(coffee?.newOrder).toBe(1);
+      expect(coffee?.rankDelta).toBe(2);
+
+      const travel = diff.find((d) => d.category.id === "c2");
+      expect(travel?.hasMoved).toBe(true);
+      expect(travel?.previousOrder).toBe(1);
+      expect(travel?.newOrder).toBe(2);
+      expect(travel?.rankDelta).toBe(-1);
+    });
+
+    it("generates correct /Exchange/Ping persistence payload structure", () => {
+      const result = organizeExpenseCategoriesByCurrencyTier(originalCategories, "PLN");
+      const persistencePayload = {
+        items: [
+          {
+            key: ExchangeKey.Category,
+            entityJson: JSON.stringify(result.modifiedCategories),
+          },
+        ],
+      };
+
+      expect(persistencePayload.items).toHaveLength(1);
+      expect(persistencePayload.items[0].key).toBe(ExchangeKey.Category);
+
+      const parsed = JSON.parse(persistencePayload.items[0].entityJson);
+      expect(parsed).toHaveLength(result.modifiedCategories.length);
+      expect(parsed[0].id).toBeDefined();
+      expect(parsed[0].order).toBeDefined();
+    });
   });
 });

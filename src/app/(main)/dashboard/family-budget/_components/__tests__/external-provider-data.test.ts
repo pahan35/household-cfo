@@ -22,10 +22,12 @@ import {
   convertCurrencyAmount,
   detectExpenseCategoryDisplacement,
   evaluateCategoryRenameState,
+  evaluateZeroSpendCategories,
   extractCanonicalBaseName,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
   filterAndClassifyIncomeSources,
+  filterZeroSpendCategories,
   findAccountsBelowArchived,
   findExpenseCategoriesBelowArchived,
   findIncomeSourcesBelowArchived,
@@ -1837,6 +1839,159 @@ describe("expense category lifecycle", () => {
         expect(preview[0].rankDelta).toBe(3);
         expect(preview[1].category.id).toBe("p2");
         expect(preview[1].rankDelta).toBe(-1);
+      });
+    });
+
+    describe("evaluateZeroSpendCategories & filterZeroSpendCategories", () => {
+      const catActive = { id: "c-active", name: "Groceries", categoryType: CategoryType.Expense } as ExternalProviderCategory;
+      const catRecent = { id: "c-recent", name: "Vacation", categoryType: CategoryType.Expense } as ExternalProviderCategory;
+      const catOld = { id: "c-old", name: "Hotels CHF", categoryType: CategoryType.Expense } as ExternalProviderCategory;
+      const catDormant = { id: "c-dormant", name: "Old Gym", categoryType: CategoryType.Expense } as ExternalProviderCategory;
+      const allCats = [catActive, catRecent, catOld, catDormant];
+
+      // Points spanning 6 months:
+      // Oct 2026: c-active: 100, others: 0
+      // Sep 2026: c-active: 120, c-recent: 50, others: 0
+      // Aug 2026: c-active: 90, others: 0
+      // Jul 2026: c-active: 80, others: 0
+      // Jun 2026: c-active: 70, c-old: 200, others: 0
+      // May 2026: c-active: 60, others: 0
+      const statPoints = [
+        {
+          id: "2026-05-01",
+          categories: [{ id: "c-active", value: 60 }],
+        },
+        {
+          id: "2026-06-01",
+          categories: [
+            { id: "c-active", value: 70 },
+            { id: "c-old", value: 200 },
+          ],
+        },
+        {
+          id: "2026-07-01",
+          categories: [{ id: "c-active", value: 80 }],
+        },
+        {
+          id: "2026-08-01",
+          categories: [{ id: "c-active", value: 90 }],
+        },
+        {
+          id: "2026-09-01",
+          categories: [
+            { id: "c-active", value: 120 },
+            { id: "c-recent", value: 50 },
+          ],
+        },
+        {
+          id: "2026-10-01",
+          categories: [{ id: "c-active", value: 100 }],
+        },
+      ];
+
+      const transactions = [
+        {
+          id: "tx-1",
+          destinationId: "c-active",
+          destinationAmount: 100,
+          dateTimestampISO: "2026-10-15T10:00:00.000Z",
+        },
+        {
+          id: "tx-2",
+          destinationId: "c-recent",
+          destinationAmount: 50,
+          dateTimestampISO: "2026-09-10T10:00:00.000Z",
+        },
+        {
+          id: "tx-3",
+          destinationId: "c-old",
+          destinationAmount: 200,
+          dateTimestampISO: "2026-06-05T10:00:00.000Z",
+        },
+      ] as ExternalProviderTransaction[];
+
+      it("evaluates current-month zero-spend accurately", () => {
+        const evals = evaluateZeroSpendCategories(allCats, statPoints, "current-month", {
+          activeMonthDateStr: "2026-10-01",
+          transactions,
+        });
+
+        expect(evals.get("c-active")?.isZeroSpend).toBe(false);
+        expect(evals.get("c-active")?.totalSpend).toBe(100);
+
+        expect(evals.get("c-recent")?.isZeroSpend).toBe(true);
+        expect(evals.get("c-recent")?.totalSpend).toBe(0);
+
+        expect(evals.get("c-old")?.isZeroSpend).toBe(true);
+        expect(evals.get("c-dormant")?.isZeroSpend).toBe(true);
+      });
+
+      it("evaluates 3-months zero-spend accurately", () => {
+        const evals = evaluateZeroSpendCategories(allCats, statPoints, "3-months", {
+          activeMonthDateStr: "2026-10-01",
+          transactions,
+        });
+
+        // c-active: 100 (Oct) + 120 (Sep) + 90 (Aug) = 310
+        expect(evals.get("c-active")?.isZeroSpend).toBe(false);
+        expect(evals.get("c-active")?.totalSpend).toBe(310);
+
+        // c-recent spent 50 in Sep (within 3 months) -> NOT zero-spend
+        expect(evals.get("c-recent")?.isZeroSpend).toBe(false);
+        expect(evals.get("c-recent")?.totalSpend).toBe(50);
+
+        // c-old only spent in Jun (4 months ago) -> IS zero-spend in 3-months window
+        expect(evals.get("c-old")?.isZeroSpend).toBe(true);
+        expect(evals.get("c-old")?.totalSpend).toBe(0);
+
+        // c-dormant -> IS zero-spend
+        expect(evals.get("c-dormant")?.isZeroSpend).toBe(true);
+      });
+
+      it("evaluates 6-months zero-spend accurately", () => {
+        const evals = evaluateZeroSpendCategories(allCats, statPoints, "6-months", {
+          activeMonthDateStr: "2026-10-01",
+          transactions,
+        });
+
+        // c-old spent 200 in Jun (5 months ago) -> NOT zero-spend in 6-months window
+        expect(evals.get("c-old")?.isZeroSpend).toBe(false);
+        expect(evals.get("c-old")?.totalSpend).toBe(200);
+
+        // c-dormant -> IS zero-spend
+        expect(evals.get("c-dormant")?.isZeroSpend).toBe(true);
+      });
+
+      it("evaluates all-time and distinguishes lifetime dormancy", () => {
+        const evals = evaluateZeroSpendCategories(allCats, statPoints, "all-time", {
+          activeMonthDateStr: "2026-10-01",
+          transactions,
+        });
+
+        expect(evals.get("c-active")?.isZeroSpend).toBe(false);
+        expect(evals.get("c-recent")?.isZeroSpend).toBe(false);
+        expect(evals.get("c-old")?.isZeroSpend).toBe(false);
+
+        // c-dormant has 0 spend across all points and 0 lifetime transactions
+        expect(evals.get("c-dormant")?.isZeroSpend).toBe(true);
+        expect(evals.get("c-dormant")?.isLifetimeDormant).toBe(true);
+        expect(evals.get("c-dormant")?.lifetimeTransactionCount).toBe(0);
+      });
+
+      it("filters categories with zero spend using filterZeroSpendCategories", () => {
+        const filtered3m = filterZeroSpendCategories(allCats, statPoints, "3-months", {
+          activeMonthDateStr: "2026-10-01",
+          transactions,
+        });
+
+        expect(filtered3m.map((c) => c.id)).toEqual(["c-old", "c-dormant"]);
+
+        const filteredAllTime = filterZeroSpendCategories(allCats, statPoints, "all-time", {
+          activeMonthDateStr: "2026-10-01",
+          transactions,
+        });
+
+        expect(filteredAllTime.map((c) => c.id)).toEqual(["c-dormant"]);
       });
     });
   });

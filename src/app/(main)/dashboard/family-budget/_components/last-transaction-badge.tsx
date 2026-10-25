@@ -13,6 +13,7 @@ interface LastTransactionBadgeProps {
   className?: string;
   showDateInline?: boolean;
   defaultCurrency?: string;
+  showLabel?: boolean;
 }
 
 export function LastTransactionBadge({
@@ -20,6 +21,7 @@ export function LastTransactionBadge({
   className,
   showDateInline = true,
   defaultCurrency = "PLN",
+  showLabel = true,
 }: LastTransactionBadgeProps) {
   if (!summary) {
     return null;
@@ -63,7 +65,12 @@ export function LastTransactionBadge({
           aria-label={`Last transaction on ${summary.formattedDate}: ${summary.counterpartLabel} ${summary.counterpartName}`}
         >
           <Clock className="text-muted-foreground/70 group-hover/badge:text-foreground size-3 transition-colors" />
-          {showDateInline && <span>{summary.formattedDate}</span>}
+          {showDateInline && (
+            <span>
+              {showLabel && <span className="text-muted-foreground/80 mr-0.5 font-normal">Last active:</span>}
+              {summary.formattedDate}
+            </span>
+          )}
         </button>
       </HoverCardTrigger>
       <HoverCardContent align="end" className="w-72 p-3 text-xs shadow-lg" sideOffset={6}>
@@ -89,7 +96,7 @@ export function LastTransactionBadge({
                 const isForeign =
                   Boolean(nativeCurr && nativeCurr.toUpperCase() !== defaultCurrency.toUpperCase()) ||
                   Boolean(summary.currency && summary.currency.toUpperCase() !== defaultCurrency.toUpperCase());
-                const displayAmount = summary.normalizedAmount ?? summary.amount;
+                const displayAmount = summary.normalizedAmount;
 
                 return (
                   <>

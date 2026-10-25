@@ -35,6 +35,7 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
+import { CategoryOrganizationDialog, type CategoryOrganizationStrategy } from "./category-organization-dialog";
 import { getBudgetSelection } from "./external-provider-client";
 import {
   CategoryType,
@@ -43,6 +44,7 @@ import {
   type ExternalProviderTransaction,
   convertCurrencyAmount,
   detectExpenseCategoryDisplacement,
+  evaluateZeroSpendCategories,
   extractCanonicalBaseName,
   filterAndClassifyCategories,
   formatMoney,
@@ -50,15 +52,14 @@ import {
   isArchivedCategoryName,
   isExpenseCategory,
   type LastTransactionSummary,
-  organizeExpenseCategoriesByCurrencyTier,
   type StatCategoryPoint,
   type StatPingData,
+  type ZeroSpendLookbackScope,
 } from "./external-provider-data";
 import { type CategoryComparisonDelta, detectSliceCurrency, type ExpenseSlice } from "./expense-transforms";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { RenameCategoryDialog } from "./rename-category-dialog";
 import { SectionShell } from "./section-shell";
-import { SmartOrderOptimizerDialog } from "./smart-order-optimizer-dialog";
 import { parsePointDate } from "./yoy-transforms";
 
 export type BudgetPeriodMonth = "current" | "previous";
@@ -158,18 +159,11 @@ export function computeBudgetSummaryItems(
     .map((cat: StatCategoryPoint) => {
       const limit = Number(cat.limitAmount) || 0;
       const rawSpend = cat.value ?? cat.amount ?? cat.currentAmount;
-      const current = Math.max(0, Number(rawSpend) || 0);
+      const reportingSpend = Math.max(0, Number(rawSpend) || 0);
       const mappedName = categoryNameMap.get(cat.id)?.trim();
       const rawTitle = typeof cat.title === "string" ? cat.title.trim() : "";
       const rawName = typeof cat.name === "string" ? cat.name.trim() : "";
       const name = mappedName || rawTitle || rawName || "Category";
-      let percent = 0;
-      if (limit > 0) {
-        percent = Math.round((current / limit) * 100);
-      } else if (current > 0) {
-        percent = 100;
-      }
-      const isOverrun = limit > 0 && current > limit;
 
       const defaultCurr = mergedOpts.defaultCurrency ?? "PLN";
       const catCurrency = mergedOpts.categoryCurrencyMap?.get(cat.id);
@@ -177,15 +171,30 @@ export function computeBudgetSummaryItems(
       const nativeCurrency = catCurrency ?? det.currency;
       const isForeign = nativeCurrency.toUpperCase() !== defaultCurr.toUpperCase();
       const currencies = mergedOpts.currencies ?? [];
-      const convertedCurrent = isForeign
-        ? (convertCurrencyAmount(current, nativeCurrency, defaultCurr, currencies) ?? current)
-        : current;
+
+      let current: number;
+      let convertedCurrent: number;
       let convertedLimit = 0;
-      if (limit > 0) {
-        convertedLimit = isForeign
-          ? (convertCurrencyAmount(limit, nativeCurrency, defaultCurr, currencies) ?? limit)
-          : limit;
+
+      if (isForeign) {
+        current = convertCurrencyAmount(reportingSpend, defaultCurr, nativeCurrency, currencies) ?? reportingSpend;
+        convertedCurrent = reportingSpend;
+        if (limit > 0) {
+          convertedLimit = convertCurrencyAmount(limit, nativeCurrency, defaultCurr, currencies) ?? limit;
+        }
+      } else {
+        current = reportingSpend;
+        convertedCurrent = reportingSpend;
+        convertedLimit = limit;
       }
+
+      let percent = 0;
+      if (limit > 0) {
+        percent = Math.round((current / limit) * 100);
+      } else if (current > 0) {
+        percent = 100;
+      }
+      const isOverrun = limit > 0 && current > limit;
 
       return {
         id: cat.id,
@@ -295,7 +304,7 @@ export function BudgetSummaryCard({
   onUnarchiveCategory,
   onMoveCategoriesAboveArchived,
   onMoveCategoriesToBottom,
-  onOrganizeByCurrencyTier,
+  onOrganizeByCurrencyTier: _onOrganizeByCurrencyTier,
   onCategoriesUpdated,
 }: BudgetSummaryCardProps) {
   const [sortMode, setSortMode] = useState<BudgetSortMode>("custom");
@@ -303,7 +312,9 @@ export function BudgetSummaryCard({
   const [showArchived, setShowArchived] = useState(false);
   const [showRemoved, setShowRemoved] = useState(false);
   const [renamingCategory, setRenamingCategory] = useState<ExternalProviderCategory | null>(null);
-  const [isSmartOrderOpen, setIsSmartOrderOpen] = useState(false);
+  const [isOrganizeDialogOpen, setIsOrganizeDialogOpen] = useState(false);
+  const [initialOrgStrategy, setInitialOrgStrategy] = useState<CategoryOrganizationStrategy>("smart-order");
+  const [zeroSpendScope, setZeroSpendScope] = useState<ZeroSpendLookbackScope>("current-month");
 
   const [internalStatData, setInternalStatData] = useState<StatPingData | null>(null);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -502,36 +513,45 @@ export function BudgetSummaryCard({
   const belowArchivedIds = useMemo(() => new Set(categoriesBelowArchived.map((c) => c.id)), [categoriesBelowArchived]);
   const archivedAboveIds = useMemo(() => new Set(categoriesArchivedAbove.map((c) => c.id)), [categoriesArchivedAbove]);
 
-  const canOrganizeByTier = useMemo(
-    () => organizeExpenseCategoriesByCurrencyTier(categories, defaultCurrency).modifiedCategories.length > 0,
-    [categories, defaultCurrency],
-  );
+  const zeroSpendEvals = useMemo(() => {
+    return evaluateZeroSpendCategories(categories, statData?.selection?.points ?? [], zeroSpendScope, {
+      activeMonthDateStr: fromDate,
+      transactions: _periodTransactions,
+      defaultCurrency,
+    });
+  }, [categories, statData, zeroSpendScope, fromDate, _periodTransactions, defaultCurrency]);
 
   const zeroSpendCount = useMemo(() => {
     return allCategoryItems.filter((item) => {
-      if (item.current > 0) return false;
       if (isArchivedCategoryName(item.name)) return false;
       if (deletedCategoryIds.has(item.id)) return false;
-      return true;
+      const evaluation = zeroSpendEvals.get(item.id);
+      return evaluation ? evaluation.isZeroSpend : item.current === 0;
     }).length;
-  }, [allCategoryItems, deletedCategoryIds]);
+  }, [allCategoryItems, deletedCategoryIds, zeroSpendEvals]);
 
   // Filter archived items
   const classifiedItems = useMemo(() => {
     if (viewMode === "zero-spend") {
       return allCategoryItems
         .filter((item) => {
-          if (item.current > 0) return false;
+          const evaluation = zeroSpendEvals.get(item.id);
+          const isZero = evaluation ? evaluation.isZeroSpend : item.current === 0;
+          if (!isZero) return false;
           if (!showArchived && isArchivedCategoryName(item.name)) return false;
           if (!showRemoved && deletedCategoryIds.has(item.id)) return false;
           return true;
         })
-        .map((item) => ({
-          item,
-          isArchived: isArchivedCategoryName(item.name),
-          isRemoved: deletedCategoryIds.has(item.id),
-          isActive: false,
-        }));
+        .map((item) => {
+          const evaluation = zeroSpendEvals.get(item.id);
+          return {
+            item,
+            isArchived: isArchivedCategoryName(item.name),
+            isRemoved: deletedCategoryIds.has(item.id),
+            isActive: false,
+            isLifetimeDormant: evaluation?.isLifetimeDormant ?? false,
+          };
+        });
     }
     if (viewMode === "all") {
       return allCategoryItems.map((item) => ({
@@ -539,12 +559,14 @@ export function BudgetSummaryCard({
         isArchived: isArchivedCategoryName(item.name),
         isRemoved: deletedCategoryIds.has(item.id),
         isActive: true,
+        isLifetimeDormant: false,
       }));
     }
     const classified = filterAndClassifyCategories(allBudgetItems, { showArchived });
     const result = classified.map((c) => ({
       ...c,
       isRemoved: deletedCategoryIds.has(c.item.id),
+      isLifetimeDormant: false,
     }));
     if (showRemoved && removedExpenseCategories.length > 0) {
       const removedMap = new Map(
@@ -569,6 +591,7 @@ export function BudgetSummaryCard({
           isArchived: isArchivedCategoryName(r.name),
           isRemoved: true,
           isActive: false,
+          isLifetimeDormant: false,
         });
       }
     }
@@ -585,6 +608,7 @@ export function BudgetSummaryCard({
     fromDate,
     categoryNameMap,
     categoryTypeMap,
+    zeroSpendEvals,
   ]);
 
   // Count hidden inactive archived items
@@ -737,31 +761,106 @@ export function BudgetSummaryCard({
             </button>
           </div>
 
-          {/* Smart Order Optimizer */}
+          {/* Zero Spend Lookback Scope Selector */}
+          {viewMode === "zero-spend" && (
+            <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
+              <button
+                type="button"
+                aria-pressed={zeroSpendScope === "current-month"}
+                className={cn(
+                  "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  zeroSpendScope === "current-month"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setZeroSpendScope("current-month")}
+              >
+                Current Month
+              </button>
+              <button
+                type="button"
+                aria-pressed={zeroSpendScope === "3-months"}
+                className={cn(
+                  "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  zeroSpendScope === "3-months"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setZeroSpendScope("3-months")}
+              >
+                3 Months
+              </button>
+              <button
+                type="button"
+                aria-pressed={zeroSpendScope === "6-months"}
+                className={cn(
+                  "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  zeroSpendScope === "6-months"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setZeroSpendScope("6-months")}
+              >
+                6 Months
+              </button>
+              <button
+                type="button"
+                aria-pressed={zeroSpendScope === "12-months"}
+                className={cn(
+                  "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  zeroSpendScope === "12-months"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setZeroSpendScope("12-months")}
+              >
+                12 Months
+              </button>
+              <button
+                type="button"
+                aria-pressed={zeroSpendScope === "all-time"}
+                className={cn(
+                  "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                  zeroSpendScope === "all-time"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => setZeroSpendScope("all-time")}
+              >
+                All-Time / Lifetime
+              </button>
+            </div>
+          )}
+
+          {/* Unified Organize Categories Action */}
           <Button
             type="button"
-            variant="outline"
+            variant={displacement.direction !== "none" ? "secondary" : "outline"}
             size="xs"
-            onClick={() => setIsSmartOrderOpen(true)}
-            className="h-7 gap-1 px-2 text-[11px]"
+            onClick={() => {
+              if (displacement.direction !== "none") {
+                setInitialOrgStrategy("tier-cleanup");
+              } else {
+                setInitialOrgStrategy("smart-order");
+              }
+              setIsOrganizeDialogOpen(true);
+            }}
+            className={cn(
+              "h-7 gap-1.5 px-2 text-[11px]",
+              displacement.direction !== "none" &&
+                "border-amber-500/40 text-amber-700 dark:text-amber-400 bg-amber-500/10",
+            )}
           >
-            <Sparkles className="text-primary size-3" />
-            <span>Smart Order</span>
+            <Sparkles className="size-3 text-primary" />
+            <span>Organize Categories...</span>
+            {displacement.direction !== "none" && (
+              <span className="bg-amber-500/20 text-amber-700 dark:text-amber-400 rounded-full px-1 text-[9px] font-semibold">
+                {displacement.direction === "move-archived-to-bottom"
+                  ? `${categoriesArchivedAbove.length} displaced`
+                  : `${categoriesBelowArchived.length} displaced`}
+              </span>
+            )}
           </Button>
-
-          {/* Foreign / legacy currency tier ordering */}
-          {onOrganizeByCurrencyTier && canOrganizeByTier && (
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              onClick={() => void onOrganizeByCurrencyTier()}
-              className="h-7 gap-1 px-2 text-[11px]"
-            >
-              <ArrowUpToLine className="size-3" />
-              <span>Foreign currency above archived</span>
-            </Button>
-          )}
 
           {/* Archived Toggle */}
           {viewMode === "active" && (hiddenArchivedCount > 0 || showArchived) && (
@@ -802,55 +901,9 @@ export function BudgetSummaryCard({
       skeletonCount={4}
       skeletonHeight="h-14"
     >
-      {displacement.direction === "move-archived-to-bottom" && onMoveCategoriesToBottom && (
-        <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="size-4 shrink-0 text-amber-500" />
-            <span className="text-foreground font-medium">
-              {categoriesArchivedAbove.length === 1
-                ? "1 archived expense category is positioned above active categories"
-                : `${categoriesArchivedAbove.length} archived expense categories are positioned above active categories`}
-            </span>
-          </div>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => void onMoveCategoriesToBottom()}
-            className="h-7 gap-1.5 border-amber-500/30 text-xs font-medium hover:bg-amber-500/15"
-          >
-            <ArrowDownToLine className="size-3.5" />
-            <span>Move archived to bottom</span>
-          </Button>
-        </div>
-      )}
-
-      {displacement.direction === "move-active-above-archived" && onMoveCategoriesAboveArchived && (
-        <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="size-4 shrink-0 text-amber-500" />
-            <span className="text-foreground font-medium">
-              {categoriesBelowArchived.length === 1
-                ? "1 active expense category is positioned below archived categories"
-                : `${categoriesBelowArchived.length} active expense categories are positioned below archived categories`}
-            </span>
-          </div>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => void onMoveCategoriesAboveArchived()}
-            className="h-7 gap-1.5 border-amber-500/30 text-xs font-medium hover:bg-amber-500/15"
-          >
-            <ArrowUpToLine className="size-3.5" />
-            <span>Move above archived</span>
-          </Button>
-        </div>
-      )}
-
       <DragDropProvider onDragEnd={handleDragEnd}>
         <div className="flex flex-col gap-4">
-          {sortedItems.map(({ item, isArchived, isRemoved }, index) => {
+          {sortedItems.map(({ item, isArchived, isRemoved, isLifetimeDormant }, index) => {
             const lastTx = lastTransactionByCategoryId?.get(item.id);
             const delta = categoryDeltaMap?.get(item.id);
 
@@ -863,6 +916,7 @@ export function BudgetSummaryCard({
                 currency={currency}
                 isArchived={isArchived}
                 isRemoved={isRemoved}
+                isLifetimeDormant={isLifetimeDormant}
                 lastTx={lastTx}
                 canReorder={canReorder}
                 delta={delta}
@@ -908,12 +962,13 @@ export function BudgetSummaryCard({
         }}
       />
 
-      <SmartOrderOptimizerDialog
-        open={isSmartOrderOpen}
-        onOpenChange={setIsSmartOrderOpen}
+      <CategoryOrganizationDialog
+        open={isOrganizeDialogOpen}
+        onOpenChange={setIsOrganizeDialogOpen}
         categories={categories}
         transactions={_periodTransactions}
         defaultCurrency={defaultCurrency}
+        initialStrategy={initialOrgStrategy}
         onApplied={(updatedCats) => {
           onCategoriesUpdated?.(updatedCats);
         }}
@@ -942,6 +997,7 @@ interface SortableBudgetCategoryRowProps {
   currency: string;
   isArchived: boolean;
   isRemoved?: boolean;
+  isLifetimeDormant?: boolean;
   lastTx?: LastTransactionSummary | null;
   canReorder: boolean;
   delta?: CategoryComparisonDelta;
@@ -965,6 +1021,7 @@ function SortableBudgetCategoryRow({
   currency,
   isArchived,
   isRemoved,
+  isLifetimeDormant,
   lastTx,
   canReorder,
   delta,
@@ -1118,11 +1175,20 @@ function SortableBudgetCategoryRow({
             </Badge>
           )}
 
+          {isLifetimeDormant && !isArchived && !isRemoved && (
+            <Badge
+              variant="outline"
+              className="border-amber-500/30 text-amber-600 dark:text-amber-400 px-1 py-0 text-[10px] font-normal"
+            >
+              Dormant
+            </Badge>
+          )}
+
           {lastTx ? (
-            <LastTransactionBadge summary={lastTx} defaultCurrency={currency} />
-          ) : item.current === 0 ? (
+            <LastTransactionBadge summary={lastTx} defaultCurrency={currency} showLabel />
+          ) : (
             <span className="text-muted-foreground/60 text-[10px]">No transactions</span>
-          ) : null}
+          )}
         </div>
 
         <div className="text-muted-foreground flex shrink-0 items-center gap-1.5 pl-2">

@@ -2634,3 +2634,281 @@ export function buildSmartOrderPreviewItems(
     };
   });
 }
+
+export interface CategoryOrderDiffItem {
+  category: ExternalProviderCategory;
+  previousOrder: number;
+  newOrder: number;
+  rankDelta: number;
+  tier: CategoryCurrencyTier;
+  hasMoved: boolean;
+  score?: number;
+  transactionCount?: number;
+  lastActiveDate?: Date | null;
+  reason: string;
+}
+
+/**
+ * Builds an interactive before/after diff for any category reordering strategy (Smart Order or Tier Cleanup).
+ */
+export function buildCategoryOrderDiffItems(
+  originalCategories: ExternalProviderCategory[],
+  updatedCategories: ExternalProviderCategory[],
+  options?: {
+    defaultCurrency?: string;
+    scores?: Map<string, CategoryActivityScore>;
+    strategy?: "smart-order" | "tier-cleanup";
+    isSameGroup?: (c: ExternalProviderCategory) => boolean;
+  },
+): CategoryOrderDiffItem[] {
+  const defaultCurrency = options?.defaultCurrency ?? "PLN";
+  const groupPredicate = options?.isSameGroup ?? isExpenseCategory;
+  const strategy = options?.strategy ?? "smart-order";
+  const scores = options?.scores;
+
+  const originalMap = new Map(originalCategories.map((c) => [c.id, c]));
+  const group = sortCategoriesByOrder(updatedCategories.filter((c) => groupPredicate(c)));
+
+  return group.map((cat, newIndex) => {
+    const orig = originalMap.get(cat.id);
+    const prevOrder = typeof orig?.order === "number" ? orig.order : newIndex;
+    const currentOrder = typeof cat.order === "number" ? cat.order : newIndex;
+    const rankDelta = prevOrder - currentOrder;
+    const hasMoved = prevOrder !== currentOrder;
+    const tier = getCategoryCurrencyTier(cat.name, defaultCurrency);
+
+    let reason = "";
+    let score: number | undefined;
+    let transactionCount: number | undefined;
+    let lastActiveDate: Date | null | undefined;
+
+    if (strategy === "smart-order") {
+      const scoreData = scores?.get(cat.id);
+      score = scoreData?.score ?? 0;
+      transactionCount = scoreData?.transactionCount ?? 0;
+      lastActiveDate = scoreData?.lastActiveDate ?? null;
+      reason = scoreData
+        ? `${transactionCount} ${transactionCount === 1 ? "transaction" : "transactions"}, score ${score.toFixed(1)}`
+        : "No transactions";
+    } else {
+      if (cat.deleted) {
+        reason = "Removed / soft-deleted tier";
+      } else if (tier === "archived") {
+        reason = "Archived tier";
+      } else if (tier === "foreign") {
+        reason = "Foreign currency tier";
+      } else {
+        reason = "Primary default currency tier";
+      }
+    }
+
+    return {
+      category: cat,
+      previousOrder: prevOrder,
+      newOrder: currentOrder,
+      rankDelta,
+      tier,
+      hasMoved,
+      score,
+      transactionCount,
+      lastActiveDate,
+      reason,
+    };
+  });
+}
+
+export type ZeroSpendLookbackScope = "current-month" | "3-months" | "6-months" | "12-months" | "all-time";
+
+export interface CategoryZeroSpendEvaluation {
+  categoryId: string;
+  isZeroSpend: boolean;
+  totalSpend: number;
+  monthsEvaluated: number;
+  lastActiveDate: Date | null;
+  lastActiveTimestamp: number | null;
+  lifetimeTransactionCount: number;
+  isLifetimeDormant: boolean;
+}
+
+export interface EvaluateZeroSpendOptions {
+  activeMonthDateStr?: string;
+  transactions?: ExternalProviderTransaction[];
+  defaultCurrency?: string;
+  allCategories?: ExternalProviderCategory[];
+}
+
+/**
+ * Parses point ID or date into a normalized YYYY-MM-01 timestamp and date string.
+ */
+function parseStatPointDateInternal(
+  point: Pick<StatPoint, "id" | "date">,
+): { dateStr: string; timestamp: number } | null {
+  const raw = point.id || point.date;
+  if (!raw) return null;
+  const str = String(raw).trim();
+
+  // Match YYYY-MM or YYYY-MM-DD
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?/);
+  if (isoMatch) {
+    const y = Number.parseInt(isoMatch[1], 10);
+    const m = Number.parseInt(isoMatch[2], 10) - 1;
+    const d = new Date(y, m, 1);
+    if (!Number.isNaN(d.getTime())) {
+      const dateStr = `${y}-${String(m + 1).padStart(2, "0")}-01`;
+      return { dateStr, timestamp: d.getTime() };
+    }
+  }
+
+  const parsed = new Date(str);
+  if (!Number.isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = parsed.getMonth();
+    const dateStr = `${y}-${String(m + 1).padStart(2, "0")}-01`;
+    return { dateStr, timestamp: new Date(y, m, 1).getTime() };
+  }
+
+  const num = Number(str);
+  if (!Number.isNaN(num) && num > 0) {
+    const numDate = new Date(num);
+    if (!Number.isNaN(numDate.getTime())) {
+      const y = numDate.getFullYear();
+      const m = numDate.getMonth();
+      const dateStr = `${y}-${String(m + 1).padStart(2, "0")}-01`;
+      return { dateStr, timestamp: new Date(y, m, 1).getTime() };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Evaluates category zero-spend status across historical lookback scopes:
+ * - `current-month`: active month point only
+ * - `3-months`: last 3 months up to active month
+ * - `6-months`: last 6 months up to active month
+ * - `12-months`: last 12 months up to active month
+ * - `all-time`: all historical points and lifetime transactions
+ */
+export function evaluateZeroSpendCategories(
+  categories: ExternalProviderCategory[],
+  statPoints: StatPoint[] = [],
+  scope: ZeroSpendLookbackScope = "current-month",
+  options?: EvaluateZeroSpendOptions,
+): Map<string, CategoryZeroSpendEvaluation> {
+  const validPoints = statPoints
+    .map((p) => ({ point: p, parsed: parseStatPointDateInternal(p) }))
+    .filter((x): x is { point: StatPoint; parsed: { dateStr: string; timestamp: number } } => x.parsed !== null)
+    .sort((a, b) => a.parsed.timestamp - b.parsed.timestamp);
+
+  let targetIndex = validPoints.length - 1;
+
+  if (options?.activeMonthDateStr && validPoints.length > 0) {
+    const activeParsed = parseStatPointDateInternal({ id: options.activeMonthDateStr });
+    if (activeParsed) {
+      const exactIndex = validPoints.findIndex((p) => p.parsed.dateStr === activeParsed.dateStr);
+      if (exactIndex >= 0) {
+        targetIndex = exactIndex;
+      } else {
+        const lastBefore = validPoints.findLastIndex((p) => p.parsed.timestamp <= activeParsed.timestamp);
+        if (lastBefore >= 0) {
+          targetIndex = lastBefore;
+        }
+      }
+    }
+  }
+
+  let windowPoints: StatPoint[] = [];
+
+  if (validPoints.length > 0 && targetIndex >= 0) {
+    let windowSize = 1;
+    switch (scope) {
+      case "current-month":
+        windowSize = 1;
+        break;
+      case "3-months":
+        windowSize = 3;
+        break;
+      case "6-months":
+        windowSize = 6;
+        break;
+      case "12-months":
+        windowSize = 12;
+        break;
+      case "all-time":
+        windowSize = targetIndex + 1;
+        break;
+    }
+    const startIndex = Math.max(0, targetIndex - windowSize + 1);
+    windowPoints = validPoints.slice(startIndex, targetIndex + 1).map((x) => x.point);
+  } else if (statPoints.length > 0) {
+    // Fallback if statPoints had unparseable dates
+    if (scope === "current-month") {
+      windowPoints = [statPoints[0]];
+    } else if (scope === "3-months") {
+      windowPoints = statPoints.slice(0, 3);
+    } else if (scope === "6-months") {
+      windowPoints = statPoints.slice(0, 6);
+    } else if (scope === "12-months") {
+      windowPoints = statPoints.slice(0, 12);
+    } else {
+      windowPoints = statPoints;
+    }
+  }
+
+  // Activity audit across transactions if provided
+  const activityMap = options?.transactions
+    ? classifyCategoryActivity(categories, options.transactions, {
+        defaultCurrency: options.defaultCurrency,
+        allCategories: options.allCategories,
+      })
+    : null;
+
+  // Compute spend per category across the selected window points
+  const results = new Map<string, CategoryZeroSpendEvaluation>();
+
+  for (const cat of categories) {
+    let totalSpend = 0;
+    for (const point of windowPoints) {
+      const catEntry = point.categories?.find((c) => c.id === cat.id);
+      if (catEntry) {
+        const raw = catEntry.value ?? catEntry.amount ?? catEntry.currentAmount;
+        totalSpend += Math.max(0, Number(raw) || 0);
+      }
+    }
+
+    const audit = activityMap?.get(cat.id);
+    const lifetimeCount = audit?.lifetimeTransactionCount ?? 0;
+    const lastActiveDate = audit?.lastActiveDate ?? null;
+    const lastActiveTimestamp = audit?.lastActiveTimestamp ?? null;
+
+    const isZeroSpend = scope === "all-time" ? totalSpend < 0.005 && lifetimeCount === 0 : totalSpend < 0.005;
+
+    const isLifetimeDormant = totalSpend < 0.005 && lifetimeCount === 0;
+
+    results.set(cat.id, {
+      categoryId: cat.id,
+      isZeroSpend,
+      totalSpend,
+      monthsEvaluated: windowPoints.length,
+      lastActiveDate,
+      lastActiveTimestamp,
+      lifetimeTransactionCount: lifetimeCount,
+      isLifetimeDormant,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Filters categories to those with zero spend in the specified historical scope.
+ */
+export function filterZeroSpendCategories(
+  categories: ExternalProviderCategory[],
+  statPoints: StatPoint[] = [],
+  scope: ZeroSpendLookbackScope = "current-month",
+  options?: EvaluateZeroSpendOptions,
+): ExternalProviderCategory[] {
+  const evals = evaluateZeroSpendCategories(categories, statPoints, scope, options);
+  return categories.filter((c) => evals.get(c.id)?.isZeroSpend ?? false);
+}
