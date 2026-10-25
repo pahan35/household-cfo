@@ -135,22 +135,35 @@ The screen SHALL display all-time transactions in reverse-chronological order (a
 
 ### Requirement: Budget spent-versus-limit summary
 
-The Budget Overview screen SHALL display a comprehensive Expense Categories & Budget card supporting two primary view modes: an **Active in Month** mode (showing expense categories with a non-zero spent amount or budget limit in the selected reporting period) and an **All Categories (Order & Lifecycle)** mode (showing non-deleted expense categories in ascending ExternalProvider `category.order`, including zero-spend categories such as rarely-used foreign-currency categories like `Hotels CHF`). The summary SHALL strictly include only expense categories (`CategoryType.Expense`, `Goal`, `ClassicGoal`) and SHALL exclude all income sources (`CategoryType.Income`) and account categories. Categories at or above their limit SHALL be visually flagged as overruns. Users SHALL be able to click any category row in either mode to open the Category Expense Trace sheet for that category. In custom-order mode, users SHALL be able to drag-and-drop reorder expense categories, soft-archive an active expense category (prefixing its name with `_` and moving it to the end of the active section), unarchive an archived expense category (stripping the leading `_` and placing it immediately before the first archived expense category), move active expense categories positioned below archived categories above the first archived category or move archived categories positioned above active categories to the bottom (adapting the banner and action to whichever direction mutates fewer entities), and position foreign/legacy currency expense categories (`UAH`, `CHF`, `EUR`, etc.) immediately above the archived section—persisting all `name` and `order` updates upstream via `/Exchange/Ping`. Categories whose name starts with `_` SHALL be hidden by default when inactive and toggleable on demand via a "Show archived" toggle without leaking zero-spend unarchived or soft-deleted categories into the view. Soft-deleted categories (`category.deleted === true`) SHALL be hidden by default in both view modes, toggleable via a dedicated "Show removed" toggle, rendered with distinct removed badging and styling, editable via row actions, and ordered below archived categories. Each category row SHALL display its ExternalProvider `#order` index and the timestamp of its most recent transaction (resolving targeted transactions when outside the initial 300-transaction window) with an interactive hover/focus indicator revealing the transaction's source/target account, amount, comment, and tags. When a comparison baseline period is active, each category row SHALL also display the spent delta (amount and percentage) relative to the baseline period. When a category's budget limit is defined exclusively in a foreign currency (e.g. UAH), the row SHALL display that native foreign currency for limit and spend, with converted reporting currency amounts available on hover. When smart category groups are displayed, the parent group SHALL display spending and limits normalized in the primary reporting currency (defaulting to PLN), while individual child categories SHALL display their original native currencies with reporting currency conversions.
+The Budget Overview screen SHALL display a comprehensive Expense Categories & Budget card supporting three primary view modes: an **Active in Month** mode (showing expense categories with a non-zero spent amount or budget limit in the selected reporting period), a **Zero Spend** mode (supporting multi-period dormancy analysis), and an **All Categories (Order & Lifecycle)** mode (showing non-deleted expense categories in ascending ExternalProvider `category.order`, including zero-spend categories such as rarely-used foreign-currency categories like `Hotels CHF`). The summary SHALL strictly include only expense categories (`CategoryType.Expense`, `Goal`, `ClassicGoal`) and SHALL exclude all income sources (`CategoryType.Income`) and account categories.
+
+When the Zero Spend view mode is selected, the card SHALL provide a lookback scope selector allowing users to inspect zero-spend categories across `Current Month`, `Last 3 Months`, `Last 6 Months`, `Last 12 Months`, and `All-Time / Lifetime` (0 lifetime transactions). Truly dormant categories identified across the selected lookback scope SHALL be badged and offer direct lifecycle actions (such as archiving).
+
+Every category row across all view modes SHALL display an interactive "Last active:" indicator reflecting the date or relative time of its most recent transaction, with a hover popover revealing transaction details (counterpart account, native and converted amount, comment, and tags).
+
+Budget progress lines and spent-versus-limit metrics SHALL be computed in matching currencies to prevent skewed progress ratios. When an individual category has a budget limit defined in a native foreign currency, the progress ratio and overrun detection SHALL be computed in that category's native currency (or normalized consistently before computing the percentage), and the row SHALL display that native currency for limit and spend, with converted reporting currency equivalents available on hover. When smart category groups are displayed, the parent group SHALL display spending and limits normalized in the primary reporting currency (defaulting to PLN), while individual child categories SHALL display their original native currencies with reporting currency conversions. The progress bar SHALL reflect the true percentage without cross-currency mismatch or double currency conversions.
+
+The card header SHALL provide a consolidated `Organize Categories...` action replacing scattered standalone reorder buttons. Clicking this action SHALL open an interactive Category Organization modal that lets users preview:
+1. **Smart Activity Order** (time-decayed activity scores across 90-day, 180-day, or all-time lookbacks).
+2. **Currency & Lifecycle Tier Cleanup** (grouping primary default-currency categories first, foreign-currency categories second, archived categories third, and soft-deleted categories last).
+The modal SHALL display an interactive before/after diff table stating exactly how many categories will move, their current rank vs. projected rank, rank delta (+/-), and explanation, requiring explicit user confirmation before persisting updated sequential orders to `/api/external-provider/Exchange/Ping`. In custom-order mode, users SHALL also retain direct drag-and-drop row reordering.
+
+Categories whose name starts with `_` SHALL be hidden by default when inactive and toggleable on demand via a "Show archived" toggle without leaking zero-spend unarchived or soft-deleted categories into the view. Soft-deleted categories (`category.deleted === true`) SHALL be hidden by default in all view modes, toggleable via a dedicated "Show removed" toggle, rendered with distinct removed badging and styling, editable via row actions, and ordered below archived categories. When a comparison baseline period is active, each category row SHALL also display the spent delta (amount and percentage) relative to the baseline period.
 
 #### Scenario: Budget statuses are visible
 
 - **WHEN** the upstream stats response contains per-category spent (`value`) and `limitAmount` values for the selected period
-- **THEN** the screen shows each active expense category in ExternalProvider `order` sequence (or `% Spent` when toggled) with spent and limit amounts, marks categories exceeding their limit, and completely omits income sources from the spent-versus-limit list
+- **THEN** the screen shows each active expense category in ExternalProvider `order` sequence (or `% Spent` when toggled) with spent and limit amounts, evaluates progress percentages and overrun status using matching currencies (native currency for standalone foreign categories, reporting currency for smart groups), marks categories exceeding their limit, and completely omits income sources from the spent-versus-limit list
 
 #### Scenario: Standalone foreign-currency budget limit presentation
 
-- **WHEN** an individual expense category has a budget limit defined exclusively in a foreign currency (such as `Sport UAH` with currencyId `UAH`)
-- **THEN** the row displays the limit and spend in that native foreign currency (e.g. `4 500,00 ₴ / 5 000,00 ₴`), and hovering over the amount reveals a tooltip with the converted reporting currency equivalent (e.g. `~439,02 zł / ~487,80 zł`)
+- **WHEN** an individual expense category has a budget limit defined exclusively in a foreign currency (such as `Sport UAH` with currencyId `UAH` or name-detected foreign currency)
+- **THEN** the row displays the limit and spend in that native foreign currency (e.g. `4 500,00 ₴ / 5 000,00 ₴`), calculates progress percentage natively (`90%`), and hovering over the amount reveals a tooltip with the converted reporting currency equivalent (e.g. `~439,02 zł / ~487,80 zł`)
 
 #### Scenario: Smart category group multi-currency display
 
 - **WHEN** a smart category group unites child categories across different currencies (such as `Sport PLN` and `Sport UAH`)
-- **THEN** the parent group row displays total spending and limits normalized in the dashboard's primary reporting currency (PLN), and the category breakdown reveals each child category rendered in its respective native currency with converted equivalents
+- **THEN** the parent group row displays total spending and limits normalized in the dashboard's primary reporting currency (PLN) with progress computed from normalized totals, and the category breakdown reveals each child category rendered in its respective native currency with converted equivalents
 
 #### Scenario: Viewing all expense categories regardless of monthly activity
 
@@ -170,12 +183,12 @@ The Budget Overview screen SHALL display a comprehensive Expense Categories & Bu
 #### Scenario: Moving active expense categories above archived categories and organizing foreign-currency tier
 
 - **WHEN** active categories are positioned below archived categories and the count of active categories below archived is less than or equal to the count of archived categories above active (or the user triggers the action to group foreign/legacy currency categories right above archived)
-- **THEN** the card surfaces a warning banner with action "Move above archived" that repositions misplaced active categories immediately above the first archived category (with foreign-currency categories placed immediately above archived when requested) and persists updated `order` values via `/Exchange/Ping`
+- **THEN** the organization modal surfaces the option to reposition misplaced active categories immediately above the first archived category (with foreign-currency categories placed immediately above archived when requested) and persists updated `order` values via `/Exchange/Ping` upon confirmation
 
 #### Scenario: Adaptive banner and action when archived categories are positioned above active categories
 
 - **WHEN** archived categories are positioned above active categories and the count of archived categories above active is strictly less than the count of active categories positioned below them (such as 4 archived categories sitting above 91 active categories)
-- **THEN** the card surfaces a warning banner stating that archived categories are positioned above active categories with an action "Move archived to bottom" (and a row action "Move to bottom" on individual archived categories), which moves the archived categories to after the last active category, assigns sequential orders starting after the maximum active category order, and mutates only the archived categories without renumbering or mutating the active categories
+- **THEN** the card surfaces an organization alert or action stating that archived categories are positioned above active categories with an action to move archived to bottom (and a row action "Move to bottom" on individual archived categories), which moves the archived categories to after the last active category and assigns sequential orders starting after the maximum active category order upon confirmation
 
 #### Scenario: Isolated archived toggle without leaking inactive or removed categories
 
@@ -206,6 +219,21 @@ The Budget Overview screen SHALL display a comprehensive Expense Categories & Bu
 
 - **WHEN** the user selects any available month and year using the header Month & Year Picker (via previous/next month steppers, quick Current/Previous shortcuts, or the month/year grid popover) or clicks a point in the trends chart
 - **THEN** the budget summary, net income and controllable expense metrics, and expense composition pie chart refresh for that selected month without displaying a duplicate period toggle inside the Budget Summary card
+
+#### Scenario: Zero-spend multi-period and lifetime dormancy filtering
+
+- **WHEN** the user switches to the "Zero Spend" view mode and selects a lookback scope (such as "All-Time / Lifetime" or "Last 6 Months")
+- **THEN** the card filters the categories to those with zero spend across the chosen lookback period, displays each category's last active date, and highlights dormant categories eligible for archiving or restructuring
+
+#### Scenario: Last active indicator on every category row
+
+- **WHEN** a category row is rendered in the Budget Spent vs Limit card
+- **THEN** the row displays a "Last active:" indicator showing when the category was last used (or "No transactions" if never used), and hovering/focusing the indicator reveals the transaction details (counterpart account, amount, comment, and tags)
+
+#### Scenario: Unified Category Organization modal with before/after diff preview
+
+- **WHEN** the user clicks "Organize Categories..." in the card header
+- **THEN** an organization modal opens showing the selected strategy (Smart Order or Tier Cleanup), displaying an exact count of affected categories and a side-by-side before/after preview with rank deltas (+/-), and updates are persisted to `/api/external-provider/Exchange/Ping` only after user confirmation
 
 ### Requirement: Money and date presentation
 
