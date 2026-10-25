@@ -6,9 +6,15 @@ import {
   filterTransactionsByAccount,
   identifySubcategoryName,
   resolveCategoryIdsForTrace,
+  resolveTransactionSpend,
   sortTransactionsReverseChronological,
 } from "../category-expense-trace-helpers";
-import { CategoryType, type ExternalProviderCategory, type ExternalProviderTransaction } from "../external-provider-data";
+import {
+  CategoryType,
+  type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  type ExternalProviderTransaction,
+} from "../external-provider-data";
 
 describe("category-expense-trace-helpers", () => {
   const mockCategories: ExternalProviderCategory[] = [
@@ -110,6 +116,9 @@ describe("category-expense-trace-helpers", () => {
         totalSpend: 600,
         transactionCount: 1,
         icon: "card",
+        nativeSpend: 600,
+        nativeCurrency: "PLN",
+        hasForeignSpend: false,
       });
       expect(breakdown.accounts[1]).toEqual({
         accountId: "acc-primary-bank",
@@ -117,6 +126,9 @@ describe("category-expense-trace-helpers", () => {
         totalSpend: 400,
         transactionCount: 2,
         icon: "bank",
+        nativeSpend: 400,
+        nativeCurrency: "PLN",
+        hasForeignSpend: false,
       });
       expect(breakdown.accounts[2]).toEqual({
         accountId: "acc-cash",
@@ -124,6 +136,9 @@ describe("category-expense-trace-helpers", () => {
         totalSpend: 50,
         transactionCount: 1,
         icon: "cash",
+        nativeSpend: 50,
+        nativeCurrency: "PLN",
+        hasForeignSpend: false,
       });
     });
 
@@ -166,6 +181,42 @@ describe("category-expense-trace-helpers", () => {
       expect(breakdown.allTotalSpend).toBe(100);
       expect(breakdown.accounts.some((a) => a.accountName === "External Card")).toBe(true);
       expect(breakdown.accounts.some((a) => a.accountName === "Unknown Account")).toBe(true);
+    });
+
+    it("normalizes multi-currency account spending into reporting currency and retains native subtotals", () => {
+      const categories: ExternalProviderCategory[] = [
+        { id: "acc-mono", name: "Monobank UAH", categoryType: CategoryType.BankAccount, currencyId: "UAH" },
+        { id: "acc-primary-bank", name: "Primary Bank Card", categoryType: CategoryType.BankAccount, currencyId: "PLN" },
+      ];
+      const currencies: ExternalProviderCurrency[] = [
+        { id: "USD", rate: 1 },
+        { id: "PLN", rate: 4 },
+        { id: "UAH", rate: 41 },
+      ];
+
+      const txs: ExternalProviderTransaction[] = [
+        { id: "tx-uah", sourceId: "acc-mono", sourceAmount: 410, dateTimestampISO: "2026-10-10T10:00:00Z" },
+        { id: "tx-pln", sourceId: "acc-primary-bank", sourceAmount: 100, dateTimestampISO: "2026-10-11T10:00:00Z" },
+      ];
+
+      const breakdown = computeAccountBreakdown(txs, categories, "PLN", currencies);
+      // 410 UAH = 40 PLN, plus 100 PLN = 140 PLN total
+      expect(breakdown.allTotalSpend).toBeCloseTo(140, 2);
+      expect(breakdown.accounts).toHaveLength(2);
+
+      const monoAccount = breakdown.accounts.find((a) => a.accountId === "acc-mono");
+      expect(monoAccount).toBeDefined();
+      expect(monoAccount?.totalSpend).toBeCloseTo(40, 2);
+      expect(monoAccount?.nativeSpend).toBe(410);
+      expect(monoAccount?.nativeCurrency).toBe("UAH");
+      expect(monoAccount?.hasForeignSpend).toBe(true);
+
+      const primaryBankAccount = breakdown.accounts.find((a) => a.accountId === "acc-primary-bank");
+      expect(primaryBankAccount).toBeDefined();
+      expect(primaryBankAccount?.totalSpend).toBe(100);
+      expect(primaryBankAccount?.nativeSpend).toBe(100);
+      expect(primaryBankAccount?.nativeCurrency).toBe("PLN");
+      expect(primaryBankAccount?.hasForeignSpend).toBe(false);
     });
   });
 
@@ -230,6 +281,27 @@ describe("category-expense-trace-helpers", () => {
       expect(summary.deltaAbs).toBe(-300);
       expect(summary.deltaPercent).toBe(-50); // -50%
     });
+
+    it("normalizes mixed-currency period transactions for mathematically sound variance calculation", () => {
+      const currencies: ExternalProviderCurrency[] = [
+        { id: "USD", rate: 1 },
+        { id: "PLN", rate: 4 },
+        { id: "UAH", rate: 41 },
+      ];
+      // Active month: 820 UAH (80 PLN) + 20 PLN = 100 PLN
+      const active: ExternalProviderTransaction[] = [
+        { id: "a1", sourceCurrencyId: "UAH", sourceAmount: 820 },
+        { id: "a2", sourceCurrencyId: "PLN", sourceAmount: 20 },
+      ];
+      // Baseline month: 60 PLN
+      const baseline: ExternalProviderTransaction[] = [{ id: "b1", sourceCurrencyId: "PLN", sourceAmount: 60 }];
+
+      const summary = computePeriodSpendSummary(active, baseline, "PLN", currencies);
+      expect(summary.activeSpend).toBeCloseTo(100, 2);
+      expect(summary.baselineSpend).toBe(60);
+      expect(summary.deltaAbs).toBeCloseTo(40, 2);
+      expect(summary.deltaPercent).toBeCloseTo(66.67, 1);
+    });
   });
 
   describe("sortTransactionsReverseChronological", () => {
@@ -275,6 +347,104 @@ describe("category-expense-trace-helpers", () => {
     it("returns null when destination is undefined or not found", () => {
       expect(identifySubcategoryName(undefined)).toBeNull();
       expect(identifySubcategoryName("cat-unknown", [], mockCategoryMap)).toBeNull();
+    });
+  });
+
+  describe("resolveTransactionSpend", () => {
+    const mockCurrencies: ExternalProviderCurrency[] = [
+      { id: "USD", rate: 1 },
+      { id: "PLN", rate: 4 },
+      { id: "UAH", rate: 41 },
+      { id: "EUR", rate: 0.9 },
+    ];
+
+    const multiCurrencyCategories: ExternalProviderCategory[] = [
+      { id: "acc-mono-uah", name: "Monobank UAH", categoryType: CategoryType.BankAccount, currencyId: "UAH" },
+      { id: "acc-primary-bank", name: "Primary Bank Card", categoryType: CategoryType.BankAccount, currencyId: "PLN" },
+      { id: "cat-sport-uah", name: "Sport UAH", categoryType: CategoryType.Expense, currencyId: "UAH" },
+      { id: "cat-groceries", name: "Groceries", categoryType: CategoryType.Expense, currencyId: "PLN" },
+    ];
+
+    it("returns native PLN amounts without conversion", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-pln",
+        sourceId: "acc-primary-bank",
+        destinationId: "cat-groceries",
+        sourceAmount: 120,
+        destinationAmount: 120,
+      };
+
+      const result = resolveTransactionSpend(tx, "PLN", mockCurrencies, multiCurrencyCategories);
+      expect(result.nativeAmount).toBe(120);
+      expect(result.nativeCurrency).toBe("PLN");
+      expect(result.convertedAmount).toBe(120);
+      expect(result.isConverted).toBe(false);
+      expect(result.rate).toBe(1);
+    });
+
+    it("resolves foreign account currency from category metadata and converts to reporting currency", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-uah",
+        sourceId: "acc-mono-uah",
+        destinationId: "cat-groceries",
+        sourceAmount: 410,
+      };
+
+      const result = resolveTransactionSpend(tx, "PLN", mockCurrencies, multiCurrencyCategories);
+      expect(result.nativeAmount).toBe(410);
+      expect(result.nativeCurrency).toBe("UAH");
+      // 410 UAH / 41 * 4 = 40 PLN
+      expect(result.convertedAmount).toBeCloseTo(40, 2);
+      expect(result.isConverted).toBe(true);
+      expect(result.rate).toBeCloseTo(40 / 410, 4);
+    });
+
+    it("resolves explicit transaction foreign source currency", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-eur",
+        sourceId: "acc-primary-bank",
+        destinationId: "cat-groceries",
+        sourceCurrencyId: "EUR",
+        sourceAmount: 90,
+      };
+
+      const result = resolveTransactionSpend(tx, "PLN", mockCurrencies, multiCurrencyCategories);
+      expect(result.nativeAmount).toBe(90);
+      expect(result.nativeCurrency).toBe("EUR");
+      // 90 EUR / 0.9 * 4 = 400 PLN
+      expect(result.convertedAmount).toBeCloseTo(400, 2);
+      expect(result.isConverted).toBe(true);
+    });
+
+    it("resolves foreign destination category currency", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-dest-uah",
+        sourceId: "acc-primary-bank",
+        destinationId: "cat-sport-uah",
+        destinationAmount: 820,
+      };
+
+      const result = resolveTransactionSpend(tx, "PLN", mockCurrencies, multiCurrencyCategories);
+      expect(result.nativeAmount).toBe(820);
+      expect(result.nativeCurrency).toBe("UAH");
+      // 820 UAH / 41 * 4 = 80 PLN
+      expect(result.convertedAmount).toBeCloseTo(80, 2);
+      expect(result.isConverted).toBe(true);
+    });
+
+    it("gracefully falls back to native amount when exchange rate is missing", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-chf",
+        sourceCurrencyId: "CHF",
+        sourceAmount: 50,
+      };
+
+      const result = resolveTransactionSpend(tx, "PLN", mockCurrencies, multiCurrencyCategories);
+      expect(result.nativeAmount).toBe(50);
+      expect(result.nativeCurrency).toBe("CHF");
+      expect(result.convertedAmount).toBe(50);
+      expect(result.isConverted).toBe(false);
+      expect(result.rate).toBeNull();
     });
   });
 });

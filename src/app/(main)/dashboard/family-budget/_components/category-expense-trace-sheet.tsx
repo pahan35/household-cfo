@@ -14,21 +14,23 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
   buildLedgerLink,
   computeAccountBreakdown,
   computePeriodSpendSummary,
   filterTransactionsByAccount,
-  getTransactionSpendAmount,
   identifySubcategoryName,
   resolveCategoryIdsForTrace,
+  resolveTransactionSpend,
   sortTransactionsReverseChronological,
 } from "./category-expense-trace-helpers";
 import { getTransactionPage } from "./external-provider-client";
 import {
   CategoryType,
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
   type ExternalProviderTransaction,
   formatMoney,
   formatTransactionDate,
@@ -41,6 +43,7 @@ export interface CategoryExpenseTraceSheetProps {
   onOpenChange: (open: boolean) => void;
   category: ExpenseSlice | null;
   categories?: ExternalProviderCategory[];
+  currencies?: ExternalProviderCurrency[];
   activeMonthDateStr: string;
   baselineResolution?: {
     dateStr: string;
@@ -67,6 +70,7 @@ export function CategoryExpenseTraceSheet({
   onOpenChange,
   category,
   categories = [],
+  currencies = [],
   activeMonthDateStr,
   baselineResolution = null,
   defaultCurrency = "PLN",
@@ -211,8 +215,14 @@ export function CategoryExpenseTraceSheet({
   }, [category?.id]);
 
   const spendSummary = useMemo(() => {
-    return computePeriodSpendSummary(activeTransactions, baselineTransactions);
-  }, [activeTransactions, baselineTransactions]);
+    return computePeriodSpendSummary(
+      activeTransactions,
+      baselineTransactions,
+      defaultCurrency,
+      currencies,
+      categoryMap,
+    );
+  }, [activeTransactions, baselineTransactions, defaultCurrency, currencies, categoryMap]);
 
   const currentDisplaySet = useMemo(() => {
     if (periodTab === "all-time") {
@@ -235,8 +245,8 @@ export function CategoryExpenseTraceSheet({
   }, [periodTab, activeTransactions, baselineTransactions, allTimeTransactions, activePeriod.label, baselinePeriod]);
 
   const accountBreakdown = useMemo(() => {
-    return computeAccountBreakdown(currentDisplaySet, categoryMap);
-  }, [currentDisplaySet, categoryMap]);
+    return computeAccountBreakdown(currentDisplaySet, categoryMap, defaultCurrency, currencies);
+  }, [currentDisplaySet, categoryMap, defaultCurrency, currencies]);
 
   const filteredTransactions = useMemo(() => {
     const subset = filterTransactionsByAccount(currentDisplaySet, selectedAccountId);
@@ -253,8 +263,11 @@ export function CategoryExpenseTraceSheet({
   const isLoadingCurrent = periodTab === "all-time" ? isLoadingAllTime : isLoading;
 
   const currentPeriodTotalSpend = useMemo(() => {
-    return filteredTransactions.reduce((acc, tx) => acc + getTransactionSpendAmount(tx), 0);
-  }, [filteredTransactions]);
+    return filteredTransactions.reduce(
+      (acc, tx) => acc + resolveTransactionSpend(tx, defaultCurrency, currencies, categoryMap).convertedAmount,
+      0,
+    );
+  }, [filteredTransactions, defaultCurrency, currencies, categoryMap]);
 
   const displayedHeaderSpend = useMemo(() => {
     if (periodTab === "active") return spendSummary.activeSpend;
@@ -374,9 +387,8 @@ export function CategoryExpenseTraceSheet({
 
               {accountBreakdown.accounts.map((acc) => {
                 const isSelected = selectedAccountId === acc.accountId;
-                return (
+                const chip = (
                   <button
-                    key={acc.accountId}
                     type="button"
                     onClick={() => setSelectedAccountId(isSelected ? null : acc.accountId)}
                     className={cn(
@@ -393,6 +405,21 @@ export function CategoryExpenseTraceSheet({
                     </span>
                   </button>
                 );
+
+                if (acc.hasForeignSpend && acc.nativeSpend && acc.nativeCurrency) {
+                  return (
+                    <TooltipProvider key={acc.accountId} delayDuration={150}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>{chip}</TooltipTrigger>
+                        <TooltipContent side="bottom" className="text-xs">
+                          <span>Native: {formatMoney(acc.nativeSpend, acc.nativeCurrency)}</span>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  );
+                }
+
+                return <div key={acc.accountId}>{chip}</div>;
               })}
             </div>
           </div>
@@ -472,7 +499,7 @@ export function CategoryExpenseTraceSheet({
               {!isLoadingCurrent && !fetchError && filteredTransactions.length > 0 && (
                 <div className="divide-border/60 flex flex-col divide-y">
                   {filteredTransactions.map((tx) => {
-                    const spendAmount = getTransactionSpendAmount(tx);
+                    const resolvedSpend = resolveTransactionSpend(tx, defaultCurrency, currencies, categoryMap);
                     const accountCategory = tx.sourceId ? categoryMap.get(tx.sourceId) : undefined;
                     const accountName = accountCategory?.name ?? tx.sourceName ?? "Unknown Account";
 
@@ -549,8 +576,30 @@ export function CategoryExpenseTraceSheet({
 
                         <div className="flex shrink-0 flex-col items-end">
                           <span className="text-foreground text-sm font-semibold tabular-nums">
-                            -{formatMoney(spendAmount, defaultCurrency)}
+                            -{formatMoney(resolvedSpend.convertedAmount, defaultCurrency)}
                           </span>
+
+                          {resolvedSpend.isConverted && resolvedSpend.nativeCurrency !== defaultCurrency && (
+                            <TooltipProvider delayDuration={150}>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="text-muted-foreground hover:text-foreground cursor-help text-[11px] font-normal tabular-nums underline decoration-dotted underline-offset-2">
+                                    {formatMoney(resolvedSpend.nativeAmount, resolvedSpend.nativeCurrency)}
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="left" className="text-xs">
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="font-medium">Foreign Currency Conversion</span>
+                                    <span className="text-muted-foreground text-[11px]">
+                                      {formatMoney(resolvedSpend.nativeAmount, resolvedSpend.nativeCurrency)} @{" "}
+                                      {resolvedSpend.rate ? resolvedSpend.rate.toFixed(4) : "—"} ={" "}
+                                      {formatMoney(resolvedSpend.convertedAmount, defaultCurrency)}
+                                    </span>
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          )}
                         </div>
                       </div>
                     );

@@ -1,6 +1,8 @@
 import {
   CategoryType,
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  convertCurrencyAmount,
   extractCanonicalBaseName,
   isCyrillic,
   KNOWN_FOREIGN_CURRENCY_CODES,
@@ -241,6 +243,7 @@ export function groupSmartSlices(
   slices: ExpenseSlice[],
   thresholdPercent = 3,
   defaultCurrency = "PLN",
+  currencies: ExternalProviderCurrency[] = [],
 ): ExpenseSlice[] {
   const totalAmount = slices.reduce((acc, s) => acc + s.amount, 0);
 
@@ -261,8 +264,23 @@ export function groupSmartSlices(
 
   for (const [canonicalBase, groupSlices] of canonicalGroups.entries()) {
     if (groupSlices.length >= 2) {
-      const combinedAmount = groupSlices.reduce((acc, s) => acc + s.amount, 0);
-      const combinedLimit = groupSlices.reduce((acc, s) => acc + (s.limitAmount ?? 0), 0);
+      const combinedAmount = groupSlices.reduce((acc, s) => {
+        const det = detectSliceCurrency(s.name, defaultCurrency);
+        if (det.isForeign) {
+          const converted = convertCurrencyAmount(s.amount, det.currency, defaultCurrency, currencies);
+          return acc + (converted ?? s.amount);
+        }
+        return acc + s.amount;
+      }, 0);
+      const combinedLimit = groupSlices.reduce((acc, s) => {
+        if (!s.limitAmount) return acc;
+        const det = detectSliceCurrency(s.name, defaultCurrency);
+        if (det.isForeign) {
+          const converted = convertCurrencyAmount(s.limitAmount, det.currency, defaultCurrency, currencies);
+          return acc + (converted ?? s.limitAmount);
+        }
+        return acc + s.limitAmount;
+      }, 0);
       const combinedPercentage = totalAmount > 0 ? (combinedAmount / totalAmount) * 100 : 0;
       const hasOverrun = groupSlices.some((s) => s.isOverrun) || (combinedLimit > 0 && combinedAmount > combinedLimit);
 
@@ -311,8 +329,23 @@ export function groupSmartSlices(
   let candidateSlices: ExpenseSlice[];
 
   if (shouldSmartGroupTransport) {
-    const combinedAmount = transportSlices.reduce((acc, s) => acc + s.amount, 0);
-    const combinedLimit = transportSlices.reduce((acc, s) => acc + (s.limitAmount ?? 0), 0);
+    const combinedAmount = transportSlices.reduce((acc, s) => {
+      const det = detectSliceCurrency(s.name, defaultCurrency);
+      if (det.isForeign) {
+        const converted = convertCurrencyAmount(s.amount, det.currency, defaultCurrency, currencies);
+        return acc + (converted ?? s.amount);
+      }
+      return acc + s.amount;
+    }, 0);
+    const combinedLimit = transportSlices.reduce((acc, s) => {
+      if (!s.limitAmount) return acc;
+      const det = detectSliceCurrency(s.name, defaultCurrency);
+      if (det.isForeign) {
+        const converted = convertCurrencyAmount(s.limitAmount, det.currency, defaultCurrency, currencies);
+        return acc + (converted ?? s.limitAmount);
+      }
+      return acc + s.limitAmount;
+    }, 0);
     const combinedPercentage = totalAmount > 0 ? (combinedAmount / totalAmount) * 100 : 0;
     const hasOverrun =
       transportSlices.some((s) => s.isOverrun) || (combinedLimit > 0 && combinedAmount > combinedLimit);

@@ -13,6 +13,8 @@ import {
   ArchiveRestore,
   ArrowDownToLine,
   ArrowUpToLine,
+  ChevronDown,
+  ChevronRight,
   GripVertical,
   MoreHorizontal,
   PiggyBank,
@@ -29,12 +31,17 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { getBudgetSelection } from "./external-provider-client";
 import {
   CategoryType,
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  type ExternalProviderTransaction,
+  convertCurrencyAmount,
   detectExpenseCategoryDisplacement,
+  extractCanonicalBaseName,
   filterAndClassifyCategories,
   formatMoney,
   getCategoryCurrencyTier,
@@ -45,7 +52,7 @@ import {
   type StatCategoryPoint,
   type StatPingData,
 } from "./external-provider-data";
-import type { CategoryComparisonDelta, ExpenseSlice } from "./expense-transforms";
+import { type CategoryComparisonDelta, detectSliceCurrency, type ExpenseSlice } from "./expense-transforms";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { SectionShell } from "./section-shell";
 import { parsePointDate } from "./yoy-transforms";
@@ -62,6 +69,12 @@ export interface BudgetSummaryItem {
   percent: number;
   rawPercent: number;
   isOverrun: boolean;
+  nativeCurrency?: string;
+  isForeign?: boolean;
+  convertedCurrent?: number;
+  convertedLimit?: number;
+  isSmartGroup?: boolean;
+  children?: BudgetSummaryItem[];
 }
 
 export interface ComputeBudgetSummaryItemsOptions {
@@ -71,6 +84,10 @@ export interface ComputeBudgetSummaryItemsOptions {
   categoryTypeMap?: Map<string, number>;
   categoryDeletedMap?: Map<string, boolean>;
   deletedCategoryIds?: Set<string>;
+  categoryCurrencyMap?: Map<string, string>;
+  defaultCurrency?: string;
+  currencies?: ExternalProviderCurrency[];
+  enableSmartGroups?: boolean;
 }
 
 export function computeBudgetSummaryItems(
@@ -100,7 +117,7 @@ export function computeBudgetSummaryItems(
 
   if (!activePoint?.categories) return [];
 
-  return activePoint.categories
+  const mapped = activePoint.categories
     .filter((cat: StatCategoryPoint) => {
       if (!includeDeleted) {
         if ((cat as { deleted?: boolean }).deleted === true) return false;
@@ -147,6 +164,23 @@ export function computeBudgetSummaryItems(
         percent = 100;
       }
       const isOverrun = limit > 0 && current > limit;
+
+      const defaultCurr = mergedOpts.defaultCurrency ?? "PLN";
+      const catCurrency = mergedOpts.categoryCurrencyMap?.get(cat.id);
+      const det = detectSliceCurrency(name, defaultCurr);
+      const nativeCurrency = catCurrency ?? det.currency;
+      const isForeign = nativeCurrency.toUpperCase() !== defaultCurr.toUpperCase();
+      const currencies = mergedOpts.currencies ?? [];
+      const convertedCurrent = isForeign
+        ? (convertCurrencyAmount(current, nativeCurrency, defaultCurr, currencies) ?? current)
+        : current;
+      let convertedLimit = 0;
+      if (limit > 0) {
+        convertedLimit = isForeign
+          ? (convertCurrencyAmount(limit, nativeCurrency, defaultCurr, currencies) ?? limit)
+          : limit;
+      }
+
       return {
         id: cat.id,
         name,
@@ -155,13 +189,66 @@ export function computeBudgetSummaryItems(
         percent: Math.min(100, percent),
         rawPercent: percent,
         isOverrun,
+        nativeCurrency,
+        isForeign,
+        convertedCurrent,
+        convertedLimit,
       };
-    })
-    .sort((a, b) => b.rawPercent - a.rawPercent);
+    });
+
+  if (mergedOpts.enableSmartGroups) {
+    const defaultCurr = mergedOpts.defaultCurrency ?? "PLN";
+    const canonicalGroups = new Map<string, BudgetSummaryItem[]>();
+    for (const item of mapped) {
+      const base = extractCanonicalBaseName(item.name, defaultCurr);
+      const existing = canonicalGroups.get(base) ?? [];
+      existing.push(item);
+      canonicalGroups.set(base, existing);
+    }
+
+    const groupedItems: BudgetSummaryItem[] = [];
+    for (const [canonicalBase, groupItems] of canonicalGroups.entries()) {
+      if (groupItems.length >= 2) {
+        const combinedCurrent = groupItems.reduce((acc, it) => acc + (it.convertedCurrent ?? it.current), 0);
+        const combinedLimit = groupItems.reduce((acc, it) => acc + (it.convertedLimit ?? it.limit), 0);
+        let combinedPercent = 0;
+        if (combinedLimit > 0) {
+          combinedPercent = Math.round((combinedCurrent / combinedLimit) * 100);
+        } else if (combinedCurrent > 0) {
+          combinedPercent = 100;
+        }
+        const hasOverrun =
+          groupItems.some((it) => it.isOverrun) || (combinedLimit > 0 && combinedCurrent > combinedLimit);
+
+        groupedItems.push({
+          id: `group-${canonicalBase.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+          name: canonicalBase,
+          limit: combinedLimit,
+          current: combinedCurrent,
+          percent: Math.min(100, combinedPercent),
+          rawPercent: combinedPercent,
+          isOverrun: hasOverrun,
+          isSmartGroup: true,
+          nativeCurrency: defaultCurr,
+          isForeign: false,
+          convertedCurrent: combinedCurrent,
+          convertedLimit: combinedLimit,
+          children: groupItems,
+        });
+      } else {
+        groupedItems.push(groupItems[0]);
+      }
+    }
+    return groupedItems.sort((a, b) => b.rawPercent - a.rawPercent);
+  }
+
+  return mapped.sort((a, b) => b.rawPercent - a.rawPercent);
 }
 
-interface BudgetSummaryCardProps {
+export interface BudgetSummaryCardProps {
   categories?: ExternalProviderCategory[];
+  currencies?: ExternalProviderCurrency[];
+  periodTransactions?: ExternalProviderTransaction[];
   defaultCurrency?: string;
   activeMonthDateStr?: string;
   periodMonth?: BudgetPeriodMonth;
@@ -183,6 +270,8 @@ interface BudgetSummaryCardProps {
 
 export function BudgetSummaryCard({
   categories = [],
+  currencies = [],
+  periodTransactions: _periodTransactions = [],
   defaultCurrency = "PLN",
   activeMonthDateStr,
   periodMonth = "current",
@@ -299,6 +388,16 @@ export function BudgetSummaryCard({
     return set;
   }, [categories]);
 
+  const categoryCurrencyMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of categories) {
+      if (c.currencyId) {
+        map.set(c.id, c.currencyId);
+      }
+    }
+    return map;
+  }, [categories]);
+
   const currency = statData?.selection?.params?.currency ?? defaultCurrency;
 
   // Raw budget items computed from stats: strictly active items + inactive archived when toggled, never unarchived zero-spend, never soft-deleted
@@ -308,8 +407,23 @@ export function BudgetSummaryCard({
         categoryTypeMap,
         deletedCategoryIds,
         includeArchivedInactive: showArchived,
+        categoryCurrencyMap,
+        defaultCurrency,
+        currencies,
+        enableSmartGroups: viewMode === "active",
       }),
-    [statData, fromDate, categoryNameMap, categoryTypeMap, deletedCategoryIds, showArchived],
+    [
+      statData,
+      fromDate,
+      categoryNameMap,
+      categoryTypeMap,
+      deletedCategoryIds,
+      showArchived,
+      categoryCurrencyMap,
+      defaultCurrency,
+      currencies,
+      viewMode,
+    ],
   );
 
   // Active/non-deleted expense categories for full directory view
@@ -338,6 +452,9 @@ export function BudgetSummaryCard({
         categoryTypeMap,
         includeDeleted: true,
         includeAll: true,
+        categoryCurrencyMap,
+        defaultCurrency,
+        currencies,
       }).map((it) => [it.id, it]),
     );
     return expenseCategories.map<BudgetSummaryItem>(
@@ -350,9 +467,22 @@ export function BudgetSummaryCard({
           percent: 0,
           rawPercent: 0,
           isOverrun: false,
+          nativeCurrency: c.currencyId ?? detectSliceCurrency(c.name, defaultCurrency).currency,
+          isForeign:
+            (c.currencyId ?? detectSliceCurrency(c.name, defaultCurrency).currency).toUpperCase() !==
+            defaultCurrency.toUpperCase(),
         },
     );
-  }, [statData, fromDate, categoryNameMap, categoryTypeMap, expenseCategories]);
+  }, [
+    statData,
+    fromDate,
+    categoryNameMap,
+    categoryTypeMap,
+    expenseCategories,
+    categoryCurrencyMap,
+    defaultCurrency,
+    currencies,
+  ]);
 
   const displacement = useMemo(() => detectExpenseCategoryDisplacement(categories), [categories]);
   const categoriesBelowArchived = displacement.activeBelow;
@@ -457,7 +587,19 @@ export function BudgetSummaryCard({
   const canReorder = (viewMode === "all" || sortMode === "custom") && Boolean(onReorderCategories);
 
   function handleSelect(item: BudgetSummaryItem) {
-    onSelectCategory?.({ id: item.id, name: item.name, amount: item.current, percentage: item.rawPercent });
+    onSelectCategory?.({
+      id: item.id,
+      name: item.name,
+      amount: item.current,
+      percentage: item.rawPercent,
+      isSmartGroup: item.isSmartGroup,
+      children: item.children?.map((c) => ({
+        id: c.id,
+        name: c.name,
+        amount: c.current,
+        percentage: c.rawPercent,
+      })),
+    });
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -667,6 +809,17 @@ export function BudgetSummaryCard({
                 isBelowArchived={belowArchivedIds.has(item.id)}
                 isArchivedAbove={archivedAboveIds.has(item.id)}
                 onSelect={onSelectCategory ? () => handleSelect(item) : undefined}
+                onSelectChild={
+                  onSelectCategory
+                    ? (child) =>
+                        onSelectCategory({
+                          id: child.id,
+                          name: child.name,
+                          amount: child.current,
+                          percentage: child.rawPercent,
+                        })
+                    : undefined
+                }
                 onArchive={onArchiveCategory}
                 onUnarchive={onUnarchiveCategory}
                 onMoveAboveArchived={onMoveCategoriesAboveArchived}
@@ -708,6 +861,7 @@ interface SortableBudgetCategoryRowProps {
   isBelowArchived?: boolean;
   isArchivedAbove?: boolean;
   onSelect?: () => void;
+  onSelectChild?: (child: BudgetSummaryItem) => void;
   onArchive?: (categoryId: string) => Promise<void> | void;
   onUnarchive?: (categoryId: string) => Promise<void> | void;
   onMoveAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
@@ -729,11 +883,14 @@ function SortableBudgetCategoryRow({
   isBelowArchived,
   isArchivedAbove,
   onSelect,
+  onSelectChild,
   onArchive,
   onUnarchive,
   onMoveAboveArchived,
   onMoveToBottom,
 }: SortableBudgetCategoryRowProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   const { handleRef, isDragging, ref } = useSortable({
     id,
     index,
@@ -743,6 +900,10 @@ function SortableBudgetCategoryRow({
     modifiers: [RestrictToVerticalAxis],
     disabled: !canReorder,
   });
+
+  const hasForeignCurrency = Boolean(item.nativeCurrency && item.nativeCurrency !== currency);
+  const isStandaloneForeign = !item.isSmartGroup && (item.isForeign ? true : hasForeignCurrency);
+  const nativeCurr = item.nativeCurrency ?? currency;
 
   return (
     <div
@@ -756,6 +917,22 @@ function SortableBudgetCategoryRow({
     >
       <div className="flex items-center justify-between text-xs">
         <div className="flex min-w-0 items-center gap-1.5 font-medium">
+          {item.isSmartGroup && item.children && item.children.length > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsExpanded((prev) => !prev);
+              }}
+              className="text-muted-foreground hover:text-foreground size-5 shrink-0 p-0"
+              aria-label={isExpanded ? `Collapse ${item.name}` : `Expand ${item.name}`}
+            >
+              {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+            </Button>
+          )}
+
           {canReorder && (
             <Button
               ref={handleRef}
@@ -788,7 +965,13 @@ function SortableBudgetCategoryRow({
             <span className="truncate">{item.name}</span>
           )}
 
-          {isForeign && !isArchived && !isRemoved && (
+          {item.isSmartGroup && (
+            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
+              Smart Group
+            </Badge>
+          )}
+
+          {!item.isSmartGroup && isForeign && !isArchived && !isRemoved && (
             <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
               Foreign
             </Badge>
@@ -844,7 +1027,7 @@ function SortableBudgetCategoryRow({
             </Badge>
           )}
 
-          {lastTx && <LastTransactionBadge summary={lastTx} />}
+          {lastTx && <LastTransactionBadge summary={lastTx} defaultCurrency={currency} />}
         </div>
 
         <div className="text-muted-foreground flex shrink-0 items-center gap-1.5 pl-2">
@@ -858,12 +1041,38 @@ function SortableBudgetCategoryRow({
               {formatCategoryDelta(delta, currency)}
             </span>
           )}
-          <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
-            {formatMoney(item.current, currency)}
-          </span>
-          <span>/</span>
-          <span>{formatMoney(item.limit, currency)}</span>
-          <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
+
+          {isStandaloneForeign && nativeCurr !== currency ? (
+            <TooltipProvider delayDuration={150}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex cursor-help items-center gap-1">
+                    <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
+                      {formatMoney(item.current, nativeCurr)}
+                    </span>
+                    <span>/</span>
+                    <span>{formatMoney(item.limit, nativeCurr)}</span>
+                    <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  <span>
+                    Converted: ~{formatMoney(item.convertedCurrent ?? item.current, currency)} / ~
+                    {formatMoney(item.convertedLimit ?? item.limit, currency)}
+                  </span>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <>
+              <span className={item.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
+                {formatMoney(item.current, currency)}
+              </span>
+              <span>/</span>
+              <span>{formatMoney(item.limit, currency)}</span>
+              <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
+            </>
+          )}
 
           {Boolean(onSelect ?? onArchive ?? onUnarchive ?? onMoveAboveArchived ?? onMoveToBottom) && (
             <DropdownMenu>
@@ -917,6 +1126,63 @@ function SortableBudgetCategoryRow({
         </div>
       </div>
       <Progress value={item.percent} className={cn("h-2", item.isOverrun && "[&>div]:bg-destructive")} />
+
+      {item.isSmartGroup && item.children && item.children.length > 0 && isExpanded && (
+        <div className="border-border/40 bg-muted/10 mt-1 ml-4 flex flex-col gap-1 border-l-2 py-1 pl-3 text-xs">
+          {item.children.map((child) => {
+            const childCurr = child.nativeCurrency ?? currency;
+            const isChildForeign = child.isForeign || childCurr !== currency;
+            return (
+              <button
+                type="button"
+                key={child.id}
+                onClick={() => onSelectChild?.(child)}
+                className="hover:bg-muted/30 group flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 py-1 text-left text-xs transition-colors select-none"
+              >
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="text-muted-foreground size-1.5 shrink-0 rounded-full bg-current" />
+                  <span className="text-foreground/90 group-hover:text-foreground truncate font-medium">
+                    {child.name}
+                  </span>
+                  {isChildForeign && (
+                    <Badge
+                      variant="outline"
+                      className="h-3.5 border-blue-500/30 px-1 text-[8px] font-normal text-blue-700 dark:text-blue-400"
+                    >
+                      {childCurr}
+                    </Badge>
+                  )}
+                </div>
+                <div className="text-muted-foreground flex shrink-0 items-center gap-1.5 text-[11px] tabular-nums">
+                  <span className={child.isOverrun ? "text-destructive font-semibold" : "text-foreground font-medium"}>
+                    {formatMoney(child.current, childCurr)}
+                  </span>
+                  <span>/</span>
+                  <span>{formatMoney(child.limit, childCurr)}</span>
+                  <span className="text-[10px]">({child.rawPercent}%)</span>
+                  {isChildForeign && (
+                    <TooltipProvider delayDuration={150}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="text-muted-foreground/70 hover:text-foreground ml-1 cursor-help underline decoration-dotted underline-offset-2">
+                            (~{formatMoney(child.convertedCurrent ?? child.current, currency)})
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="left" className="text-xs">
+                          <span>
+                            Converted: ~{formatMoney(child.convertedCurrent ?? child.current, currency)} / ~
+                            {formatMoney(child.convertedLimit ?? child.limit, currency)}
+                          </span>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

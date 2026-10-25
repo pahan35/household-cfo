@@ -275,8 +275,13 @@ export function BudgetOverviewDashboard() {
   }, [transformed, baselineTransformed]);
 
   const lastTransactionByCategoryId = useMemo(() => {
-    return buildLastTransactionMap([...recentTransactions, ...periodTransactions, ...targetedTransactions], categories);
-  }, [recentTransactions, periodTransactions, targetedTransactions, categories]);
+    return buildLastTransactionMap(
+      [...recentTransactions, ...periodTransactions, ...targetedTransactions],
+      categories,
+      defaultCurrency,
+      currencies,
+    );
+  }, [recentTransactions, periodTransactions, targetedTransactions, categories, defaultCurrency, currencies]);
 
   // Identify visible expense categories missing last transaction date and fetch targeted transactions
   useEffect(() => {
@@ -593,6 +598,8 @@ export function BudgetOverviewDashboard() {
         <div className="xl:col-span-12">
           <BudgetSummaryCard
             categories={categories}
+            currencies={currencies}
+            periodTransactions={periodTransactions}
             defaultCurrency={defaultCurrency}
             activeMonthDateStr={activeMonthDateStr}
             statData={statData}
@@ -622,6 +629,7 @@ export function BudgetOverviewDashboard() {
         }}
         category={selectedTraceCategory}
         categories={categories}
+        currencies={currencies}
         activeMonthDateStr={activeMonthDateStr}
         baselineResolution={baselineResolution}
         defaultCurrency={defaultCurrency}

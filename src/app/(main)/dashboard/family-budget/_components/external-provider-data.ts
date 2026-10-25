@@ -1215,6 +1215,9 @@ export interface LastTransactionSummary {
   counterpartId?: string;
   amount: number;
   currency: string;
+  normalizedAmount: number;
+  originalAmount?: number;
+  originalCurrency?: string;
   comment: string | null;
   tags: string[];
 }
@@ -1226,6 +1229,8 @@ export function getLastTransactionSummaryForCategory(
   categoryId: string,
   tx: ExternalProviderTransaction,
   categoryById?: Map<string, ExternalProviderCategory>,
+  defaultCurrency = "PLN",
+  currencies: ExternalProviderCurrency[] = [],
 ): LastTransactionSummary | null {
   if (!categoryId || !tx) return null;
 
@@ -1250,14 +1255,33 @@ export function getLastTransactionSummaryForCategory(
 
   if (isSource) {
     // Money leaving categoryId -> destination is counterpart
-    const destType = Number(tx.destinationType);
+    const destCategory = tx.destinationId ? categoryById?.get(tx.destinationId) : undefined;
+    const sourceCategory = categoryById?.get(categoryId);
+    const destType = Number(tx.destinationType ?? destCategory?.categoryType);
     const isTransfer =
       destType === CategoryType.Account ||
       destType === CategoryType.BankAccount ||
       destType === CategoryType.DebtAccount;
 
-    const amount = Math.abs(Number(tx.sourceAmount ?? tx.defaultAmount) || 0);
-    const currency = tx.sourceCurrencyId ?? "PLN";
+    const sourceCurrency = tx.sourceCurrencyId ?? sourceCategory?.currencyId;
+    const destCurrency = tx.destinationCurrencyId ?? destCategory?.currencyId;
+
+    let currency = defaultCurrency;
+    let amount = 0;
+
+    if (sourceCurrency && sourceCurrency !== defaultCurrency) {
+      currency = sourceCurrency;
+      amount = Math.abs(Number(tx.sourceAmount ?? tx.destinationAmount ?? tx.defaultAmount) || 0);
+    } else if (destCurrency && destCurrency !== defaultCurrency) {
+      currency = destCurrency;
+      amount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+    } else {
+      currency = sourceCurrency ?? destCurrency ?? "PLN";
+      amount = Math.abs(Number(tx.sourceAmount ?? tx.destinationAmount ?? tx.defaultAmount) || 0);
+    }
+
+    const converted = convertCurrencyAmount(amount, currency, defaultCurrency, currencies);
+    const normalizedAmount = converted ?? amount;
 
     return {
       transactionId: tx.id,
@@ -1271,14 +1295,20 @@ export function getLastTransactionSummaryForCategory(
       counterpartId: tx.destinationId,
       amount,
       currency,
+      normalizedAmount,
+      originalAmount: amount,
+      originalCurrency: currency,
       comment,
       tags,
     };
   }
 
   // Money arriving at categoryId (isDest) -> source is counterpart
-  const destType = Number(tx.destinationType);
-  const srcType = Number(tx.sourceType);
+  const counterpartCategory = tx.sourceId ? categoryById?.get(tx.sourceId) : undefined;
+  const destCategory = categoryById?.get(categoryId);
+
+  const destType = Number(tx.destinationType ?? destCategory?.categoryType);
+  const srcType = Number(tx.sourceType ?? counterpartCategory?.categoryType);
 
   const isDestExpense =
     destType === CategoryType.Expense || destType === CategoryType.Goal || destType === CategoryType.ClassicGoal;
@@ -1298,8 +1328,25 @@ export function getLastTransactionSummaryForCategory(
     direction = "income";
   }
 
-  const amount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
-  const currency = tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? "PLN";
+  const sourceCurrency = tx.sourceCurrencyId ?? counterpartCategory?.currencyId;
+  const destCurrency = tx.destinationCurrencyId ?? destCategory?.currencyId;
+
+  let currency = defaultCurrency;
+  let amount = 0;
+
+  if (sourceCurrency && sourceCurrency !== defaultCurrency) {
+    currency = sourceCurrency;
+    amount = Math.abs(Number(tx.sourceAmount ?? tx.destinationAmount ?? tx.defaultAmount) || 0);
+  } else if (destCurrency && destCurrency !== defaultCurrency) {
+    currency = destCurrency;
+    amount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+  } else {
+    currency = destCurrency ?? sourceCurrency ?? "PLN";
+    amount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+  }
+
+  const converted = convertCurrencyAmount(amount, currency, defaultCurrency, currencies);
+  const normalizedAmount = converted ?? amount;
 
   return {
     transactionId: tx.id,
@@ -1312,6 +1359,9 @@ export function getLastTransactionSummaryForCategory(
     counterpartId: tx.sourceId,
     amount,
     currency,
+    normalizedAmount,
+    originalAmount: amount,
+    originalCurrency: currency,
     comment,
     tags,
   };
@@ -1323,6 +1373,8 @@ export function getLastTransactionSummaryForCategory(
 export function buildLastTransactionMap(
   transactions: ExternalProviderTransaction[],
   categories?: ExternalProviderCategory[],
+  defaultCurrency = "PLN",
+  currencies: ExternalProviderCurrency[] = [],
 ): Map<string, LastTransactionSummary> {
   const categoryById = categories ? new Map(categories.map((c) => [c.id, c])) : undefined;
   const map = new Map<string, LastTransactionSummary>();
@@ -1340,13 +1392,19 @@ export function buildLastTransactionMap(
 
   for (const tx of sorted) {
     if (tx.sourceId && !map.has(tx.sourceId)) {
-      const summary = getLastTransactionSummaryForCategory(tx.sourceId, tx, categoryById);
+      const summary = getLastTransactionSummaryForCategory(tx.sourceId, tx, categoryById, defaultCurrency, currencies);
       if (summary) {
         map.set(tx.sourceId, summary);
       }
     }
     if (tx.destinationId && !map.has(tx.destinationId)) {
-      const summary = getLastTransactionSummaryForCategory(tx.destinationId, tx, categoryById);
+      const summary = getLastTransactionSummaryForCategory(
+        tx.destinationId,
+        tx,
+        categoryById,
+        defaultCurrency,
+        currencies,
+      );
       if (summary) {
         map.set(tx.destinationId, summary);
       }

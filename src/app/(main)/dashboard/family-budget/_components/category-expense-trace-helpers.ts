@@ -1,4 +1,9 @@
-import type { ExternalProviderCategory, ExternalProviderTransaction } from "./external-provider-data";
+import {
+  type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  type ExternalProviderTransaction,
+  convertCurrencyAmount,
+} from "./external-provider-data";
 
 function toCategoryMap(
   categories?: ExternalProviderCategory[] | Map<string, ExternalProviderCategory>,
@@ -27,6 +32,9 @@ export interface AccountBreakdownItem {
   totalSpend: number;
   transactionCount: number;
   icon?: string;
+  nativeSpend?: number;
+  nativeCurrency?: string;
+  hasForeignSpend?: boolean;
 }
 
 export interface AccountBreakdownSummary {
@@ -58,11 +66,82 @@ export function resolveCategoryIdsForTrace(category: TraceCategoryInput | null |
   return [category.id];
 }
 
+export interface ResolvedTransactionSpend {
+  nativeAmount: number;
+  nativeCurrency: string;
+  convertedAmount: number;
+  reportingCurrency: string;
+  isConverted: boolean;
+  rate?: number | null;
+}
+
 /**
  * Extracts the monetary expense spend amount from a ExternalProvider transaction.
  */
 export function getTransactionSpendAmount(tx: ExternalProviderTransaction): number {
   return Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+}
+
+/**
+ * Resolves the true native currency and amount of an expense transaction,
+ * and converts it to the reporting currency using upstream exchange rates.
+ */
+export function resolveTransactionSpend(
+  tx: ExternalProviderTransaction,
+  defaultCurrency = "PLN",
+  currencies: ExternalProviderCurrency[] = [],
+  categories?: ExternalProviderCategory[] | Map<string, ExternalProviderCategory>,
+): ResolvedTransactionSpend {
+  const categoryMap = toCategoryMap(categories);
+
+  const sourceCategory = tx.sourceId ? categoryMap?.get(tx.sourceId) : undefined;
+  const destCategory = tx.destinationId ? categoryMap?.get(tx.destinationId) : undefined;
+
+  const sourceCurrency = tx.sourceCurrencyId ?? sourceCategory?.currencyId ?? defaultCurrency;
+  const destCurrency = tx.destinationCurrencyId ?? destCategory?.currencyId ?? defaultCurrency;
+
+  let nativeCurrency = defaultCurrency;
+  let nativeAmount = 0;
+
+  if (sourceCurrency && sourceCurrency !== defaultCurrency) {
+    nativeCurrency = sourceCurrency;
+    nativeAmount = Math.abs(Number(tx.sourceAmount ?? tx.destinationAmount ?? tx.defaultAmount) || 0);
+  } else if (destCurrency && destCurrency !== defaultCurrency) {
+    nativeCurrency = destCurrency;
+    nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+  } else {
+    nativeCurrency = tx.sourceCurrencyId ?? tx.destinationCurrencyId ?? defaultCurrency;
+    nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+  }
+
+  if (!nativeCurrency) {
+    nativeCurrency = defaultCurrency;
+  }
+
+  if (nativeCurrency.toUpperCase() === defaultCurrency.toUpperCase()) {
+    return {
+      nativeAmount,
+      nativeCurrency: defaultCurrency,
+      convertedAmount: nativeAmount,
+      reportingCurrency: defaultCurrency,
+      isConverted: false,
+      rate: 1,
+    };
+  }
+
+  const converted = convertCurrencyAmount(nativeAmount, nativeCurrency, defaultCurrency, currencies);
+  const convertedAmount = converted ?? nativeAmount;
+  const isConverted = converted !== null;
+  const rate = isConverted && nativeAmount > 0 ? convertedAmount / nativeAmount : null;
+
+  return {
+    nativeAmount,
+    nativeCurrency,
+    convertedAmount,
+    reportingCurrency: defaultCurrency,
+    isConverted,
+    rate,
+  };
 }
 
 /**
@@ -93,10 +172,14 @@ export function sortTransactionsReverseChronological(transactions: ExternalProvi
 
 /**
  * Aggregates paying accounts and subtotal spends from a list of transactions.
+ * Normalizes all amounts into the default reporting currency while recording
+ * native currency subtotals per account.
  */
 export function computeAccountBreakdown(
   transactions: ExternalProviderTransaction[],
   categories?: ExternalProviderCategory[] | Map<string, ExternalProviderCategory>,
+  defaultCurrency = "PLN",
+  currencies: ExternalProviderCurrency[] = [],
 ): AccountBreakdownSummary {
   const categoryMap = toCategoryMap(categories);
 
@@ -107,8 +190,8 @@ export function computeAccountBreakdown(
   for (const tx of transactions) {
     if (tx.deleted) continue;
 
-    const spend = getTransactionSpendAmount(tx);
-    allTotalSpend += spend;
+    const resolved = resolveTransactionSpend(tx, defaultCurrency, currencies, categoryMap);
+    allTotalSpend += resolved.convertedAmount;
     allTransactionCount += 1;
 
     const accountId = tx.sourceId ?? "unknown";
@@ -118,15 +201,23 @@ export function computeAccountBreakdown(
 
     const existing = map.get(accountId);
     if (existing) {
-      existing.totalSpend += spend;
+      existing.totalSpend += resolved.convertedAmount;
       existing.transactionCount += 1;
+      existing.nativeSpend = (existing.nativeSpend ?? 0) + resolved.nativeAmount;
+      if (resolved.nativeCurrency !== defaultCurrency) {
+        existing.hasForeignSpend = true;
+        existing.nativeCurrency = resolved.nativeCurrency;
+      }
     } else {
       map.set(accountId, {
         accountId,
         accountName,
-        totalSpend: spend,
+        totalSpend: resolved.convertedAmount,
         transactionCount: 1,
         icon,
+        nativeSpend: resolved.nativeAmount,
+        nativeCurrency: resolved.nativeCurrency,
+        hasForeignSpend: resolved.nativeCurrency !== defaultCurrency,
       });
     }
   }
@@ -155,18 +246,22 @@ export function filterTransactionsByAccount(
 
 /**
  * Computes spend totals and variances between active and comparison baseline periods.
+ * Amounts are normalized into reporting currency using exchange rates for valid comparison.
  */
 export function computePeriodSpendSummary(
   activeTransactions: ExternalProviderTransaction[],
   baselineTransactions?: ExternalProviderTransaction[],
+  defaultCurrency = "PLN",
+  currencies: ExternalProviderCurrency[] = [],
+  categories?: ExternalProviderCategory[] | Map<string, ExternalProviderCategory>,
 ): PeriodSpendSummary {
   const activeSpend = activeTransactions
     .filter((tx) => !tx.deleted)
-    .reduce((sum, tx) => sum + getTransactionSpendAmount(tx), 0);
+    .reduce((sum, tx) => sum + resolveTransactionSpend(tx, defaultCurrency, currencies, categories).convertedAmount, 0);
 
   const baselineSpend = (baselineTransactions ?? [])
     .filter((tx) => !tx.deleted)
-    .reduce((sum, tx) => sum + getTransactionSpendAmount(tx), 0);
+    .reduce((sum, tx) => sum + resolveTransactionSpend(tx, defaultCurrency, currencies, categories).convertedAmount, 0);
 
   const deltaAbs = activeSpend - baselineSpend;
   const deltaPercent = baselineSpend > 0 ? (deltaAbs / baselineSpend) * 100 : null;

@@ -286,6 +286,65 @@ describe("last transaction indexing & summary", () => {
     expect(groceriesSummary?.comment).toBe("Weekly supermarket run");
     expect(groceriesSummary?.tags).toEqual(["food", "groceries"]);
   });
+
+  it("resolves counterpart account currency from categoryById and populates native and normalizedAmount", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-mono", name: "Monobank", categoryType: CategoryType.BankAccount, currencyId: "UAH" },
+      { id: "cat-sport", name: "Sport", categoryType: CategoryType.Expense, currencyId: "PLN" },
+    ];
+    const categoryById = new Map(categories.map((c) => [c.id, c]));
+    const currencies = [
+      { id: "USD", rate: 1 },
+      { id: "PLN", rate: 4 },
+      { id: "UAH", rate: 41 },
+    ];
+
+    const foreignTx: ExternalProviderTransaction = {
+      id: "tx-foreign-expense",
+      sourceId: "acc-mono",
+      destinationId: "cat-sport",
+      sourceAmount: 410,
+      destinationAmount: 410,
+      dateTimestampISO: "2026-10-24T10:00:00Z",
+    };
+
+    const summary = getLastTransactionSummaryForCategory("cat-sport", foreignTx, categoryById, "PLN", currencies);
+    expect(summary).not.toBeNull();
+    expect(summary?.amount).toBe(410);
+    expect(summary?.currency).toBe("UAH");
+    expect(summary?.originalAmount).toBe(410);
+    expect(summary?.originalCurrency).toBe("UAH");
+    expect(summary?.normalizedAmount).toBeCloseTo(40, 2);
+  });
+
+  it("builds map with currency normalization across mixed currency transactions", () => {
+    const categories: ExternalProviderCategory[] = [
+      { id: "acc-mono", name: "Monobank", categoryType: CategoryType.BankAccount, currencyId: "UAH" },
+      { id: "cat-sport", name: "Sport", categoryType: CategoryType.Expense, currencyId: "PLN" },
+    ];
+    const currencies = [
+      { id: "USD", rate: 1 },
+      { id: "PLN", rate: 4 },
+      { id: "UAH", rate: 41 },
+    ];
+
+    const txs: ExternalProviderTransaction[] = [
+      {
+        id: "tx-1",
+        sourceId: "acc-mono",
+        destinationId: "cat-sport",
+        sourceAmount: 820,
+        dateTimestampISO: "2026-10-24T12:00:00Z",
+      },
+    ];
+
+    const map = buildLastTransactionMap(txs, categories, "PLN", currencies);
+    const summary = map.get("cat-sport");
+    expect(summary).toBeDefined();
+    expect(summary?.amount).toBe(820);
+    expect(summary?.currency).toBe("UAH");
+    expect(summary?.normalizedAmount).toBeCloseTo(80, 2);
+  });
 });
 
 describe("convertCurrencyAmount", () => {

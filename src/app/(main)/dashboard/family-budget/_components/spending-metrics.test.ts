@@ -4,6 +4,7 @@ import { computeBudgetSummaryItems } from "./budget-summary-card";
 import {
   CategoryType,
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
   ExchangeKey,
   type ExchangePingItem,
   extractExchangeEntities,
@@ -469,6 +470,24 @@ describe("transformExpenses", () => {
       expect(detectSliceCurrency("Medicine PLN")).toEqual({ currency: "PLN", isForeign: false });
       expect(detectSliceCurrency("Ліки")).toEqual({ currency: "UAH", isForeign: true });
     });
+
+    it("normalizes foreign amounts when currencies are provided to groupSmartSlices", () => {
+      const mockCurrencies: ExternalProviderCurrency[] = [
+        { id: "PLN", rate: 4.0 },
+        { id: "USD", rate: 1.0 },
+        { id: "UAH", rate: 40.0 },
+      ];
+      const slices = [
+        { id: "cat-med-clean", name: "Medicine", amount: 400, percentage: 80 },
+        { id: "cat-med-uah", name: "Medicine UAH", amount: 400, percentage: 20 },
+      ];
+
+      const grouped = groupSmartSlices(slices, 3, "PLN", mockCurrencies);
+      const medGroup = grouped.find((s) => s.name === "Medicine");
+      expect(medGroup).toBeDefined();
+      // 400 PLN + (400 UAH / 40 * 4 = 40 PLN) = 440 PLN
+      expect(medGroup?.amount).toBe(440);
+    });
   });
 });
 
@@ -659,6 +678,107 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
     expect(ids).toContain("cat-archived-inactive");
     expect(ids).not.toContain("cat-unarchived-inactive");
     expect(ids).not.toContain("cat-deleted");
+  });
+
+  it("supports standalone foreign categories by calculating convertedCurrent and convertedLimit", () => {
+    const mockCurrencies: ExternalProviderCurrency[] = [
+      { id: "PLN", rate: 4.0 },
+      { id: "USD", rate: 1.0 },
+      { id: "UAH", rate: 40.0 },
+    ];
+    const statData: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [{ id: "cat-foreign-uah", amount: 4000, value: 4000, limitAmount: 5000 }],
+          },
+        ],
+      },
+    };
+    const testNameMap = new Map([["cat-foreign-uah", "Ukraine Utilities"]]);
+    const categoryCurrencyMap = new Map([["cat-foreign-uah", "UAH"]]);
+
+    const items = computeBudgetSummaryItems(statData, "2026-10-01", testNameMap, {
+      categoryCurrencyMap,
+      defaultCurrency: "PLN",
+      currencies: mockCurrencies,
+    });
+
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    expect(item.id).toBe("cat-foreign-uah");
+    expect(item.nativeCurrency).toBe("UAH");
+    expect(item.isForeign).toBe(true);
+    expect(item.current).toBe(4000); // native amount
+    expect(item.limit).toBe(5000); // native limit
+    // 4000 UAH / 40 * 4 = 400 PLN
+    expect(item.convertedCurrent).toBe(400);
+    // 5000 UAH / 40 * 4 = 500 PLN
+    expect(item.convertedLimit).toBe(500);
+  });
+
+  it("normalizes Smart Category Groups into default reporting currency while keeping children in native currencies", () => {
+    const mockCurrencies: ExternalProviderCurrency[] = [
+      { id: "PLN", rate: 4.0 },
+      { id: "USD", rate: 1.0 },
+      { id: "UAH", rate: 40.0 },
+    ];
+    const statData: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [
+              { id: "cat-uber-pln", amount: 100, value: 100, limitAmount: 200 },
+              { id: "cat-uber-uah", amount: 400, value: 400, limitAmount: 800 },
+            ],
+          },
+        ],
+      },
+    };
+    const testNameMap = new Map([
+      ["cat-uber-pln", "Uber (PLN)"],
+      ["cat-uber-uah", "Uber (UAH)"],
+    ]);
+    const categoryCurrencyMap = new Map([
+      ["cat-uber-pln", "PLN"],
+      ["cat-uber-uah", "UAH"],
+    ]);
+
+    const items = computeBudgetSummaryItems(statData, "2026-10-01", testNameMap, {
+      categoryCurrencyMap,
+      defaultCurrency: "PLN",
+      currencies: mockCurrencies,
+      enableSmartGroups: true,
+    });
+
+    expect(items).toHaveLength(1);
+    const group = items[0];
+    expect(group.isSmartGroup).toBe(true);
+    expect(group.name).toBe("Uber");
+    expect(group.nativeCurrency).toBe("PLN");
+    // cat-uber-pln: 100 current, 200 limit
+    // cat-uber-uah: 400 UAH -> 40 PLN current, 800 UAH -> 80 PLN limit
+    // combined current = 140 PLN, combined limit = 280 PLN
+    expect(group.current).toBe(140);
+    expect(group.limit).toBe(280);
+    expect(group.rawPercent).toBe(50);
+    expect(group.children).toHaveLength(2);
+
+    const childPln = group.children?.find((c) => c.id === "cat-uber-pln");
+    expect(childPln?.current).toBe(100);
+    expect(childPln?.limit).toBe(200);
+    expect(childPln?.nativeCurrency).toBe("PLN");
+    expect(childPln?.isForeign).toBe(false);
+
+    const childUah = group.children?.find((c) => c.id === "cat-uber-uah");
+    expect(childUah?.current).toBe(400);
+    expect(childUah?.limit).toBe(800);
+    expect(childUah?.nativeCurrency).toBe("UAH");
+    expect(childUah?.isForeign).toBe(true);
+    expect(childUah?.convertedCurrent).toBe(40);
+    expect(childUah?.convertedLimit).toBe(80);
   });
 });
 

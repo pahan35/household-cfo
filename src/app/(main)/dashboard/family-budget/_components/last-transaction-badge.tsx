@@ -12,9 +12,15 @@ interface LastTransactionBadgeProps {
   summary?: LastTransactionSummary | null;
   className?: string;
   showDateInline?: boolean;
+  defaultCurrency?: string;
 }
 
-export function LastTransactionBadge({ summary, className, showDateInline = true }: LastTransactionBadgeProps) {
+export function LastTransactionBadge({
+  summary,
+  className,
+  showDateInline = true,
+  defaultCurrency = "PLN",
+}: LastTransactionBadgeProps) {
   if (!summary) {
     return null;
   }
@@ -77,10 +83,28 @@ export function LastTransactionBadge({ summary, className, showDateInline = true
               </div>
             </div>
             <div className="text-right">
-              <span className={cn("text-xs font-semibold tabular-nums", directionColor)}>
-                {sign}
-                {formatMoney(summary.amount, summary.currency)}
-              </span>
+              {(() => {
+                const nativeAmt = summary.originalAmount ?? summary.amount;
+                const nativeCurr = summary.originalCurrency ?? summary.currency;
+                const isForeign =
+                  Boolean(nativeCurr && nativeCurr.toUpperCase() !== defaultCurrency.toUpperCase()) ||
+                  Boolean(summary.currency && summary.currency.toUpperCase() !== defaultCurrency.toUpperCase());
+                const displayAmount = summary.normalizedAmount ?? summary.amount;
+
+                return (
+                  <>
+                    <span className={cn("text-xs font-semibold tabular-nums", directionColor)}>
+                      {sign}
+                      {formatMoney(displayAmount, defaultCurrency)}
+                    </span>
+                    {isForeign && (
+                      <span className="text-muted-foreground block text-[10px] tabular-nums">
+                        orig. {formatMoney(nativeAmt, nativeCurr)}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
 
