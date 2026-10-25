@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Compass,
   Link as LinkIcon,
   Music,
   Palmtree,
@@ -31,6 +32,7 @@ import {
 } from "../../_components/lifestyle-transforms";
 import { SectionShell } from "../../_components/section-shell";
 import { useLifestyleData } from "../use-lifestyle-data";
+import { TravelBookendAssistant } from "./travel-bookend-assistant";
 
 export function TripsConcertsDashboard() {
   const { categoryMap, currencies, transactions, defaultCurrency, updateTxTags } = useLifestyleData();
@@ -44,6 +46,9 @@ export function TripsConcertsDashboard() {
 
   // Concert view mode: direct vs allocated overhead
   const [concertViewMode, setConcertViewMode] = useState<Record<string, "direct" | "overhead">>({});
+
+  // Travel Bookend Assistant drawer/action card open state
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false);
 
   // Detect travel episodes
   const episodes = useMemo(() => {
@@ -161,12 +166,40 @@ export function TripsConcertsDashboard() {
       <SectionShell
         title="Detected Travel Episodes"
         description="Trip clusters bounded by #travel/#end-travel or >60-day gap splitting, with pre-trip booking lookback"
+        action={
+          <Button
+            type="button"
+            variant={isAssistantOpen ? "secondary" : "outline"}
+            size="xs"
+            onClick={() => setIsAssistantOpen((prev) => !prev)}
+            className="h-7 gap-1.5 text-xs font-medium"
+          >
+            <Compass className="size-3.5 text-primary" />
+            <span>{isAssistantOpen ? "Close Assistant" : "Bookend Assistant"}</span>
+          </Button>
+        }
       >
         <div className="flex flex-col gap-4">
+          {isAssistantOpen && <TravelBookendAssistant />}
+
           {episodes.length === 0 ? (
             <div className="rounded-lg border p-8 text-center text-muted-foreground text-xs">
-              No travel episodes detected yet. Tag trip transactions with #travel, #end-travel, or your destination tags
-              (e.g. #austria, #malediwy).
+              <p>
+                No travel episodes detected yet. Tag trip transactions with #travel, #end-travel, or your destination
+                tags (e.g. #austria, #malediwy).
+              </p>
+              {!isAssistantOpen && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => setIsAssistantOpen(true)}
+                  className="mt-3 gap-1.5"
+                >
+                  <Compass className="size-3.5 text-primary" />
+                  <span>Open Travel Bookend Assistant</span>
+                </Button>
+              )}
             </div>
           ) : (
             episodes.map((episode) => {
