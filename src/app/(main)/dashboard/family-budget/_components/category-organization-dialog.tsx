@@ -150,7 +150,7 @@ export function CategoryOrganizationDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col gap-0 overflow-hidden p-0">
+      <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col sm:max-w-3xl gap-0 overflow-hidden p-0">
         <DialogHeader className="border-border/60 border-b px-6 pt-6 pb-4">
           <div className="flex items-center gap-2">
             <Sparkles className="text-primary size-5" />
