@@ -135,12 +135,22 @@ The screen SHALL display all-time transactions in reverse-chronological order (a
 
 ### Requirement: Budget spent-versus-limit summary
 
-The Budget Overview screen SHALL display a comprehensive Expense Categories & Budget card supporting two primary view modes: an **Active in Month** mode (showing expense categories with a non-zero spent amount or budget limit in the selected reporting period) and an **All Categories (Order & Lifecycle)** mode (showing non-deleted expense categories in ascending ExternalProvider `category.order`, including zero-spend categories such as rarely-used foreign-currency categories like `Hotels CHF`). The summary SHALL strictly include only expense categories (`CategoryType.Expense`, `Goal`, `ClassicGoal`) and SHALL exclude all income sources (`CategoryType.Income`) and account categories. Categories at or above their limit SHALL be visually flagged as overruns. Users SHALL be able to click any category row in either mode to open the Category Expense Trace sheet for that category. In custom-order mode, users SHALL be able to drag-and-drop reorder expense categories, soft-archive an active expense category (prefixing its name with `_` and moving it to the end of the active section), unarchive an archived expense category (stripping the leading `_` and placing it immediately before the first archived expense category), move active expense categories positioned below archived categories above the first archived category or move archived categories positioned above active categories to the bottom (adapting the banner and action to whichever direction mutates fewer entities), and position foreign/legacy currency expense categories (`UAH`, `CHF`, `EUR`, etc.) immediately above the archived section—persisting all `name` and `order` updates upstream via `/Exchange/Ping`. Categories whose name starts with `_` SHALL be hidden by default when inactive and toggleable on demand via a "Show archived" toggle without leaking zero-spend unarchived or soft-deleted categories into the view. Soft-deleted categories (`category.deleted === true`) SHALL be hidden by default in both view modes, toggleable via a dedicated "Show removed" toggle, rendered with distinct removed badging and styling, editable via row actions, and ordered below archived categories. Each category row SHALL display its ExternalProvider `#order` index and the timestamp of its most recent transaction (resolving targeted transactions when outside the initial 300-transaction window) with an interactive hover/focus indicator revealing the transaction's source/target account, amount, comment, and tags. When a comparison baseline period is active, each category row SHALL also display the spent delta (amount and percentage) relative to the baseline period.
+The Budget Overview screen SHALL display a comprehensive Expense Categories & Budget card supporting two primary view modes: an **Active in Month** mode (showing expense categories with a non-zero spent amount or budget limit in the selected reporting period) and an **All Categories (Order & Lifecycle)** mode (showing non-deleted expense categories in ascending ExternalProvider `category.order`, including zero-spend categories such as rarely-used foreign-currency categories like `Hotels CHF`). The summary SHALL strictly include only expense categories (`CategoryType.Expense`, `Goal`, `ClassicGoal`) and SHALL exclude all income sources (`CategoryType.Income`) and account categories. Categories at or above their limit SHALL be visually flagged as overruns. Users SHALL be able to click any category row in either mode to open the Category Expense Trace sheet for that category. In custom-order mode, users SHALL be able to drag-and-drop reorder expense categories, soft-archive an active expense category (prefixing its name with `_` and moving it to the end of the active section), unarchive an archived expense category (stripping the leading `_` and placing it immediately before the first archived expense category), move active expense categories positioned below archived categories above the first archived category or move archived categories positioned above active categories to the bottom (adapting the banner and action to whichever direction mutates fewer entities), and position foreign/legacy currency expense categories (`UAH`, `CHF`, `EUR`, etc.) immediately above the archived section—persisting all `name` and `order` updates upstream via `/Exchange/Ping`. Categories whose name starts with `_` SHALL be hidden by default when inactive and toggleable on demand via a "Show archived" toggle without leaking zero-spend unarchived or soft-deleted categories into the view. Soft-deleted categories (`category.deleted === true`) SHALL be hidden by default in both view modes, toggleable via a dedicated "Show removed" toggle, rendered with distinct removed badging and styling, editable via row actions, and ordered below archived categories. Each category row SHALL display its ExternalProvider `#order` index and the timestamp of its most recent transaction (resolving targeted transactions when outside the initial 300-transaction window) with an interactive hover/focus indicator revealing the transaction's source/target account, amount, comment, and tags. When a comparison baseline period is active, each category row SHALL also display the spent delta (amount and percentage) relative to the baseline period. When a category's budget limit is defined exclusively in a foreign currency (e.g. UAH), the row SHALL display that native foreign currency for limit and spend, with converted reporting currency amounts available on hover. When smart category groups are displayed, the parent group SHALL display spending and limits normalized in the primary reporting currency (defaulting to PLN), while individual child categories SHALL display their original native currencies with reporting currency conversions.
 
 #### Scenario: Budget statuses are visible
 
 - **WHEN** the upstream stats response contains per-category spent (`value`) and `limitAmount` values for the selected period
-- **THEN** the screen shows each active expense category in ExternalProvider `order` sequence (or `% Spent` when toggled) with spent and limit amounts in the reporting currency, marks categories exceeding their limit, and completely omits income sources from the spent-versus-limit list
+- **THEN** the screen shows each active expense category in ExternalProvider `order` sequence (or `% Spent` when toggled) with spent and limit amounts, marks categories exceeding their limit, and completely omits income sources from the spent-versus-limit list
+
+#### Scenario: Standalone foreign-currency budget limit presentation
+
+- **WHEN** an individual expense category has a budget limit defined exclusively in a foreign currency (such as `Sport UAH` with currencyId `UAH`)
+- **THEN** the row displays the limit and spend in that native foreign currency (e.g. `4 500,00 ₴ / 5 000,00 ₴`), and hovering over the amount reveals a tooltip with the converted reporting currency equivalent (e.g. `~439,02 zł / ~487,80 zł`)
+
+#### Scenario: Smart category group multi-currency display
+
+- **WHEN** a smart category group unites child categories across different currencies (such as `Sport PLN` and `Sport UAH`)
+- **THEN** the parent group row displays total spending and limits normalized in the dashboard's primary reporting currency (PLN), and the category breakdown reveals each child category rendered in its respective native currency with converted equivalents
 
 #### Scenario: Viewing all expense categories regardless of monthly activity
 
@@ -190,7 +200,7 @@ The Budget Overview screen SHALL display a comprehensive Expense Categories & Bu
 #### Scenario: Viewing last transaction details on a budget category
 
 - **WHEN** a budget category has at least one recorded transaction and the user views the category row or hovers/focuses its last-transaction indicator
-- **THEN** the row shows the last transaction date/time and the hover popover displays the counterpart account (source or target), formatted amount, comment (if any), and tags (if any)
+- **THEN** the row shows the last transaction date/time and the hover popover displays the counterpart account (source or target), amount normalized to reporting currency with original native currency amount, comment (if any), and tags (if any)
 
 #### Scenario: Period selection
 
@@ -199,12 +209,15 @@ The Budget Overview screen SHALL display a comprehensive Expense Categories & Bu
 
 ### Requirement: Money and date presentation
 
-Amounts SHALL be formatted in the screen's reporting currency (from settings, falling back to the stats response currency), and transaction timestamps SHALL be shown using the ISO variant provided by the upstream, displayed with existing project date formatting.
+Amounts SHALL be formatted in the screen's reporting currency (from settings, falling back to the stats response currency) by default. When transactions or category limits originate in a foreign currency (e.g. UAH, EUR, USD), the system SHALL resolve the native currency and amount from category metadata, convert the amount into the reporting currency using upstream exchange rates (`ExchangeKey.Currency`), display the normalized reporting currency as primary, and provide the native amount and currency breakdown in secondary text or hover tooltips. Transaction timestamps SHALL be shown using the ISO variant provided by the upstream, displayed with existing project date formatting.
 
 #### Scenario: Currency from settings
-
 - **WHEN** settings report a default currency and a transaction excludes no explicit currency
 - **THEN** amounts render with that currency's symbol/format
+
+#### Scenario: Foreign currency transaction normalization
+- **WHEN** a transaction is paid from a foreign-currency account (e.g. `currencyId: "UAH"`) or recorded in a foreign currency
+- **THEN** the system resolves the original currency and amount, converts it to reporting currency using current exchange rates, and renders the normalized reporting value alongside the original native value on hover
 
 ### Requirement: Loading, empty, and error states
 
@@ -231,7 +244,7 @@ All upstream access from this screen SHALL go through the local proxy path `/api
 
 ### Requirement: Expense composition pie chart
 
-The Family Budget overview dashboard SHALL include an interactive Expenses Breakdown (pie/donut chart) card for the active reporting period, displaying the proportional distribution of spending across expense categories according to the active exclusion preset, surfacing available cash capacity, supporting an interactive Preset Configuration Dialog trigger to configure excluded categories, supporting smart category grouping for Transport and Taxi, showing per-category deltas and variance sorting when a comparison baseline period is active, and allowing users to click any category row to trace its underlying transactions across all accounts, comparison periods, or all-time history in a wide slide-over sheet (`data-[side=right]:sm:max-w-xl data-[side=right]:md:max-w-2xl`).
+The Family Budget overview dashboard SHALL include an interactive Expenses Breakdown (pie/donut chart) card for the active reporting period, displaying the proportional distribution of spending across expense categories according to the active exclusion preset, surfacing available cash capacity, supporting an interactive Preset Configuration Dialog trigger to configure excluded categories, supporting smart category grouping for Transport and Taxi, showing per-category deltas and variance sorting when a comparison baseline period is active, and allowing users to click any category row to trace its underlying transactions across all accounts, comparison periods, or all-time history in a wide slide-over sheet (`data-[side=right]:sm:max-w-xl data-[side=right]:md:max-w-2xl`). All transaction amounts within the slide-over sheet SHALL be converted to the dashboard reporting currency (defaulting to PLN) for total spending metrics, tab badges, and account filter chips, while each transaction row SHALL present the converted reporting amount as primary and the original native amount and currency as secondary with exchange rate tooltips.
 
 #### Scenario: Rendering expense pie chart
 - **WHEN** the dashboard loads with expense data for the active period
@@ -271,19 +284,27 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 
 #### Scenario: Launching category expense trace sheet
 - **WHEN** the user clicks any category row or child item in the Expenses Breakdown list or the Budget Spent vs Limit / All Categories list
-- **THEN** a wide Category Expense Trace slide-over sheet (`data-[side=right]:sm:max-w-xl data-[side=right]:md:max-w-2xl`) opens without clipping account filter chips, presenting the category name, total spent in the active month, and a reverse-chronological list of all transactions belonging to that category across all accounts
+- **THEN** a wide Category Expense Trace slide-over sheet (`data-[side=right]:sm:max-w-xl data-[side=right]:md:max-w-2xl`) opens without clipping account filter chips, presenting the category name, total spent in the active month converted to reporting currency, and a reverse-chronological list of all transactions belonging to that category across all accounts
+
+#### Scenario: Trace sheet transaction row multi-currency display
+- **WHEN** a transaction was incurred in a foreign currency (such as 500 UAH from a Ukrainian bank account)
+- **THEN** the transaction row in the Category Expense Trace sheet displays the converted reporting amount (e.g. `-48,78 zł`) as primary in the right column, and displays the native original amount (e.g. `500,00 ₴`) as secondary text or in a hover tooltip with conversion rate details
+
+#### Scenario: Account breakdown chips normalized with native subtotals
+- **WHEN** the Category Expense Trace sheet displays account filter chips for paying accounts with mixed currencies (e.g. a PLN card and a UAH account)
+- **THEN** each account chip displays its total spend converted into the primary reporting currency for valid summing, while hovering over an account chip reveals the native currency subtotal
 
 #### Scenario: Dual-period comparison in trace sheet
 - **WHEN** a comparison baseline period is active on the Budget Overview screen and the user opens the Category Expense Trace sheet
-- **THEN** the sheet displays period view controls enabling the user to view transactions for the Active Month, the Comparison Baseline Month, a Side-by-Side/Combined view, or an All-Time History view, highlighting the spending variance between periods
+- **THEN** the sheet displays period view controls enabling the user to view transactions for the Active Month, the Comparison Baseline Month, a Side-by-Side/Combined view, or an All-Time History view, with all period totals and variances converted to reporting currency
 
 #### Scenario: All-time history in trace sheet without month bounds
 - **WHEN** the user selects the `All-Time` tab in the Category Expense Trace sheet for any category (including a category with zero transactions in the active month, such as `Hotels CHF`)
-- **THEN** the sheet fetches and displays all historical transactions for that category across all months and years without a date range restriction
+- **THEN** the sheet fetches and displays all historical transactions for that category across all months and years without a date range restriction, with amounts converted to reporting currency
 
 #### Scenario: Non-intrusive account filtering within category trace
 - **WHEN** the Category Expense Trace sheet opens with transactions from multiple paying accounts
-- **THEN** the sheet defaults to showing all transactions across all accounts with paying accounts badged on each item, and displays account filter chips with subtotal spending per account, allowing the user to isolate transactions from a specific account on demand
+- **THEN** the sheet defaults to showing all transactions across all accounts with paying accounts badged on each item, and displays account filter chips with subtotal spending per account converted to reporting currency, allowing the user to isolate transactions from a specific account on demand
 
 #### Scenario: Trace sheet URL state synchronization
 - **WHEN** a category trace sheet is opened or closed on the Budget Overview screen, or the user clicks "Open in Ledger"
