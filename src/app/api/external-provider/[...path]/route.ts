@@ -104,6 +104,7 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
 
   if (isExchangeWritePayload) {
     invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+    invalidateProxyCacheByPathPrefix("/stat/ping");
   }
   if (isTransactionWrite) {
     invalidateProxyCacheByPathPrefix("/api/transaction");
@@ -131,6 +132,7 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
 
       if (isExchangeWritePayload) {
         invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+        invalidateProxyCacheByPathPrefix("/stat/ping");
       }
       if (isTransactionWrite) {
         invalidateProxyCacheByPathPrefix("/api/transaction");

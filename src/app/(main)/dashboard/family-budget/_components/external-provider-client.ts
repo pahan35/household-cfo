@@ -52,6 +52,13 @@ export function getExternalProviderClientCacheEntry<T = unknown>(key: string): T
   return entry.data as T;
 }
 
+export function setExternalProviderClientCacheEntry<T = unknown>(key: string, data: T, ttlMs = CLIENT_CACHE_TTL_MS): void {
+  clientCacheState.entries.set(key, {
+    data,
+    expiresAt: Date.now() + ttlMs,
+  });
+}
+
 function attachSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) {
     return promise;
@@ -305,6 +312,12 @@ export async function updateCategoriesOrder(
     });
   } else {
     invalidateExternalProviderClientCache("categories");
+  }
+
+  for (const key of Array.from(clientCacheState.entries.keys())) {
+    if (key.startsWith("stat:")) {
+      clientCacheState.entries.delete(key);
+    }
   }
 
   return body;

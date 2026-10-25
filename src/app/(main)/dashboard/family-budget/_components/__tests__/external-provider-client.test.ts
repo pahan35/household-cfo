@@ -15,6 +15,7 @@ import {
   getExternalProviderClientCacheEntry,
   invalidateExternalProviderClientCache,
   reorderIncomeCategories,
+  setExternalProviderClientCacheEntry,
   unarchiveIncomeSource,
   updateCategoriesOrder,
   updateTransactionTags,
@@ -161,6 +162,29 @@ describe("Client updateCategoriesOrder", () => {
 
     const cached = getExternalProviderClientCacheEntry<ExternalProviderCategory[]>("categories");
     expect(cached).toBeUndefined();
+  });
+
+  it("purges entries starting with stat: from client cache upon category update", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ isSuccess: true, data: { items: [] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    setExternalProviderClientCacheEntry("stat:2026-10-01", { dummy: "stat-data" });
+    setExternalProviderClientCacheEntry("stat:2026-09-01", { dummy: "stat-data-prev" });
+    setExternalProviderClientCacheEntry("unrelated-key", { dummy: "preserved" });
+
+    expect(getExternalProviderClientCacheEntry("stat:2026-10-01")).toBeDefined();
+    expect(getExternalProviderClientCacheEntry("stat:2026-09-01")).toBeDefined();
+    expect(getExternalProviderClientCacheEntry("unrelated-key")).toBeDefined();
+
+    await updateCategoriesOrder([{ id: "cat-1", name: "_Groceries", categoryType: CategoryType.Expense, order: 10 }]);
+
+    expect(getExternalProviderClientCacheEntry("stat:2026-10-01")).toBeUndefined();
+    expect(getExternalProviderClientCacheEntry("stat:2026-09-01")).toBeUndefined();
+    expect(getExternalProviderClientCacheEntry("unrelated-key")).toBeDefined();
   });
 
   it("createTransaction POSTs an array payload [tx] to /api/external-provider/api/transaction/create and invalidates client cache", async () => {
@@ -335,5 +359,44 @@ describe("Transaction Write Proxy Invalidation", () => {
     expect(getProxyCachedResponse("POST:/Exchange/Ping::h2")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/stat/ping:?data=xyz:h3")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/settings::h4")).toBeDefined();
+  });
+});
+
+describe("Category Write Proxy Invalidation", () => {
+  beforeEach(() => {
+    clearProxyCache();
+  });
+
+  afterEach(() => {
+    clearProxyCache();
+  });
+
+  it("invalidates /Exchange/Ping and /stat/ping upon category write", () => {
+    const dummyBody = new Uint8Array([1, 2, 3]);
+
+    setProxyCachedResponse("POST:/Exchange/Ping::h1", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    setProxyCachedResponse("GET:/stat/ping:?data=xyz:h2", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    setProxyCachedResponse("GET:/settings::h3", {
+      status: 200,
+      headers: [["content-type", "application/json"]],
+      body: dummyBody,
+    });
+
+    invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+    invalidateProxyCacheByPathPrefix("/stat/ping");
+
+    expect(getProxyCachedResponse("POST:/Exchange/Ping::h1")).toBeUndefined();
+    expect(getProxyCachedResponse("GET:/stat/ping:?data=xyz:h2")).toBeUndefined();
+    expect(getProxyCachedResponse("GET:/settings::h3")).toBeDefined();
   });
 });

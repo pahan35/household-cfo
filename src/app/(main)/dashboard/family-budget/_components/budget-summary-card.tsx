@@ -132,9 +132,10 @@ export function computeBudgetSummaryItems(
         }
       }
 
+      const mappedName = categoryNameMap.get(cat.id)?.trim();
       const rawTitle = typeof cat.title === "string" ? cat.title.trim() : "";
       const rawName = typeof cat.name === "string" ? cat.name.trim() : "";
-      const name = rawTitle || rawName || categoryNameMap.get(cat.id) || "Category";
+      const name = mappedName || rawTitle || rawName || "Category";
 
       if (includeAll) return true;
 
@@ -154,9 +155,10 @@ export function computeBudgetSummaryItems(
       const limit = Number(cat.limitAmount) || 0;
       const rawSpend = cat.value ?? cat.amount ?? cat.currentAmount;
       const current = Math.max(0, Number(rawSpend) || 0);
+      const mappedName = categoryNameMap.get(cat.id)?.trim();
       const rawTitle = typeof cat.title === "string" ? cat.title.trim() : "";
       const rawName = typeof cat.name === "string" ? cat.name.trim() : "";
-      const name = rawTitle || rawName || categoryNameMap.get(cat.id) || "Category";
+      const name = mappedName || rawTitle || rawName || "Category";
       let percent = 0;
       if (limit > 0) {
         percent = Math.round((current / limit) * 100);

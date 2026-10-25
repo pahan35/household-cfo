@@ -680,6 +680,57 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
     expect(ids).not.toContain("cat-deleted");
   });
 
+  it("prioritizes categoryNameMap over snapshot cat.title and cat.name when renamed or archived", () => {
+    const statData: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [
+              { id: "cat-archived", title: "Groceries", name: "Groceries", amount: 0, value: 0, limitAmount: 0 },
+              {
+                id: "cat-renamed",
+                title: "Old Utilities",
+                name: "Old Utilities",
+                amount: 150,
+                value: 150,
+                limitAmount: 200,
+              },
+              {
+                id: "cat-unmapped",
+                title: "Fallback Snapshot",
+                name: "Fallback Snapshot",
+                amount: 50,
+                value: 50,
+                limitAmount: 100,
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const testNameMap = new Map([
+      ["cat-archived", "_Groceries"],
+      ["cat-renamed", "Electricity & Gas"],
+    ]);
+
+    const items = computeBudgetSummaryItems(statData, "2026-10-01", testNameMap, {
+      includeArchivedInactive: true,
+    });
+
+    const archivedItem = items.find((i) => i.id === "cat-archived");
+    expect(archivedItem).toBeDefined();
+    expect(archivedItem?.name).toBe("_Groceries");
+
+    const renamedItem = items.find((i) => i.id === "cat-renamed");
+    expect(renamedItem).toBeDefined();
+    expect(renamedItem?.name).toBe("Electricity & Gas");
+
+    const unmappedItem = items.find((i) => i.id === "cat-unmapped");
+    expect(unmappedItem).toBeDefined();
+    expect(unmappedItem?.name).toBe("Fallback Snapshot");
+  });
+
   it("supports standalone foreign categories by calculating convertedCurrent and convertedLimit", () => {
     const mockCurrencies: ExternalProviderCurrency[] = [
       { id: "PLN", rate: 4.0 },
