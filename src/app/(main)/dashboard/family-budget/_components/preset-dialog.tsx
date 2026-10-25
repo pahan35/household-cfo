@@ -1,8 +1,8 @@
 "use client";
 
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
-import { Check, FolderEdit, Plus, Search, Settings2, Trash2 } from "lucide-react";
+import { Archive, Check, FolderEdit, Plus, Search, Settings2, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,8 @@ import {
   type ExternalProviderCategory,
   extractCanonicalBaseName,
   formatMoney,
+  isAccountType,
+  isArchivedCategoryName,
   type StatCategoryPoint,
 } from "./external-provider-data";
 import type { ExclusionPreset } from "./expense-transforms";
@@ -44,6 +46,77 @@ export interface PresetDialogProps {
   statCategories?: StatCategoryPoint[];
   defaultCurrency?: string;
   presetController: ReturnType<typeof useExclusionPresets>;
+}
+
+/**
+ * Filters categories to omit account types, income sources, and savings goals.
+ */
+export function filterExpenseCategories(
+  categories: ExternalProviderCategory[],
+  statCategories: StatCategoryPoint[] = [],
+): ExternalProviderCategory[] {
+  const categoryMap = new Map<string, ExternalProviderCategory>();
+  for (const cat of categories) {
+    if (cat.deleted) continue;
+    if (isAccountType(cat.categoryType)) continue;
+    const typeNum = Number(cat.categoryType);
+    if (typeNum === CategoryType.Income) continue;
+    if (typeNum === CategoryType.Goal || typeNum === CategoryType.ClassicGoal) continue;
+
+    categoryMap.set(cat.id, cat);
+  }
+
+  for (const sc of statCategories) {
+    if (!categoryMap.has(sc.id)) {
+      const originalCat = categories.find((c) => c.id === sc.id);
+      if (originalCat) {
+        const typeNum = Number(originalCat.categoryType);
+        if (
+          originalCat.deleted ||
+          isAccountType(originalCat.categoryType) ||
+          typeNum === CategoryType.Income ||
+          typeNum === CategoryType.Goal ||
+          typeNum === CategoryType.ClassicGoal
+        ) {
+          continue;
+        }
+      }
+
+      const title = sc.title ?? sc.name ?? "Expense";
+      categoryMap.set(sc.id, {
+        id: sc.id,
+        name: title,
+        categoryType: CategoryType.Expense,
+        amount: 0,
+        limitAmount: sc.limitAmount,
+      });
+    }
+  }
+
+  return Array.from(categoryMap.values());
+}
+
+/**
+ * Checks whether an archived category should be considered active in the preset dialog.
+ */
+export function isPresetCategoryActive(cat: ExternalProviderCategory, spend: number, isExcluded: boolean): boolean {
+  const isArchived = isArchivedCategoryName(cat.name);
+  if (!isArchived) return true;
+  const hasLimit = (cat.limitAmount ?? 0) > 0;
+  return spend > 0 || hasLimit || isExcluded;
+}
+
+/**
+ * Sanitizes category display name and detects archive prefix.
+ */
+export function sanitizePresetCategoryName(
+  name: string,
+  defaultCurrency = "PLN",
+): { displayName: string; isArchived: boolean } {
+  const isArchived = isArchivedCategoryName(name);
+  const rawDisplayName = extractCanonicalBaseName(name, defaultCurrency);
+  const displayName = isArchived ? rawDisplayName.replace(/^_+/, "").trim() : rawDisplayName;
+  return { displayName, isArchived };
 }
 
 export function PresetDialog({
@@ -67,6 +140,7 @@ export function PresetDialog({
 
   const [selectedPresetId, setSelectedPresetId] = useState<string>(activePresetId);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [newPresetName, setNewPresetName] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
@@ -82,7 +156,21 @@ export function PresetDialog({
   // Working copy of excluded category IDs for the currently inspected preset
   const [draftExclusions, setDraftExclusions] = useState<string[]>(() => currentEditingPreset.expenseExclusions);
 
-  // Sync draft exclusions when dialog opens or inspected preset changes
+  // Synchronize draft exclusions and preset state whenever dialog opens or active preset changes
+  useEffect(() => {
+    if (open) {
+      setSelectedPresetId(activePresetId);
+      const target = presets.find((p) => p.id === activePresetId) ?? activePreset;
+      setDraftExclusions(target.expenseExclusions);
+      setRenameValue(target.name);
+      setIsCreatingNew(false);
+      setIsRenaming(false);
+      setSearchQuery("");
+      setShowArchived(false);
+    }
+  }, [open, activePresetId, activePreset, presets]);
+
+  // Sync draft exclusions when inspected preset changes
   const handleSelectPreset = (id: string) => {
     setSelectedPresetId(id);
     const target = presets.find((p) => p.id === id);
@@ -105,31 +193,9 @@ export function PresetDialog({
     return map;
   }, [statCategories]);
 
-  // Extract all non-deleted expense categories
+  // Extract all non-deleted true expense categories (excluding accounts, income, and goals)
   const expenseCategories = useMemo(() => {
-    const categoryMap = new Map<string, ExternalProviderCategory>();
-    for (const cat of categories) {
-      if (cat.deleted) continue;
-      // Skip pure income categories
-      if (cat.categoryType === CategoryType.Income) continue;
-      categoryMap.set(cat.id, cat);
-    }
-
-    // Also include any statCategory points not explicitly in metadata
-    for (const sc of statCategories) {
-      if (!categoryMap.has(sc.id)) {
-        const title = sc.title || sc.name || "Expense";
-        categoryMap.set(sc.id, {
-          id: sc.id,
-          name: title,
-          categoryType: CategoryType.Expense,
-          amount: 0,
-          limitAmount: sc.limitAmount,
-        });
-      }
-    }
-
-    const list = Array.from(categoryMap.values());
+    const list = filterExpenseCategories(categories, statCategories);
 
     // Sort: categories in draftExclusions first, then descending by period spend
     return list.sort((a, b) => {
@@ -144,16 +210,40 @@ export function PresetDialog({
     });
   }, [categories, statCategories, draftExclusions, spendMap]);
 
+  // Count hidden inactive archived categories
+  const hiddenArchivedCount = useMemo(() => {
+    let count = 0;
+    for (const cat of expenseCategories) {
+      if (!isArchivedCategoryName(cat.name)) continue;
+      const spend = spendMap.get(cat.id) ?? 0;
+      const isExcluded = draftExclusions.includes(cat.id);
+      if (!isPresetCategoryActive(cat, spend, isExcluded)) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [expenseCategories, spendMap, draftExclusions]);
+
+  // Categories visible according to archive toggle
+  const visibleCategories = useMemo(() => {
+    if (showArchived) return expenseCategories;
+    return expenseCategories.filter((cat) => {
+      const spend = spendMap.get(cat.id) ?? 0;
+      const isExcluded = draftExclusions.includes(cat.id);
+      return isPresetCategoryActive(cat, spend, isExcluded);
+    });
+  }, [expenseCategories, showArchived, spendMap, draftExclusions]);
+
   // Filtered categories based on search input
   const filteredCategories = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return expenseCategories;
-    return expenseCategories.filter((cat) => {
+    if (!q) return visibleCategories;
+    return visibleCategories.filter((cat) => {
       const name = cat.name.toLowerCase();
       const baseName = extractCanonicalBaseName(cat.name, defaultCurrency).toLowerCase();
       return name.includes(q) || baseName.includes(q);
     });
-  }, [expenseCategories, searchQuery, defaultCurrency]);
+  }, [visibleCategories, searchQuery, defaultCurrency]);
 
   // Metric stats for draft selection
   const draftExcludedStats = useMemo(() => {
@@ -209,20 +299,7 @@ export function PresetDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(isOpen) => {
-        if (isOpen) {
-          setSelectedPresetId(activePresetId);
-          setDraftExclusions(activePreset.expenseExclusions);
-          setRenameValue(activePreset.name);
-          setIsCreatingNew(false);
-          setIsRenaming(false);
-          setSearchQuery("");
-        }
-        onOpenChange(isOpen);
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88vh] w-full max-w-xl flex-col gap-4 p-5 sm:max-w-xl">
         <DialogHeader className="gap-1 border-b pb-3">
           <div className="flex items-center gap-2">
@@ -360,16 +437,30 @@ export function PresetDialog({
           </div>
         </div>
 
-        {/* Search Input */}
-        <div className="relative">
-          <Search className="text-muted-foreground absolute top-2.5 left-2.5 size-3.5 pointer-events-none" />
-          <Input
-            id={searchInputId}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search categories (e.g. Rent, Insurance, Tuition)..."
-            className="h-8.5 pl-8 text-xs"
-          />
+        {/* Search Input & Archive Toggle */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="text-muted-foreground absolute top-2.5 left-2.5 size-3.5 pointer-events-none" />
+            <Input
+              id={searchInputId}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search categories (e.g. Rent, Insurance, Tuition)..."
+              className="h-8.5 pl-8 text-xs"
+            />
+          </div>
+          {(hiddenArchivedCount > 0 || showArchived) && (
+            <Button
+              type="button"
+              variant={showArchived ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setShowArchived((prev) => !prev)}
+              className="h-8.5 shrink-0 gap-1.5 px-2.5 text-xs font-normal"
+            >
+              <Archive className="text-muted-foreground size-3.5" />
+              <span>{showArchived ? "Hide archived" : `Show archived (${hiddenArchivedCount})`}</span>
+            </Button>
+          )}
         </div>
 
         {/* Scrollable Categories Checklist */}
@@ -382,8 +473,8 @@ export function PresetDialog({
             <div className="divide-border/40 divide-y">
               {filteredCategories.map((cat) => {
                 const isExcluded = draftExclusions.includes(cat.id);
+                const { displayName, isArchived } = sanitizePresetCategoryName(cat.name, defaultCurrency);
                 const spend = spendMap.get(cat.id) ?? 0;
-                const displayName = extractCanonicalBaseName(cat.name, defaultCurrency);
 
                 return (
                   <label
@@ -391,7 +482,7 @@ export function PresetDialog({
                     htmlFor={`cat-check-${cat.id}`}
                     className={`flex cursor-pointer items-center justify-between gap-3 p-2 rounded-md transition-colors hover:bg-muted/50 ${
                       isExcluded ? "bg-muted/30" : ""
-                    }`}
+                    } ${isArchived && !isExcluded ? "opacity-60 hover:opacity-100" : ""}`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0">
                       <Checkbox
@@ -404,7 +495,15 @@ export function PresetDialog({
                           <span className={`text-xs font-medium truncate ${isExcluded ? "text-primary" : ""}`}>
                             {displayName}
                           </span>
-                          {cat.name !== displayName && (
+                          {isArchived && (
+                            <Badge
+                              variant="secondary"
+                              className="text-muted-foreground px-1.5 py-0 text-[10px] font-normal shrink-0"
+                            >
+                              Archived
+                            </Badge>
+                          )}
+                          {cat.name !== displayName && !isArchived && (
                             <span className="text-muted-foreground text-[10px] truncate">({cat.name})</span>
                           )}
                         </div>

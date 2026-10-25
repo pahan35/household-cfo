@@ -54,6 +54,54 @@ export function buildDefaultPresets(taxCategoryIds: string[] = [], rentCategoryI
 }
 
 /**
+ * Parses and validates presets stored in localStorage.
+ * Retains both custom presets and user-customized built-in presets.
+ */
+export function parseStoredPresets(storedPresetsJson: string | null): ExclusionPreset[] {
+  if (!storedPresetsJson) return [];
+  try {
+    const parsed = JSON.parse(storedPresetsJson);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (p): p is ExclusionPreset =>
+        Boolean(p) &&
+        typeof p === "object" &&
+        typeof p.id === "string" &&
+        typeof p.name === "string" &&
+        Array.isArray(p.expenseExclusions) &&
+        Array.isArray(p.incomeDeductions),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Merges default template presets with custom and customized built-in presets.
+ */
+export function mergePresets(defaultPresets: ExclusionPreset[], customPresets: ExclusionPreset[]): ExclusionPreset[] {
+  const customMap = new Map(customPresets.map((p) => [p.id, p]));
+  const defaults = defaultPresets.map((dp) => customMap.get(dp.id) ?? dp);
+  const nonDefaultCustom = customPresets.filter((cp) => !defaultPresets.some((dp) => dp.id === cp.id));
+  return [...defaults, ...nonDefaultCustom];
+}
+
+/**
+ * Resolves the currently active preset object from all available presets.
+ */
+export function resolveActivePreset(
+  allPresets: ExclusionPreset[],
+  activePresetId: string,
+  defaultPresets: ExclusionPreset[],
+): ExclusionPreset {
+  return (
+    allPresets.find((p) => p.id === activePresetId) ??
+    defaultPresets.find((p) => p.id === BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES) ??
+    defaultPresets[0]
+  );
+}
+
+/**
  * Hook to manage exclusion presets with localStorage persistence and category auto-matching.
  */
 export function useExclusionPresets(categories: ExternalProviderCategory[] = []) {
@@ -72,7 +120,6 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
 
   const [customPresets, setCustomPresets] = useState<ExclusionPreset[]>([]);
   const [activePresetId, setActivePresetIdState] = useState<string>(BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES);
-  const [rentExclusionOverride, setRentExclusionOverride] = useState<boolean | null>(null);
 
   // Initialize from localStorage on client mount
   useEffect(() => {
@@ -81,10 +128,8 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
     try {
       const storedPresetsJson = window.localStorage.getItem(PRESETS_STORAGE_KEY);
       if (storedPresetsJson) {
-        const parsed = JSON.parse(storedPresetsJson);
-        if (Array.isArray(parsed)) {
-          setCustomPresets(parsed.filter((p) => !p.isBuiltIn));
-        }
+        const validPresets = parseStoredPresets(storedPresetsJson);
+        setCustomPresets(validPresets);
       }
 
       const storedActiveId = window.localStorage.getItem(ACTIVE_PRESET_STORAGE_KEY);
@@ -97,53 +142,15 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
   }, []);
 
   const allPresets = useMemo(() => {
-    const customMap = new Map(customPresets.map((p) => [p.id, p]));
-    const defaults = defaultPresets.map((dp) => customMap.get(dp.id) ?? dp);
-    const nonDefaultCustom = customPresets.filter((cp) => !defaultPresets.some((dp) => dp.id === cp.id));
-    return [...defaults, ...nonDefaultCustom];
+    return mergePresets(defaultPresets, customPresets);
   }, [defaultPresets, customPresets]);
 
-  const rawActivePreset = useMemo(() => {
-    return (
-      allPresets.find((p) => p.id === activePresetId) ??
-      defaultPresets.find((p) => p.id === BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES) ??
-      defaultPresets[0]
-    );
-  }, [allPresets, activePresetId, defaultPresets]);
-
-  // Apply rent exclusion override if user toggled quick switch
   const activePreset = useMemo(() => {
-    if (rentExclusionOverride === null) {
-      return rawActivePreset;
-    }
-
-    const currentExclusions = new Set(rawActivePreset.expenseExclusions);
-    if (rentExclusionOverride) {
-      for (const id of detectedRentCategoryIds) {
-        currentExclusions.add(id);
-      }
-    } else {
-      for (const id of detectedRentCategoryIds) {
-        currentExclusions.delete(id);
-      }
-    }
-
-    return {
-      ...rawActivePreset,
-      expenseExclusions: Array.from(currentExclusions),
-    };
-  }, [rawActivePreset, rentExclusionOverride, detectedRentCategoryIds]);
-
-  const isRentExcluded = useMemo(() => {
-    if (detectedRentCategoryIds.length === 0) {
-      return false;
-    }
-    return detectedRentCategoryIds.some((id) => activePreset.expenseExclusions.includes(id));
-  }, [detectedRentCategoryIds, activePreset.expenseExclusions]);
+    return resolveActivePreset(allPresets, activePresetId, defaultPresets);
+  }, [allPresets, activePresetId, defaultPresets]);
 
   const setActivePresetId = useCallback((id: string) => {
     setActivePresetIdState(id);
-    setRentExclusionOverride(null); // Reset quick override on explicit preset switch
     if (typeof window !== "undefined") {
       try {
         window.localStorage.setItem(ACTIVE_PRESET_STORAGE_KEY, id);
@@ -154,13 +161,8 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
   }, []);
 
   const updatePreset = useCallback((presetToUpdate: ExclusionPreset) => {
-    const presetToSave: ExclusionPreset = {
-      ...presetToUpdate,
-      isBuiltIn: false,
-    };
-
     setCustomPresets((prev) => {
-      const next = [...prev.filter((p) => p.id !== presetToSave.id), presetToSave];
+      const next = [...prev.filter((p) => p.id !== presetToUpdate.id), presetToUpdate];
       if (typeof window !== "undefined") {
         try {
           window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(next));
@@ -170,8 +172,6 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
       }
       return next;
     });
-
-    setRentExclusionOverride(null);
   }, []);
 
   const savePreset = useCallback(
@@ -209,7 +209,7 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
 
   const toggleCategoryExclusion = useCallback(
     (categoryId: string, presetId = activePresetId) => {
-      const targetPreset = allPresets.find((p) => p.id === presetId) ?? rawActivePreset;
+      const targetPreset = allPresets.find((p) => p.id === presetId) ?? activePreset;
       const currentExclusions = new Set(targetPreset.expenseExclusions);
       if (currentExclusions.has(categoryId)) {
         currentExclusions.delete(categoryId);
@@ -221,12 +221,12 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
         expenseExclusions: Array.from(currentExclusions),
       });
     },
-    [activePresetId, allPresets, rawActivePreset, updatePreset],
+    [activePresetId, allPresets, activePreset, updatePreset],
   );
 
   const setCategoryExclusion = useCallback(
     (categoryId: string, excluded: boolean, presetId = activePresetId) => {
-      const targetPreset = allPresets.find((p) => p.id === presetId) ?? rawActivePreset;
+      const targetPreset = allPresets.find((p) => p.id === presetId) ?? activePreset;
       const currentExclusions = new Set(targetPreset.expenseExclusions);
       if (excluded) {
         currentExclusions.add(categoryId);
@@ -238,7 +238,7 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
         expenseExclusions: Array.from(currentExclusions),
       });
     },
-    [activePresetId, allPresets, rawActivePreset, updatePreset],
+    [activePresetId, allPresets, activePreset, updatePreset],
   );
 
   const deletePreset = useCallback(
@@ -262,13 +262,6 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
     [activePresetId, setActivePresetId],
   );
 
-  const toggleRentExclusion = useCallback(() => {
-    setRentExclusionOverride((prev) => {
-      const currentVal = prev !== null ? prev : isRentExcluded;
-      return !currentVal;
-    });
-  }, [isRentExcluded]);
-
   return {
     presets: allPresets,
     activePreset,
@@ -281,8 +274,6 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [])
     toggleCategoryExclusion,
     setCategoryExclusion,
     deletePreset,
-    isRentExcluded,
-    toggleRentExclusion,
     detectedTaxCategoryIds,
     detectedRentCategoryIds,
   };

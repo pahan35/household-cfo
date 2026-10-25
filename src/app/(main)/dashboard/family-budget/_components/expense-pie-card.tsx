@@ -17,7 +17,6 @@ import { Cell, Label, Pie, PieChart } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type ChartConfig, ChartContainer, ChartTooltip } from "@/components/ui/chart";
-import { Label as FieldLabel } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -27,7 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 
 import {
   type ExternalProviderCategory,
@@ -47,7 +45,7 @@ import {
 } from "./expense-transforms";
 import { PresetDialog } from "./preset-dialog";
 import { SectionShell } from "./section-shell";
-import { useExclusionPresets } from "./use-exclusion-presets";
+import type { useExclusionPresets } from "./use-exclusion-presets";
 
 export type CategorySortMode = "spend" | "increase" | "decrease";
 
@@ -59,8 +57,7 @@ interface ExpensePieCardProps {
   isLoading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
-  // Optional shared presets hook instance
-  presetController?: ReturnType<typeof useExclusionPresets>;
+  presetController: ReturnType<typeof useExclusionPresets>;
   comparison?: PeriodComparisonResult | null;
   onSelectCategory?: (category: ExpenseSlice) => void;
 }
@@ -171,23 +168,14 @@ export function ExpensePieCard({
   isLoading = false,
   error = null,
   onRetry,
-  presetController: externalPresetController,
+  presetController,
   comparison = null,
   onSelectCategory,
 }: ExpensePieCardProps) {
   const [sortMode, setSortMode] = useState<CategorySortMode>("spend");
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
-  const internalPresetController = useExclusionPresets(categories);
-  const {
-    presets,
-    activePreset,
-    activePresetId,
-    setActivePresetId,
-    isRentExcluded,
-    toggleRentExclusion,
-    detectedRentCategoryIds,
-  } = externalPresetController ?? internalPresetController;
+  const { presets, activePreset, activePresetId, setActivePresetId } = presetController;
 
   const transformed = useMemo(() => {
     return transformExpenses({
@@ -264,7 +252,6 @@ export function ExpensePieCard({
     return config;
   }, [chartSlices, defaultCurrency]);
 
-  const hasRentCategory = detectedRentCategoryIds.length > 0;
   const currency = defaultCurrency;
 
   return (
@@ -273,24 +260,7 @@ export function ExpensePieCard({
         title="Expenses Breakdown"
         description={`Active preset: ${activePreset.name} • ${controllableCategories.length} categories`}
         action={
-          <div className="flex flex-wrap items-center gap-3">
-            {hasRentCategory && (
-              <div className="flex items-center gap-1.5">
-                <Switch
-                  id="exclude-rent-toggle"
-                  size="sm"
-                  checked={isRentExcluded}
-                  onCheckedChange={toggleRentExclusion}
-                />
-                <FieldLabel
-                  htmlFor="exclude-rent-toggle"
-                  className="text-muted-foreground cursor-pointer text-xs font-normal select-none"
-                >
-                  Exclude Rent
-                </FieldLabel>
-              </div>
-            )}
-
+          <div className="flex items-center gap-2">
             <Select value={activePresetId} onValueChange={setActivePresetId}>
               <SelectTrigger size="sm" className="h-7 min-w-36 text-xs">
                 <SelectValue placeholder="Preset" />
@@ -653,7 +623,7 @@ export function ExpensePieCard({
         categories={categories}
         statCategories={statCategories}
         defaultCurrency={defaultCurrency}
-        presetController={externalPresetController ?? internalPresetController}
+        presetController={presetController}
       />
     </>
   );
