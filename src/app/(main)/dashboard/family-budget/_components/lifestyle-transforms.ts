@@ -6,6 +6,7 @@ import {
   type ExternalProviderCurrency,
   type ExternalProviderTransaction,
   convertCurrencyAmount,
+  parseExternalProviderTimestamp,
 } from "./external-provider-data";
 
 // ---------------------------------------------------------------------------
@@ -94,14 +95,17 @@ export function normalizeLifestyleTag(tag: string): string {
 
 /**
  * Resolves a date from transaction timestamp fields.
+ * Decodes .NET ticks via parseExternalProviderTimestamp, prioritizes valid ISO strings,
+ * and guarantees a valid Date instance fallback.
  */
 export function getTransactionDate(tx: ExternalProviderTransaction): Date {
-  if (typeof tx.dateTimestamp === "number" && !Number.isNaN(tx.dateTimestamp)) {
-    return new Date(tx.dateTimestamp);
-  }
   if (typeof tx.dateTimestampISO === "string" && tx.dateTimestampISO.length > 0) {
     const d = parseISO(tx.dateTimestampISO);
     if (isValid(d)) return d;
+  }
+  if (typeof tx.dateTimestamp === "number" && !Number.isNaN(tx.dateTimestamp)) {
+    const d = parseExternalProviderTimestamp(tx.dateTimestamp);
+    if (d && isValid(d)) return d;
   }
   if (typeof tx.date === "string" && tx.date.length > 0) {
     const d = parseISO(tx.date);
@@ -803,6 +807,9 @@ export function detectTravelEpisodes(input: {
       const effectiveStartDate = onSite.length > 0 ? getTransactionDate(onSite[0]) : clusterStartDate;
       const effectiveEndDate = onSite.length > 0 ? getTransactionDate(onSite[onSite.length - 1]) : clusterEndDate;
 
+      const validStartDate = isValid(effectiveStartDate) ? effectiveStartDate : new Date(0);
+      const validEndDate = isValid(effectiveEndDate) ? effectiveEndDate : validStartDate;
+
       let preBookingTotal = 0;
       for (const tx of preBookings) {
         preBookingTotal += getConvertedTransactionAmount(tx, defaultCurrency, currencies).convertedAmount;
@@ -814,25 +821,25 @@ export function detectTravelEpisodes(input: {
       }
 
       const capDestination = destTag.charAt(0).toUpperCase() + destTag.slice(1);
-      const name = `${capDestination} (${format(effectiveStartDate, "MMM yyyy")})`;
-      const episodeId = `trip-${destTag}-${format(effectiveStartDate, "yyyy-MM")}-${i + 1}`;
+      const name = `${capDestination} (${format(validStartDate, "MMM yyyy")})`;
+      const episodeId = `trip-${destTag}-${format(validStartDate, "yyyy-MM")}-${i + 1}`;
 
-      // Discover untagged candidate transactions in this trip window [effectiveStartDate, effectiveEndDate]
+      // Discover untagged candidate transactions in this trip window [validStartDate, validEndDate]
       const untaggedCandidates = findUntaggedTripCandidates({
         transactions,
         categories: categoryMap,
         currencies,
         defaultCurrency,
-        startDate: effectiveStartDate,
-        endDate: effectiveEndDate,
+        startDate: validStartDate,
+        endDate: validEndDate,
       });
 
       episodes.push({
         id: episodeId,
         destinationTag: destTag,
         name,
-        startDate: format(effectiveStartDate, "yyyy-MM-dd"),
-        endDate: format(effectiveEndDate, "yyyy-MM-dd"),
+        startDate: format(validStartDate, "yyyy-MM-dd"),
+        endDate: format(validEndDate, "yyyy-MM-dd"),
         preBookingTotal: Math.round(preBookingTotal * 100) / 100,
         onSiteTotal: Math.round(onSiteTotal * 100) / 100,
         totalCost: Math.round((preBookingTotal + onSiteTotal) * 100) / 100,
@@ -955,7 +962,8 @@ export function detectConcertEvents(input: {
 
     const firstDate = getTransactionDate(txs[0]);
     const lastDate = getTransactionDate(txs[txs.length - 1]);
-    const concertDateStr = format(lastDate, "yyyy-MM-dd");
+    const validConcertDate = isValid(lastDate) ? lastDate : isValid(firstDate) ? firstDate : new Date(0);
+    const concertDateStr = format(validConcertDate, "yyyy-MM-dd");
 
     let ticketCount = 0;
     let ticketTotal = 0;
@@ -982,7 +990,7 @@ export function detectConcertEvents(input: {
     for (const ep of episodes) {
       const epStart = parseISO(ep.startDate).getTime();
       const epEnd = parseISO(ep.endDate).getTime();
-      const cDateMs = lastDate.getTime();
+      const cDateMs = validConcertDate.getTime();
 
       if (cDateMs >= epStart && cDateMs <= epEnd) {
         concertType = "concert-in-travel";

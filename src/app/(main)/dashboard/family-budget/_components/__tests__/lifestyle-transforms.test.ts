@@ -15,6 +15,7 @@ import {
   detectTravelEpisodes,
   findUntaggedTripCandidates,
   getPassMultiplierFromTags,
+  getTransactionDate,
   isMedicalCoveredTag,
   isMedicalOutOfPocketTag,
   isSportCoveredTag,
@@ -69,6 +70,85 @@ describe("lifestyle-transforms", () => {
       expect(normalizeLifestyleTag("#Austria")).toBe("austria");
       expect(normalizeLifestyleTag("  ##Travel  ")).toBe("travel");
       expect(normalizeLifestyleTag("PILATES")).toBe("pilates");
+    });
+  });
+
+  describe("getTransactionDate", () => {
+    it("decodes .NET ticks timestamps correctly", () => {
+      // 2024-10-15T00:00:00.000Z in .NET ticks
+      const ticks = 638645472000000000;
+      const tx: ExternalProviderTransaction = {
+        id: "tx-ticks",
+        dateTimestamp: ticks,
+      };
+      const date = getTransactionDate(tx);
+      expect(date).toBeInstanceOf(Date);
+      expect(Number.isNaN(date.getTime())).toBe(false);
+      expect(date.toISOString()).toBe("2024-10-15T00:00:00.000Z");
+    });
+
+    it("parses Unix milliseconds timestamps correctly", () => {
+      const ms = 1728950400000; // 2024-10-15T00:00:00.000Z
+      const tx: ExternalProviderTransaction = {
+        id: "tx-ms",
+        dateTimestamp: ms,
+      };
+      const date = getTransactionDate(tx);
+      expect(date.toISOString()).toBe("2024-10-15T00:00:00.000Z");
+    });
+
+    it("parses Unix seconds timestamps correctly", () => {
+      const sec = 1728950400; // 2024-10-15T00:00:00.000Z
+      const tx: ExternalProviderTransaction = {
+        id: "tx-sec",
+        dateTimestamp: sec,
+      };
+      const date = getTransactionDate(tx);
+      expect(date.toISOString()).toBe("2024-10-15T00:00:00.000Z");
+    });
+
+    it("prioritizes valid ISO strings when present", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-iso",
+        dateTimestampISO: "2024-10-15T12:30:00.000Z",
+        dateTimestamp: 123456789,
+      };
+      const date = getTransactionDate(tx);
+      expect(date.toISOString()).toBe("2024-10-15T12:30:00.000Z");
+    });
+
+    it("falls back to tx.date string or Date when dateTimestamp is absent", () => {
+      const txString: ExternalProviderTransaction = {
+        id: "tx-date-str",
+        date: "2024-05-01T00:00:00.000Z",
+      };
+      expect(getTransactionDate(txString).toISOString()).toBe("2024-05-01T00:00:00.000Z");
+
+      const nowDate = new Date("2024-06-01T00:00:00.000Z");
+      const txObj: ExternalProviderTransaction = {
+        id: "tx-date-obj",
+        date: nowDate,
+      };
+      expect(getTransactionDate(txObj).toISOString()).toBe("2024-06-01T00:00:00.000Z");
+    });
+
+    it("returns safe fallback Date(0) for malformed or missing inputs", () => {
+      const emptyTx: ExternalProviderTransaction = { id: "tx-empty" };
+      const d1 = getTransactionDate(emptyTx);
+      expect(d1).toBeInstanceOf(Date);
+      expect(Number.isNaN(d1.getTime())).toBe(false);
+      expect(d1.getTime()).toBe(0);
+
+      const invalidTx: ExternalProviderTransaction = {
+        id: "tx-invalid",
+        dateTimestamp: Number.NaN,
+        dateTimestampISO: "not-a-date",
+        date: "invalid-date",
+      };
+      const d2 = getTransactionDate(invalidTx);
+      expect(d2).toBeInstanceOf(Date);
+      expect(Number.isNaN(d2.getTime())).toBe(false);
+      expect(d2.getTime()).toBe(0);
     });
   });
 
@@ -337,6 +417,45 @@ describe("lifestyle-transforms", () => {
       expect(candidates.length).toBe(1);
       expect(candidates[0].transaction.id).toBe("tx-untagged-austria");
       expect(candidates[0].confidenceScore).toBeGreaterThanOrEqual(70); // foreign currency + travel category
+    });
+
+    it("detects travel episodes with .NET ticks in dateTimestamp without throwing RangeError", () => {
+      // .NET ticks for 2024-10-01 to 2024-10-07
+      const ticksStart = 638633472000000000; // 2024-10-01
+      const ticksEnd = 638638656000000000; // 2024-10-07
+      const tickTxs: ExternalProviderTransaction[] = [
+        {
+          id: "tx-rome-1",
+          destinationId: "cat-hotel",
+          destinationAmount: 500,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: ["rome", "travel"],
+          dateTimestamp: ticksStart,
+        },
+        {
+          id: "tx-rome-2",
+          destinationId: "cat-transport",
+          destinationAmount: 100,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: ["rome", "end-travel"],
+          dateTimestamp: ticksEnd,
+        },
+      ];
+
+      expect(() => {
+        const episodes = detectTravelEpisodes({
+          transactions: tickTxs,
+          categories: mockCategories,
+          currencies: mockCurrencies,
+          defaultCurrency: "PLN",
+        });
+        expect(episodes.length).toBe(1);
+        expect(episodes[0].name).toContain("Rome (Oct 2024)");
+        expect(episodes[0].startDate).toBe("2024-10-01");
+        expect(episodes[0].endDate).toBe("2024-10-07");
+      }).not.toThrow();
     });
   });
 

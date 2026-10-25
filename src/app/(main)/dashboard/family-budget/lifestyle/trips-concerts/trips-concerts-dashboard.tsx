@@ -25,6 +25,7 @@ import {
   type ConcertEvent,
   detectConcertEvents,
   detectTravelEpisodes,
+  getTransactionDate,
   type TravelEpisode,
   type UntaggedCandidateTransaction,
 } from "../../_components/lifestyle-transforms";
@@ -273,7 +274,7 @@ export function TripsConcertsDashboard() {
                             {episode.untaggedCandidates.map((candidate) => {
                               const tx = candidate.transaction;
                               const isChecked = episodeSelected.includes(tx.id);
-                              const txDate = format(new Date(tx.dateTimestamp ?? 0), "yyyy-MM-dd");
+                              const txDate = format(getTransactionDate(tx), "yyyy-MM-dd");
 
                               return (
                                 <div key={tx.id} className="flex items-center justify-between p-2 text-xs">
@@ -328,7 +329,7 @@ export function TripsConcertsDashboard() {
                                       {tx.destinationName ?? "Booking"}
                                     </span>
                                     <span className="text-[10px] text-muted-foreground">
-                                      {format(new Date(tx.dateTimestamp ?? 0), "yyyy-MM-dd")}
+                                      {format(getTransactionDate(tx), "yyyy-MM-dd")}
                                       {tx.comment && ` • ${tx.comment}`}
                                     </span>
                                   </div>
@@ -357,7 +358,7 @@ export function TripsConcertsDashboard() {
                                       {tx.destinationName ?? "Expense"}
                                     </span>
                                     <span className="text-[10px] text-muted-foreground">
-                                      {format(new Date(tx.dateTimestamp ?? 0), "yyyy-MM-dd")}
+                                      {format(getTransactionDate(tx), "yyyy-MM-dd")}
                                       {tx.comment && ` • ${tx.comment}`}
                                     </span>
                                   </div>
