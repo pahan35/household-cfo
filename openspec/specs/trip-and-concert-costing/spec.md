@@ -15,12 +15,18 @@ The Trips & Concerts analyzer (`/dashboard/family-budget/lifestyle/trips-concert
 3. Look back up to 300 days prior to the on-site stay anchor start date and attribute any transactions sharing that destination tag in travel or transit categories (`Airplane tickets`, `Railway tickets`, `Hotels`, `Transport`, etc.) as pre-trip bookings of that upcoming episode, regardless of gaps exceeding 60 days between pre-trip payments.
 4. Split reused destination tags (e.g. `#Austria`, `#Malediwy`) into separate episodes when separate on-site stay anchors occur across different years or periods.
 5. Reliably decode upstream timestamps in .NET ticks, Unix milliseconds, Unix seconds, or ISO 8601 strings into valid calendar dates without throwing runtime invalid time value errors.
-6. Resolve transaction native currency hierarchically from `tx.destinationCurrencyId`, `tx.sourceCurrencyId`, destination category `currencyId`, or source account `currencyId`, and convert foreign-currency amounts (such as UAH, USD, EUR) to the default reporting currency using exchange rates.
+6. Resolve transaction native currency hierarchically from `tx.destinationCurrencyId`, `tx.sourceCurrencyId`, destination category `currencyId`, category name suffix, or source account `currencyId`, and convert foreign-currency amounts (such as UAH, USD, EUR) to the default reporting currency using exchange rates.
+7. Present episode totals and breakdown rows in analytical rollup mode: converted default reporting currency primary (e.g., `PLN 4,250.00`) and original foreign currency secondary (e.g., `orig. €980.00`) when foreign spending occurred.
 
 #### Scenario: Foreign-currency transaction amounts converted accurately to default reporting currency
 
 - **WHEN** a transaction is recorded in a foreign currency such as UAH (e.g. 149 UAH) or USD via its category or account without explicit transaction-level currency id
 - **THEN** the analyzer resolves the native currency from the category or account and converts the amount to the default reporting currency (e.g. PLN) via exchange rates rather than displaying the native foreign amount 1:1 in default currency
+
+#### Scenario: Displaying episode spending with foreign currency breakdown
+- **GIVEN** a travel episode with accommodation paid in EUR (€800 = PLN 3,440) and domestic train tickets in PLN (PLN 200)
+- **WHEN** the episode card renders its total and category breakdown
+- **THEN** the primary total displays `PLN 3,640.00` and the secondary line reflects the foreign subtotal `orig. €800.00`
 
 #### Scenario: Reused destination tag split into separate trip episodes
 
@@ -71,10 +77,25 @@ The analyzer SHALL identify concert events via `#concert` paired with an artist/
 
 The Trips & Concerts dashboard (`/dashboard/family-budget/lifestyle/trips-concerts`) SHALL provide an interactive travel bookending assistant to locate past vacation dates, inspect transactions in candidate timeframes, and designate `#travel` and `#end-travel` bookends along with a destination tag.
 
+The assistant SHALL format candidate transaction amounts using the canonical domain money resolver:
+1. Candidate transactions SHALL resolve native amounts and native currencies atomically from source accounts and destination categories without defaulting to PLN.
+2. In the candidate list, foreign currency transactions SHALL display their native currency primary (e.g., `€120.00`) accompanied by converted reporting currency secondary (e.g., `≈ PLN 516.00`).
+3. Candidate scoring (`scoreBoundaryCandidate`) SHALL inspect both destination category currency AND source account currency using the canonical currency resolver (incorporating name suffixes and legacy Cyrillic naming), awarding the `+40 Foreign Currency` boundary signal whenever either source or destination represents a foreign currency relative to the dashboard default currency.
+
 #### Scenario: Navigating to a past vacation date window
 
 - **WHEN** the user selects a target month or date range in the travel bookending assistant
 - **THEN** the assistant filters transactions within that window and highlights potential boundary expenses (such as flights, lodging, transit, and foreign currency transactions)
+
+#### Scenario: Viewing a foreign currency candidate transaction in the bookend assistant
+- **GIVEN** a flight booking transaction paid in EUR (€450.00) from an account or into a category lacking explicit transaction-level currency fields
+- **WHEN** the travel bookending assistant displays the candidate transaction
+- **THEN** the transaction amount renders as `€450.00` primary with `≈ PLN 1,935.00` secondary, and receives the foreign currency boundary bonus score
+
+#### Scenario: Candidate scoring for foreign payment into generic expense category
+- **GIVEN** a candidate transaction paid from a EUR card into a domestic expense category (e.g., Taxi or Dining)
+- **WHEN** `scoreBoundaryCandidate` evaluates the transaction
+- **THEN** it resolves the source account currency as `"EUR"`, recognizes it as a foreign transaction, and awards the `+40` boundary candidate score
 
 #### Scenario: Designating trip start bookend
 

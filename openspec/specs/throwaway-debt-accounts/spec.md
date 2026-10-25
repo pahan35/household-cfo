@@ -30,6 +30,7 @@ The system SHALL recognize any non-deleted account category whose `categoryType`
 When a Debt Account is active in the Clearing Ledger Workbench, users SHALL be able to record outflows that increase the receivable balance or record associated deal fees with an explicit transaction date:
 1. **Principal Purchase (Outflow on Behalf)**: Creates a transfer transaction from a selected personal account to the Debt Account. The form SHALL provide an explicit date picker (defaulting to current date in `YYYY-MM-DD` format), source and destination amounts, and optional comment. The system SHALL dispatch the transaction as an array payload `[tx]` to `/api/external-provider/api/transaction/create` containing complete .NET ticks for `dateTimestamp`, `createdTimestamp`, and `timestamp`, normalized `dateTimestampISO`, `isComplete: true`, and `debtPaymentAmount: 0`.
 2. **Associated Fee**: Allows the user to specify an explicit transaction date and choose whether the **debtor absorbs the fee** (creates a transfer to the Debt Account with cross-currency conversion) or the **user absorbs the fee** (creates an expense transaction from the payment account to a selected Expense Category, leaving the Debt Account balance unchanged).
+3. **Currency Resolution Integrity**: When recording fees absorbed by the user, the fee category currency SHALL be resolved dynamically using canonical category currency resolution rather than hardcoding default currency (`PLN`), and fee entry inputs SHALL display the verified currencies of the payment account and fee category.
 
 #### Scenario: Principal purchase in same currency
 
@@ -40,6 +41,10 @@ When a Debt Account is active in the Clearing Ledger Workbench, users SHALL be a
 
 - **WHEN** the user records an associated customs fee of `120 PLN` paid from `"PLN Card (PLN)"` on `"2026-10-20"` with `"Debtor absorbs fee"` selected and converted debt inflow of `30 USD` to debt account `"Alex (USD)"`
 - **THEN** the system submits an array `[tx]` with the cross-currency transfer transaction (`sourceAmount: 120 PLN`, `destinationAmount: 30 USD`, date matching 2026-10-20) to `/api/external-provider/api/transaction/create`, increasing `"Alex"` receivable balance by `30 USD`
+
+#### Scenario: Associated fee absorbed by user with non-default currency category
+- **WHEN** the user records a fee paid from `"EUR Card (EUR)"` to an expense category `"Banking Fees EUR"`
+- **THEN** the system resolves `"Banking Fees EUR"` currency as `"EUR"`, displays EUR input fields, and submits an expense transaction for the proper EUR amount without converting or hardcoding to PLN
 
 #### Scenario: Associated fee absorbed by user
 
@@ -54,6 +59,7 @@ When a Debt Account is active in the Clearing Ledger Workbench, users SHALL be a
 3. **Case C — Debtor transfers money to a family member or personal account**:
    - When the recipient account is tracked in the same ExternalProvider profile: records a Transfer transaction from the Debt Account to the recipient Account.
    - When the recipient's finances are external: records an Expense transaction from the Debt Account to a selected Family/External Expense Category.
+4. **Target Currency Display & Estimation**: In all settlement cases, target accounts and categories SHALL display their resolved native currency. When cross-currency settlement occurs, the workbench SHALL show the converted amount estimation computed via canonical exchange rates while allowing manual adjustment.
 All settlement transactions SHALL be dispatched as an array `[tx]` to `/api/external-provider/api/transaction/create` with complete .NET ticks, normalized `dateTimestampISO`, and `isComplete: true`.
 
 #### Scenario: Shared expense settlement (Case A)
