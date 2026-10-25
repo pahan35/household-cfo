@@ -2727,10 +2727,110 @@ export interface CategoryOrderDiffItem {
   rankDelta: number;
   tier: CategoryCurrencyTier;
   hasMoved: boolean;
+  isActiveMove: boolean;
   score?: number;
   transactionCount?: number;
   lastActiveDate?: Date | null;
   reason: string;
+}
+
+export interface LISMoverItem {
+  id: string;
+  origIndex: number;
+  newIndex: number;
+  score?: number;
+}
+
+/**
+ * Computes Longest Increasing Subsequence (LIS) on relative indices to isolate
+ * active movers (intentional displacements) from passive ripple shifts (items whose
+ * relative sequence was preserved).
+ *
+ * Prioritizes keeping stationary elements (where origIndex === newIndex) and
+ * higher activity scores on tie-breaks.
+ */
+export function classifyActiveMoversViaLIS(items: LISMoverItem[]): Set<string> {
+  const n = items.length;
+  if (n <= 1) return new Set();
+
+  const dp = new Array<number>(n).fill(1);
+  const stationary = new Array<number>(n).fill(0);
+  const scores = new Array<number>(n).fill(0);
+  const prev = new Array<number>(n).fill(-1);
+
+  for (let i = 0; i < n; i++) {
+    const isStat = items[i].origIndex >= 0 && items[i].origIndex === items[i].newIndex ? 1 : 0;
+    stationary[i] = isStat;
+    scores[i] = items[i].score ?? 0;
+  }
+
+  for (let i = 0; i < n; i++) {
+    if (items[i].origIndex < 0) continue;
+
+    for (let j = 0; j < i; j++) {
+      if (items[j].origIndex >= 0 && items[j].origIndex < items[i].origIndex) {
+        const candLen = dp[j] + 1;
+        const candStationary = stationary[j] + (items[i].origIndex === items[i].newIndex ? 1 : 0);
+        const candScore = scores[j] + (items[i].score ?? 0);
+
+        let isBetter = false;
+        if (candLen > dp[i]) {
+          isBetter = true;
+        } else if (candLen === dp[i]) {
+          if (candStationary > stationary[i]) {
+            isBetter = true;
+          } else if (candStationary === stationary[i]) {
+            if (candScore > scores[i]) {
+              isBetter = true;
+            }
+          }
+        }
+
+        if (isBetter) {
+          dp[i] = candLen;
+          stationary[i] = candStationary;
+          scores[i] = candScore;
+          prev[i] = j;
+        }
+      }
+    }
+  }
+
+  let bestIdx = -1;
+  for (let i = 0; i < n; i++) {
+    if (items[i].origIndex < 0) continue;
+    if (bestIdx === -1) {
+      bestIdx = i;
+    } else if (dp[i] > dp[bestIdx]) {
+      bestIdx = i;
+    } else if (dp[i] === dp[bestIdx]) {
+      if (stationary[i] > stationary[bestIdx]) {
+        bestIdx = i;
+      } else if (stationary[i] === stationary[bestIdx]) {
+        if (scores[i] > scores[bestIdx]) {
+          bestIdx = i;
+        }
+      }
+    }
+  }
+
+  const inLis = new Set<string>();
+  let curr = bestIdx;
+  while (curr !== -1) {
+    inLis.add(items[curr].id);
+    curr = prev[curr];
+  }
+
+  const activeMoverIds = new Set<string>();
+  for (const item of items) {
+    if (item.origIndex < 0) {
+      activeMoverIds.add(item.id);
+    } else if (item.origIndex !== item.newIndex && !inLis.has(item.id)) {
+      activeMoverIds.add(item.id);
+    }
+  }
+
+  return activeMoverIds;
 }
 
 /**
@@ -2752,14 +2852,56 @@ export function buildCategoryOrderDiffItems(
   const scores = options?.scores;
 
   const originalMap = new Map(originalCategories.map((c) => [c.id, c]));
+  const originalGroup = sortCategoriesByOrder(originalCategories.filter((c) => groupPredicate(c)));
+  const origIndexMap = new Map<string, number>();
+  originalGroup.forEach((cat, idx) => {
+    origIndexMap.set(cat.id, idx);
+  });
+
   const group = sortCategoriesByOrder(updatedCategories.filter((c) => groupPredicate(c)));
+
+  // Identify original tier bounds to detect tier realignments
+  let lastOrigPrimaryIndex = -1;
+  let firstOrigForeignIndex = -1;
+  let firstOrigArchivedIndex = -1;
+  let lastOrigActiveIndex = -1;
+
+  for (let i = 0; i < originalGroup.length; i++) {
+    const c = originalGroup[i];
+    if (c.deleted) continue;
+    const t = getCategoryCurrencyTier(c.name, defaultCurrency);
+    if (t === "primary") {
+      lastOrigPrimaryIndex = Math.max(lastOrigPrimaryIndex, i);
+      lastOrigActiveIndex = Math.max(lastOrigActiveIndex, i);
+    } else if (t === "foreign") {
+      if (firstOrigForeignIndex === -1) firstOrigForeignIndex = i;
+      lastOrigActiveIndex = Math.max(lastOrigActiveIndex, i);
+    } else if (t === "archived") {
+      if (firstOrigArchivedIndex === -1) firstOrigArchivedIndex = i;
+    }
+  }
+
+  // Classify active movers vs passive ripple shifts via LIS
+  const lisItems: LISMoverItem[] = group.map((cat, newIndex) => {
+    const origIdx = origIndexMap.get(cat.id) ?? -1;
+    const scoreData = scores?.get(cat.id);
+    return {
+      id: cat.id,
+      origIndex: origIdx,
+      newIndex,
+      score: scoreData?.score ?? 0,
+    };
+  });
+  const activeMoverIds = classifyActiveMoversViaLIS(lisItems);
 
   return group.map((cat, newIndex) => {
     const orig = originalMap.get(cat.id);
+    const origIndex = origIndexMap.get(cat.id);
     const prevOrder = typeof orig?.order === "number" ? orig.order : newIndex;
     const currentOrder = typeof cat.order === "number" ? cat.order : newIndex;
     const rankDelta = prevOrder - currentOrder;
     const hasMoved = prevOrder !== currentOrder;
+    const isActiveMove = hasMoved && activeMoverIds.has(cat.id);
     const tier = getCategoryCurrencyTier(cat.name, defaultCurrency);
 
     let reason = "";
@@ -2767,23 +2909,45 @@ export function buildCategoryOrderDiffItems(
     let transactionCount: number | undefined;
     let lastActiveDate: Date | null | undefined;
 
-    if (strategy === "smart-order") {
-      const scoreData = scores?.get(cat.id);
-      score = scoreData?.score ?? 0;
-      transactionCount = scoreData?.transactionCount ?? 0;
-      lastActiveDate = scoreData?.lastActiveDate ?? null;
-      reason = scoreData
-        ? `${transactionCount} ${transactionCount === 1 ? "transaction" : "transactions"}, score ${score.toFixed(1)}`
-        : "No transactions";
-    } else {
-      if (cat.deleted) {
-        reason = "Removed / soft-deleted tier";
-      } else if (tier === "archived") {
-        reason = "Archived tier";
-      } else if (tier === "foreign") {
-        reason = "Foreign currency tier";
+    // Detect currency tier realignments for active movers
+    let isTierRealignment = false;
+    if (isActiveMove && origIndex !== undefined) {
+      if (tier === "foreign" && lastOrigPrimaryIndex !== -1 && origIndex < lastOrigPrimaryIndex) {
+        isTierRealignment = true;
+        const cur = resolveCategoryCurrency(cat, { defaultCurrency }) || "Foreign";
+        reason = `Moved to Foreign tier (${cur})`;
+      } else if (
+        tier === "primary" &&
+        ((firstOrigForeignIndex !== -1 && origIndex > firstOrigForeignIndex) ||
+          (firstOrigArchivedIndex !== -1 && origIndex > firstOrigArchivedIndex))
+      ) {
+        isTierRealignment = true;
+        reason = `Promoted to Primary tier (${defaultCurrency})`;
+      } else if (tier === "archived" && lastOrigActiveIndex !== -1 && origIndex < lastOrigActiveIndex) {
+        isTierRealignment = true;
+        reason = "Moved to Archived tier";
+      }
+    }
+
+    if (!isTierRealignment) {
+      if (strategy === "smart-order") {
+        const scoreData = scores?.get(cat.id);
+        score = scoreData?.score ?? 0;
+        transactionCount = scoreData?.transactionCount ?? 0;
+        lastActiveDate = scoreData?.lastActiveDate ?? null;
+        reason = scoreData
+          ? `${transactionCount} ${transactionCount === 1 ? "transaction" : "transactions"}, score ${score.toFixed(1)}`
+          : "No transactions";
       } else {
-        reason = "Primary default currency tier";
+        if (cat.deleted) {
+          reason = "Removed / soft-deleted tier";
+        } else if (tier === "archived") {
+          reason = "Archived tier";
+        } else if (tier === "foreign") {
+          reason = "Foreign currency tier";
+        } else {
+          reason = "Primary default currency tier";
+        }
       }
     }
 
@@ -2794,6 +2958,7 @@ export function buildCategoryOrderDiffItems(
       rankDelta,
       tier,
       hasMoved,
+      isActiveMove,
       score,
       transactionCount,
       lastActiveDate,

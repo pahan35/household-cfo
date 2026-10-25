@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { cn } from "cn";
-import { ArrowDown, ArrowUp, Calendar, CheckCircle2, Filter, Layers, Loader2, Minus, Sparkles } from "lucide-react";
+import { ArrowDown, ArrowUp, Calendar, CheckCircle2, Layers, Loader2, Minus, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +23,7 @@ import {
   buildCategoryOrderDiffItems,
   type CategoryActivityLookbackScope,
   type CategoryCurrencyTier,
+  type CategoryOrderDiffItem,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
   computeCategoryActivityScores,
@@ -32,6 +33,7 @@ import {
 } from "./external-provider-data";
 
 export type CategoryOrganizationStrategy = "smart-order" | "tier-cleanup";
+export type CategoryDiffFilter = "direct" | "shifted" | "all";
 
 export interface CategoryOrganizationDialogProps {
   open: boolean;
@@ -74,6 +76,22 @@ function renderRankDelta(delta: number) {
   );
 }
 
+function getRowClassName(item: CategoryOrderDiffItem): string {
+  if (item.isActiveMove) {
+    return "bg-primary/5 border-primary/20 hover:bg-primary/10";
+  }
+  if (item.hasMoved) {
+    return "bg-muted/30 border-border/60 hover:bg-muted/50";
+  }
+  return "bg-card hover:bg-muted/30 border-border/50";
+}
+
+function getRankBadgeVariant(item: CategoryOrderDiffItem): "default" | "secondary" | "outline" {
+  if (item.isActiveMove) return "default";
+  if (item.hasMoved) return "secondary";
+  return "outline";
+}
+
 export function CategoryOrganizationDialog({
   open,
   onOpenChange,
@@ -85,7 +103,7 @@ export function CategoryOrganizationDialog({
 }: CategoryOrganizationDialogProps) {
   const [strategy, setStrategy] = useState<CategoryOrganizationStrategy>(initialStrategy);
   const [lookbackScope, setLookbackScope] = useState<CategoryActivityLookbackScope>("180-days");
-  const [onlyShowMoved, setOnlyShowMoved] = useState(false);
+  const [filter, setFilter] = useState<CategoryDiffFilter>("direct");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 1. Calculate time-decayed scores when in smart-order mode
@@ -119,12 +137,23 @@ export function CategoryOrganizationDialog({
   const modifiedCount = reorderResult.modifiedCategories.length;
   const hasChanges = modifiedCount > 0;
 
+  const activeCount = useMemo(() => {
+    return diffItems.filter((it) => it.isActiveMove).length;
+  }, [diffItems]);
+
+  const passiveCount = useMemo(() => {
+    return diffItems.filter((it) => it.hasMoved && !it.isActiveMove).length;
+  }, [diffItems]);
+
   const displayItems = useMemo(() => {
-    if (onlyShowMoved) {
+    if (filter === "direct") {
+      return diffItems.filter((it) => it.isActiveMove);
+    }
+    if (filter === "shifted") {
       return diffItems.filter((it) => it.hasMoved);
     }
     return diffItems;
-  }, [diffItems, onlyShowMoved]);
+  }, [diffItems, filter]);
 
   const handleApply = async () => {
     if (!hasChanges || isSubmitting) return;
@@ -204,14 +233,19 @@ export function CategoryOrganizationDialog({
         </div>
 
         {/* Diff Summary Bar */}
-        <div className="bg-muted/15 border-border/40 flex items-center justify-between border-b px-6 py-2.5 text-xs">
-          <div className="flex items-center gap-2">
+        <div className="bg-muted/15 border-border/40 flex flex-wrap items-center justify-between gap-2 border-b px-6 py-2.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
             {hasChanges ? (
               <>
                 <Badge variant="outline" className="h-5 gap-1 border-primary/30 px-1.5 font-medium text-primary">
-                  {modifiedCount} {modifiedCount === 1 ? "category" : "categories"} to move
+                  {activeCount} {activeCount === 1 ? "category" : "categories"} to reorganize
                 </Badge>
-                <span className="text-muted-foreground text-[11px]">
+                {passiveCount > 0 && (
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px] text-muted-foreground font-normal">
+                    +{passiveCount} ripple shifts
+                  </Badge>
+                )}
+                <span className="text-muted-foreground text-[11px] hidden sm:inline">
                   {strategy === "smart-order"
                     ? "Ranked by activity decay score"
                     : "Aligned to primary → foreign → archived → removed tiers"}
@@ -226,16 +260,19 @@ export function CategoryOrganizationDialog({
           </div>
 
           {hasChanges && (
-            <Button
-              type="button"
-              variant={onlyShowMoved ? "secondary" : "ghost"}
-              size="xs"
-              onClick={() => setOnlyShowMoved((prev) => !prev)}
-              className="h-6 gap-1 px-2 text-[11px]"
-            >
-              <Filter className="size-3" />
-              <span>{onlyShowMoved ? "Show all" : `Only moving (${modifiedCount})`}</span>
-            </Button>
+            <Tabs value={filter} onValueChange={(val) => setFilter(val as CategoryDiffFilter)}>
+              <TabsList className="h-7">
+                <TabsTrigger value="direct" className="text-[11px] px-2 py-0.5">
+                  Direct moves ({activeCount})
+                </TabsTrigger>
+                <TabsTrigger value="shifted" className="text-[11px] px-2 py-0.5">
+                  All shifted ({modifiedCount})
+                </TabsTrigger>
+                <TabsTrigger value="all" className="text-[11px] px-2 py-0.5">
+                  Show all ({diffItems.length})
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           )}
         </div>
 
@@ -249,52 +286,68 @@ export function CategoryOrganizationDialog({
               <span className="col-span-4 text-right">Reason / Details</span>
             </div>
 
-            {displayItems.map((item) => {
-              const tierBadge = TIER_BADGES[item.tier];
-              return (
-                <div
-                  key={item.category.id}
-                  className={cn(
-                    "grid grid-cols-12 items-center rounded-md border p-2 text-xs transition-colors",
-                    item.hasMoved
-                      ? "bg-primary/5 border-primary/20 hover:bg-primary/10"
-                      : "bg-card hover:bg-muted/30 border-border/50",
-                  )}
-                >
-                  {/* New Rank */}
-                  <div className="col-span-2 flex items-center gap-1.5 font-mono">
-                    <Badge variant={item.hasMoved ? "default" : "outline"} className="h-5 px-1.5 text-[10px]">
-                      #{item.newOrder + 1}
-                    </Badge>
-                  </div>
-
-                  {/* Category Name & Tier */}
-                  <div className="col-span-4 flex min-w-0 items-center gap-1.5 pr-2">
-                    <span className="truncate font-medium">{item.category.name}</span>
-                    <Badge variant={tierBadge.variant} className="h-4 px-1 text-[9px]">
-                      {tierBadge.label}
-                    </Badge>
-                  </div>
-
-                  {/* Rank Delta */}
-                  <div className="col-span-2 flex items-center justify-center">{renderRankDelta(item.rankDelta)}</div>
-
-                  {/* Reason & Details */}
-                  <div className="col-span-4 flex flex-col items-end gap-0.5 text-right text-[11px]">
-                    <span className="text-muted-foreground truncate">{item.reason}</span>
-                    {item.previousOrder !== item.newOrder && (
-                      <span className="text-muted-foreground/60 text-[10px] font-mono">
-                        was #{item.previousOrder + 1}
-                      </span>
+            {displayItems.length === 0 ? (
+              <div className="text-muted-foreground flex flex-col items-center justify-center py-12 text-center text-xs">
+                <CheckCircle2 className="size-8 text-emerald-500 mb-2" />
+                <span className="font-medium text-foreground">No categories match this view</span>
+                <span className="text-[11px] mt-1 text-muted-foreground">
+                  Switch to &ldquo;All shifted&rdquo; or &ldquo;Show all&rdquo; to view other categories.
+                </span>
+              </div>
+            ) : (
+              displayItems.map((item) => {
+                const tierBadge = TIER_BADGES[item.tier];
+                return (
+                  <div
+                    key={item.category.id}
+                    className={cn(
+                      "grid grid-cols-12 items-center rounded-md border p-2 text-xs transition-colors",
+                      getRowClassName(item),
                     )}
+                  >
+                    {/* New Rank */}
+                    <div className="col-span-2 flex items-center gap-1.5 font-mono">
+                      <Badge variant={getRankBadgeVariant(item)} className="h-5 px-1.5 text-[10px]">
+                        #{item.newOrder + 1}
+                      </Badge>
+                    </div>
+
+                    {/* Category Name & Tier */}
+                    <div className="col-span-4 flex min-w-0 items-center gap-1.5 pr-2">
+                      <span className="truncate font-medium">{item.category.name}</span>
+                      <Badge variant={tierBadge.variant} className="h-4 px-1 text-[9px]">
+                        {tierBadge.label}
+                      </Badge>
+                    </div>
+
+                    {/* Rank Delta */}
+                    <div className="col-span-2 flex items-center justify-center">{renderRankDelta(item.rankDelta)}</div>
+
+                    {/* Reason & Details */}
+                    <div className="col-span-4 flex flex-col items-end gap-0.5 text-right text-[11px]">
+                      <span
+                        className={cn(
+                          "truncate",
+                          item.isActiveMove ? "text-foreground font-medium" : "text-muted-foreground",
+                        )}
+                      >
+                        {item.reason}
+                      </span>
+                      {item.previousOrder !== item.newOrder && (
+                        <span className="text-muted-foreground/60 text-[10px] font-mono">
+                          was #{item.previousOrder + 1}
+                          {item.hasMoved && !item.isActiveMove && " (ripple shift)"}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
 
-        <DialogFooter className="border-border/60 bg-muted/20 border-t px-6 py-3">
+        <DialogFooter className="m-0 border-t border-border/60 bg-muted/20 px-6 py-4 flex flex-row items-center justify-end gap-3">
           <Button
             type="button"
             variant="ghost"
@@ -320,7 +373,7 @@ export function CategoryOrganizationDialog({
             ) : (
               <>
                 <Sparkles className="size-3.5" />
-                <span>{hasChanges ? `Apply Changes (${modifiedCount})` : "No Changes Needed"}</span>
+                <span>{hasChanges ? `Apply Reorganization (${activeCount})` : "No Changes Needed"}</span>
               </>
             )}
           </Button>

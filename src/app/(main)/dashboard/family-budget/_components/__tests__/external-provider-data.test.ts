@@ -5,6 +5,7 @@ import {
   archiveExpenseCategory,
   archiveIncomeCategory,
   buildCategoryNormalizationPlan,
+  buildCategoryOrderDiffItems,
   buildFeeTransaction,
   buildFxReconciliationTransaction,
   buildLastTransactionMap,
@@ -15,6 +16,7 @@ import {
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
+  classifyActiveMoversViaLIS,
   classifyCategoryActivity,
   computeAccountLiquiditySummary,
   computeCategoryActivityScores,
@@ -2145,6 +2147,198 @@ describe("expense category lifecycle", () => {
         });
 
         expect(filteredAllTime.map((c) => c.id)).toEqual(["c-dormant"]);
+      });
+    });
+
+    describe("Smart Order & Tier Reorganization Diff Engine (LIS & Tier Context)", () => {
+      describe("classifyActiveMoversViaLIS", () => {
+        it("identifies a single moved-to-top item as active mover and shifts as passive", () => {
+          // Original: [A, B, C, D, E] (origIndex 0, 1, 2, 3, 4)
+          // New: [E, A, B, C, D] (origIndex 4, 0, 1, 2, 3)
+          const items = [
+            { id: "E", origIndex: 4, newIndex: 0 },
+            { id: "A", origIndex: 0, newIndex: 1 },
+            { id: "B", origIndex: 1, newIndex: 2 },
+            { id: "C", origIndex: 2, newIndex: 3 },
+            { id: "D", origIndex: 3, newIndex: 4 },
+          ];
+
+          const activeMovers = classifyActiveMoversViaLIS(items);
+          expect(Array.from(activeMovers)).toEqual(["E"]);
+        });
+
+        it("identifies a single moved-to-bottom item as active mover and shifts as passive", () => {
+          // Original: [A, B, C, D, E] (origIndex 0, 1, 2, 3, 4)
+          // New: [B, C, D, E, A] (origIndex 1, 2, 3, 4, 0)
+          const items = [
+            { id: "B", origIndex: 1, newIndex: 0 },
+            { id: "C", origIndex: 2, newIndex: 1 },
+            { id: "D", origIndex: 3, newIndex: 2 },
+            { id: "E", origIndex: 4, newIndex: 3 },
+            { id: "A", origIndex: 0, newIndex: 4 },
+          ];
+
+          const activeMovers = classifyActiveMoversViaLIS(items);
+          expect(Array.from(activeMovers)).toEqual(["A"]);
+        });
+
+        it("returns empty set when no items moved", () => {
+          const items = [
+            { id: "A", origIndex: 0, newIndex: 0 },
+            { id: "B", origIndex: 1, newIndex: 1 },
+            { id: "C", origIndex: 2, newIndex: 2 },
+          ];
+
+          const activeMovers = classifyActiveMoversViaLIS(items);
+          expect(activeMovers.size).toBe(0);
+        });
+      });
+
+      describe("buildCategoryOrderDiffItems with 4 categories out of tier", () => {
+        it("flags exactly 4 out-of-tier categories as isActiveMove: true, remaining as passive shifts, and formats tier realignment reasons", () => {
+          // 10 Primary categories (PLN default)
+          // 8 in primary tier, 2 out-of-tier placed in foreign section (indices 14 and 16)
+          // 10 Foreign categories
+          // 8 in foreign tier, 2 out-of-tier placed in primary section (indices 2 and 4)
+          const createCat = (id: string, name: string, order: number): ExternalProviderCategory => ({
+            id,
+            name,
+            categoryType: CategoryType.Expense,
+            order,
+          });
+
+          const originalCategories: ExternalProviderCategory[] = [
+            createCat("p0", "Groceries", 0),
+            createCat("p1", "Dining", 1),
+            createCat("f_out1", "Kyiv Trips UAH", 2), // Out of tier (foreign in primary tier)
+            createCat("p2", "Transport", 3),
+            createCat("f_out2", "US Hosting USD", 4), // Out of tier (foreign in primary tier)
+            createCat("p3", "Utilities", 5),
+            createCat("p4", "Health", 6),
+            createCat("p5", "Home", 7),
+            createCat("p6", "Shopping", 8),
+            createCat("p7", "Entertainment", 9),
+            // Foreign range (indices 10..19)
+            createCat("f0", "Berlin EUR", 10),
+            createCat("f1", "London GBP", 11),
+            createCat("f2", "Rome EUR", 12),
+            createCat("f3", "Paris EUR", 13),
+            createCat("p_out1", "Coffee", 14), // Out of tier (primary in foreign tier)
+            createCat("f4", "Tokyo EUR", 15),
+            createCat("p_out2", "Gym Subscription", 16), // Out of tier (primary in foreign tier)
+            createCat("f5", "Swiss CHF", 17),
+            createCat("f6", "Prague CZK", 18),
+            createCat("f7", "Vienna EUR", 19),
+          ];
+
+          // Organize by currency tier (or optimize by activity with tier preservation)
+          const result = organizeExpenseCategoriesByCurrencyTier(originalCategories, "PLN");
+
+          // Build diff items
+          const diffItems = buildCategoryOrderDiffItems(originalCategories, result.updatedCategories, {
+            defaultCurrency: "PLN",
+            strategy: "tier-cleanup",
+          });
+
+          expect(diffItems).toHaveLength(20);
+
+          // Find the active movers
+          const activeMovers = diffItems.filter((item) => item.isActiveMove);
+          const passiveOrStationary = diffItems.filter((item) => !item.isActiveMove);
+
+          // Exactly 4 categories must be flagged as active movers
+          expect(activeMovers.map((m) => m.category.id).sort()).toEqual(
+            ["f_out1", "f_out2", "p_out1", "p_out2"].sort(),
+          );
+
+          // Remaining 16 categories must be passive shifts (or stationary)
+          expect(passiveOrStationary).toHaveLength(16);
+          passiveOrStationary.forEach((item) => {
+            expect(item.isActiveMove).toBe(false);
+          });
+
+          // Verify contextual reason texts for tier realignment
+          const fOut1 = diffItems.find((item) => item.category.id === "f_out1");
+          expect(fOut1?.isActiveMove).toBe(true);
+          expect(fOut1?.reason).toBe("Moved to Foreign tier (UAH)");
+
+          const fOut2 = diffItems.find((item) => item.category.id === "f_out2");
+          expect(fOut2?.isActiveMove).toBe(true);
+          expect(fOut2?.reason).toBe("Moved to Foreign tier (USD)");
+
+          const pOut1 = diffItems.find((item) => item.category.id === "p_out1");
+          expect(pOut1?.isActiveMove).toBe(true);
+          expect(pOut1?.reason).toBe("Promoted to Primary tier (PLN)");
+
+          const pOut2 = diffItems.find((item) => item.category.id === "p_out2");
+          expect(pOut2?.isActiveMove).toBe(true);
+          expect(pOut2?.reason).toBe("Promoted to Primary tier (PLN)");
+
+          // In-tier categories retain their normal tier reason
+          const p0 = diffItems.find((item) => item.category.id === "p0");
+          expect(p0?.isActiveMove).toBe(false);
+          expect(p0?.reason).toBe("Primary default currency tier");
+
+          const f0 = diffItems.find((item) => item.category.id === "f0");
+          expect(f0?.isActiveMove).toBe(false);
+          expect(f0?.reason).toBe("Foreign currency tier");
+        });
+
+        it("works with smart-order strategy keeping activity decay scores for in-tier categories and tier realignment for movers", () => {
+          const createCat = (id: string, name: string, order: number): ExternalProviderCategory => ({
+            id,
+            name,
+            categoryType: CategoryType.Expense,
+            order,
+          });
+
+          const originalCategories: ExternalProviderCategory[] = [
+            createCat("p0", "Groceries", 0),
+            createCat("f_out1", "Travel UAH", 1),
+            createCat("p1", "Dining", 2),
+            createCat("p_out1", "Coffee", 3),
+            createCat("f0", "Hotels EUR", 4),
+          ];
+
+          // scores map
+          const scores = new Map([
+            [
+              "p0",
+              { categoryId: "p0", score: 20, transactionCount: 10, lastActiveTimestamp: null, lastActiveDate: null },
+            ],
+            [
+              "p1",
+              { categoryId: "p1", score: 10, transactionCount: 5, lastActiveTimestamp: null, lastActiveDate: null },
+            ],
+            [
+              "p_out1",
+              { categoryId: "p_out1", score: 5, transactionCount: 2, lastActiveTimestamp: null, lastActiveDate: null },
+            ],
+            [
+              "f0",
+              { categoryId: "f0", score: 8, transactionCount: 4, lastActiveTimestamp: null, lastActiveDate: null },
+            ],
+            [
+              "f_out1",
+              { categoryId: "f_out1", score: 0, transactionCount: 0, lastActiveTimestamp: null, lastActiveDate: null },
+            ],
+          ]);
+
+          const result = optimizeCategoryOrderByActivity(originalCategories, scores, { defaultCurrency: "PLN" });
+          const diffItems = buildCategoryOrderDiffItems(originalCategories, result.updatedCategories, {
+            defaultCurrency: "PLN",
+            scores,
+            strategy: "smart-order",
+          });
+
+          const fOut1 = diffItems.find((item) => item.category.id === "f_out1");
+          expect(fOut1?.isActiveMove).toBe(true);
+          expect(fOut1?.reason).toBe("Moved to Foreign tier (UAH)");
+
+          // In-tier category p0 should retain score reason
+          const p0 = diffItems.find((item) => item.category.id === "p0");
+          expect(p0?.reason).toBe("10 transactions, score 20.0");
+        });
       });
     });
   });
