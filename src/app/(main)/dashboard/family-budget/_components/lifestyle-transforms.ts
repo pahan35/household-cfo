@@ -825,7 +825,11 @@ export function detectTravelEpisodes(input: {
     isAnchor: boolean;
   }
 
-  function evaluateCluster(clusterTxs: ExternalProviderTransaction[], hasBookendHint: boolean): CandidateCluster {
+  function evaluateCluster(
+    clusterTxs: ExternalProviderTransaction[],
+    hasBookendHint: boolean,
+    explicitBookendDates: number[],
+  ): CandidateCluster {
     const startDate = getTransactionDate(clusterTxs[0]);
     const endDate = getTransactionDate(clusterTxs[clusterTxs.length - 1]);
     const durationMs = endDate.getTime() - startDate.getTime();
@@ -842,19 +846,30 @@ export function detectTravelEpisodes(input: {
       // Bookended clusters (#travel / #end-travel) are always valid stay anchors
       isAnchor = true;
     } else {
-      // Un-bookended heuristic anchor requires:
-      // 1. Spanning multiple calendar days (durationMs >= 86,400,000)
-      // 2. At least 2 transactions
-      // 3. Travel/on-site spending (foreign currency or travel category)
-      const hasTravelSpending = clusterTxs.some((tx) => {
-        const { currency } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
-        if (currency !== defaultCurrency.toUpperCase()) return true;
-        const c = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
-        return c?.name ? TRAVEL_CATEGORY_REGEX.test(c.name) : false;
+      // Strict explicit bookend precedence:
+      // If a cluster lacks explicit bookends but occurs within 300 days prior to an upcoming
+      // explicit bookend for the same destination tag, designate it as pre-booking rather than
+      // promoting it to an independent un-bookended stay anchor.
+      const hasUpcomingBookend = explicitBookendDates.some((bTime) => {
+        const daysPrior = (bTime - startDate.getTime()) / (1000 * 3600 * 24);
+        return bTime >= endDate.getTime() && daysPrior <= 300;
       });
 
-      if (durationMs >= 86400000 && clusterTxs.length >= 2 && hasTravelSpending) {
-        isAnchor = true;
+      if (!hasUpcomingBookend) {
+        // Un-bookended heuristic anchor requires:
+        // 1. Spanning multiple calendar days (durationMs >= 86,400,000)
+        // 2. At least 2 transactions
+        // 3. Travel/on-site spending (foreign currency or travel category)
+        const hasTravelSpending = clusterTxs.some((tx) => {
+          const { currency } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
+          if (currency !== defaultCurrency.toUpperCase()) return true;
+          const c = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
+          return c?.name ? TRAVEL_CATEGORY_REGEX.test(c.name) : false;
+        });
+
+        if (durationMs >= 86400000 && clusterTxs.length >= 2 && hasTravelSpending) {
+          isAnchor = true;
+        }
       }
     }
 
@@ -872,6 +887,14 @@ export function detectTravelEpisodes(input: {
   for (const [destTag, allTxs] of destinationTxMap.entries()) {
     // Sort chronologically
     allTxs.sort((a, b) => getTransactionDate(a).getTime() - getTransactionDate(b).getTime());
+
+    // Identify explicit bookends (#travel / #end-travel) for this destination tag
+    const explicitBookendDates: number[] = allTxs
+      .filter((tx) => {
+        const tags = (tx.tags ?? []).map((t) => normalizeLifestyleTag(String(t)));
+        return tags.includes("travel") || tags.includes("end-travel");
+      })
+      .map((tx) => getTransactionDate(tx).getTime());
 
     // 1. Group transactions into contiguous candidate clusters
     const clusters: CandidateCluster[] = [];
@@ -894,7 +917,7 @@ export function detectTravelEpisodes(input: {
         // (or 30 days if inside a bookended trip)
         const maxGap = inBookendedTrip ? 30 : 14;
         if (isStart || gapDays > maxGap) {
-          clusters.push(evaluateCluster(currentTxs, inBookendedTrip));
+          clusters.push(evaluateCluster(currentTxs, inBookendedTrip, explicitBookendDates));
           currentTxs = [];
           inBookendedTrip = false;
         }
@@ -907,14 +930,14 @@ export function detectTravelEpisodes(input: {
       currentTxs.push(tx);
 
       if (isEnd) {
-        clusters.push(evaluateCluster(currentTxs, true));
+        clusters.push(evaluateCluster(currentTxs, true, explicitBookendDates));
         currentTxs = [];
         inBookendedTrip = false;
       }
     }
 
     if (currentTxs.length > 0) {
-      clusters.push(evaluateCluster(currentTxs, inBookendedTrip));
+      clusters.push(evaluateCluster(currentTxs, inBookendedTrip, explicitBookendDates));
     }
 
     // 2. Identify anchors and gather pre-bookings

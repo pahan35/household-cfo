@@ -46,10 +46,10 @@ const CYRILLIC_UAH_REGEX = /(?:грн|гривн[ая]|приват|моно)/i;
 /**
  * Resolves the currency code from a ExternalProvider category entity, string name, or fallback.
  * Follows strict priority:
- * 1. `category.currencyId` if non-empty
- * 2. Trailing uppercase 3-letter ISO code matching known currency list
- * 3. Legacy Cyrillic account/category heuristics -> "UAH"
- * 4. Fallback to default currency ("PLN")
+ * 1. Category name trailing uppercase 3-letter ISO code or legacy Cyrillic match,
+ *    when `category.currencyId` is missing or matches the default currency ("PLN") placeholder.
+ * 2. `category.currencyId` if non-empty and not a default placeholder being overridden by an explicit name suffix
+ * 3. Fallback to default currency ("PLN")
  */
 export function resolveCategoryCurrency(
   category: ExternalProviderCategory | string | null | undefined,
@@ -79,11 +79,28 @@ export function resolveCategoryCurrency(
     return normDefault;
   }
 
-  if (typeof category.currencyId === "string" && category.currencyId.trim().length > 0) {
-    return category.currencyId.trim().toUpperCase();
-  }
+  const rawCurrencyId = typeof category.currencyId === "string" ? category.currencyId.trim().toUpperCase() : "";
+  const isDefaultPlaceholder =
+    !rawCurrencyId || rawCurrencyId === "PLN" || (normDefault.length > 0 && rawCurrencyId === normDefault);
 
   const name = category.name ? category.name.trim() : "";
+  if (name && isDefaultPlaceholder) {
+    const match = name.match(TRAILING_CURRENCY_CODE_REGEX);
+    if (match) {
+      const code = match[1].toUpperCase();
+      if (KNOWN_CURRENCY_SET.has(code)) {
+        return code;
+      }
+    }
+    if (CYRILLIC_UAH_REGEX.test(name)) {
+      return "UAH";
+    }
+  }
+
+  if (rawCurrencyId) {
+    return rawCurrencyId;
+  }
+
   if (name) {
     const match = name.match(TRAILING_CURRENCY_CODE_REGEX);
     if (match) {
@@ -184,8 +201,13 @@ export function resolveTransactionMoney(
       ? tx.destinationCurrencyId.trim().toUpperCase()
       : resolveCategoryCurrency(destEntity, normDefault);
 
-  const sourceRaw = tx.sourceAmount != null ? Math.abs(Number(tx.sourceAmount)) : 0;
-  const destRaw = tx.destinationAmount != null ? Math.abs(Number(tx.destinationAmount)) : sourceRaw;
+  const rawSource = tx.sourceAmount != null ? Math.abs(Number(tx.sourceAmount)) : undefined;
+  const rawDest = tx.destinationAmount != null ? Math.abs(Number(tx.destinationAmount)) : undefined;
+  const rawDefault = tx.defaultAmount != null ? Math.abs(Number(tx.defaultAmount)) : undefined;
+
+  const fallbackAmount = rawDest ?? rawSource ?? rawDefault ?? 0;
+  const sourceRaw = rawSource ?? fallbackAmount;
+  const destRaw = rawDest ?? fallbackAmount;
 
   const sourceMoney: MoneyAmount = {
     amount: sourceRaw,
@@ -211,20 +233,27 @@ export function resolveTransactionMoney(
     // If destination is default currency (e.g. Taxi PLN) but source is foreign (e.g. EUR Card),
     // foreign source takes precedence as the primary monetary amount.
     if (destCurrency === normDefault && sourceCurrency !== normDefault) {
-      primaryMoney = sourceMoney;
+      primaryMoney = sourceMoney.amount > 0 ? sourceMoney : destMoney;
     } else {
-      primaryMoney = destMoney;
+      primaryMoney = destMoney.amount > 0 ? destMoney : sourceMoney;
     }
   } else if (isIncome) {
     // For income, source is the income category (e.g. $5,000 USD from Client ACME)
     if (sourceCurrency !== normDefault || destCurrency === normDefault) {
-      primaryMoney = sourceMoney;
+      primaryMoney = sourceMoney.amount > 0 ? sourceMoney : destMoney;
     } else {
-      primaryMoney = destMoney;
+      primaryMoney = destMoney.amount > 0 ? destMoney : sourceMoney;
     }
   } else {
-    // For transfers: destination is received amount, unless missing
-    primaryMoney = destMoney.amount > 0 ? destMoney : sourceMoney;
+    // For transfers: if one side represents a foreign currency relative to default currency,
+    // preserve that foreign side as primary (e.g. Kantor USD destination, or foreign account source).
+    if (destCurrency !== normDefault && sourceCurrency === normDefault) {
+      primaryMoney = destMoney.amount > 0 ? destMoney : sourceMoney;
+    } else if (sourceCurrency !== normDefault && destCurrency === normDefault) {
+      primaryMoney = sourceMoney.amount > 0 ? sourceMoney : destMoney;
+    } else {
+      primaryMoney = destMoney.amount > 0 ? destMoney : sourceMoney;
+    }
   }
 
   return {

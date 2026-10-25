@@ -11,11 +11,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 import type { ExternalProviderCategory, ExternalProviderTransaction } from "../../_components/external-provider-data";
 import { ExternalProviderIcon } from "../../_components/external-provider-icons";
-import { resolveCategoryCurrency, resolveTransactionMoney } from "../../_components/external-provider-money";
-import { getTransactionDate } from "../../_components/lifestyle-transforms";
+import { resolveCategoryCurrency } from "../../_components/external-provider-money";
+import { getConvertedTransactionAmount, getTransactionDate } from "../../_components/lifestyle-transforms";
 import { MoneyValue } from "../../_components/money-value";
 import { useLifestyleData } from "../use-lifestyle-data";
 
@@ -70,6 +71,8 @@ const TRANSIT_KEYWORDS = [
   "pociag",
   "autobus",
 ];
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 /**
  * Evaluates a transaction's likelihood of being a travel boundary (trip start or end)
@@ -196,6 +199,8 @@ export function TravelBookendAssistant({ className, defaultDestinationTag = "" }
   const { transactions, categoryMap, currencies, defaultCurrency, updateTxTags } = useLifestyleData();
 
   const [currentDate, setCurrentDate] = useState(() => new Date());
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [pickerYear, setPickerYear] = useState(() => currentDate.getFullYear());
   const [destinationTag, setDestinationTag] = useState(defaultDestinationTag);
   const [showOnlyScored, setShowOnlyScored] = useState(true);
   const [submittingTxId, setSubmittingTxId] = useState<string | null>(null);
@@ -206,6 +211,25 @@ export function TravelBookendAssistant({ className, defaultDestinationTag = "" }
 
   const handlePrevMonth = () => setCurrentDate((prev) => subMonths(prev, 1));
   const handleNextMonth = () => setCurrentDate((prev) => addMonths(prev, 1));
+
+  const handleOpenChange = (open: boolean) => {
+    setIsPickerOpen(open);
+    if (open) {
+      setPickerYear(currentDate.getFullYear());
+    }
+  };
+
+  const handleSelectMonth = (monthIndex: number) => {
+    setCurrentDate(new Date(pickerYear, monthIndex, 1));
+    setIsPickerOpen(false);
+  };
+
+  const handleJumpToToday = () => {
+    const today = new Date();
+    setCurrentDate(today);
+    setPickerYear(today.getFullYear());
+    setIsPickerOpen(false);
+  };
 
   // Transactions in current month
   const scoredCandidates = useMemo(() => {
@@ -275,10 +299,85 @@ export function TravelBookendAssistant({ className, defaultDestinationTag = "" }
             >
               <ChevronLeft className="size-3.5" />
             </Button>
-            <div className="flex items-center gap-1 px-2 font-mono text-xs font-semibold">
-              <Calendar className="size-3.5 text-muted-foreground" />
-              <span>{format(currentDate, "MMMM yyyy")}</span>
-            </div>
+
+            <Popover open={isPickerOpen} onOpenChange={handleOpenChange}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 font-mono text-xs font-semibold hover:bg-muted"
+                  aria-label="Select month and year"
+                >
+                  <Calendar className="size-3.5 text-muted-foreground" />
+                  <span>{format(currentDate, "MMMM yyyy")}</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-64 p-3" align="center">
+                <div className="flex flex-col gap-2">
+                  {/* Year Stepper */}
+                  <div className="flex items-center justify-between pb-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-7"
+                      onClick={() => setPickerYear((y) => y - 1)}
+                      aria-label="Previous year"
+                    >
+                      <ChevronLeft className="size-3.5" />
+                    </Button>
+                    <span className="font-semibold text-xs font-mono">{pickerYear}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-7"
+                      onClick={() => setPickerYear((y) => y + 1)}
+                      aria-label="Next year"
+                    >
+                      <ChevronRight className="size-3.5" />
+                    </Button>
+                  </div>
+
+                  {/* 3x4 Month Grid */}
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {MONTH_NAMES.map((m, idx) => {
+                      const isSelected = currentDate.getFullYear() === pickerYear && currentDate.getMonth() === idx;
+                      return (
+                        <Button
+                          key={m}
+                          type="button"
+                          size="sm"
+                          variant={isSelected ? "default" : "outline"}
+                          className={cn(
+                            "h-7 text-xs font-normal",
+                            isSelected && "bg-primary text-primary-foreground font-semibold",
+                          )}
+                          onClick={() => handleSelectMonth(idx)}
+                        >
+                          {m}
+                        </Button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Jump to Today Shortcut */}
+                  <div className="border-t pt-2 mt-1">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      className="w-full text-xs text-muted-foreground hover:text-foreground"
+                      onClick={handleJumpToToday}
+                    >
+                      Jump to Today
+                    </Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+
             <Button
               type="button"
               variant="outline"
@@ -396,11 +495,17 @@ export function TravelBookendAssistant({ className, defaultDestinationTag = "" }
                   <div className="flex items-center justify-between gap-3 sm:justify-end">
                     <div className="text-right">
                       {(() => {
-                        const txMoney = resolveTransactionMoney(tx, categoryMap, undefined, defaultCurrency);
+                        const { nativeAmount, currency, convertedAmount } = getConvertedTransactionAmount(
+                          tx,
+                          defaultCurrency,
+                          currencies,
+                          categoryMap,
+                        );
                         return (
                           <MoneyValue
-                            amount={txMoney.primary.amount}
-                            currency={txMoney.primary.currency}
+                            amount={nativeAmount}
+                            currency={currency}
+                            convertedAmount={convertedAmount}
                             reportingCurrency={defaultCurrency}
                             currencies={currencies}
                             mode="ledger"

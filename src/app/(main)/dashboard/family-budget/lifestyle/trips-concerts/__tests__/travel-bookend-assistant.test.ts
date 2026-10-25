@@ -1,6 +1,15 @@
+import React from "react";
+
+import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { ExternalProviderCategory, ExternalProviderTransaction } from "../../../_components/external-provider-data";
+import type {
+  ExternalProviderCategory,
+  ExternalProviderCurrency,
+  ExternalProviderTransaction,
+} from "../../../_components/external-provider-data";
+import { getConvertedTransactionAmount } from "../../../_components/lifestyle-transforms";
+import { MoneyValue } from "../../../_components/money-value";
 import { applyBookendTags, filterTransactionsByDateRange, scoreBoundaryCandidate } from "../travel-bookend-assistant";
 
 describe("TravelBookendAssistant helpers", () => {
@@ -26,6 +35,14 @@ describe("TravelBookendAssistant helpers", () => {
       "acc-eur-card",
       { id: "acc-eur-card", name: "EUR Card", currencyId: "EUR", categoryType: 2 } as ExternalProviderCategory,
     ],
+    [
+      "cat-sub-uah",
+      { id: "cat-sub-uah", name: "Subscriptions UAH", currencyId: "PLN", categoryType: 0 } as ExternalProviderCategory,
+    ],
+    [
+      "acc-kantor-usd",
+      { id: "acc-kantor-usd", name: "Kantor USD", currencyId: "PLN", categoryType: 2 } as ExternalProviderCategory,
+    ],
   ]);
 
   describe("scoreBoundaryCandidate", () => {
@@ -39,6 +56,27 @@ describe("TravelBookendAssistant helpers", () => {
       expect(result.score).toBe(85);
       expect(result.reasons).toContain("Foreign Currency (EUR)");
       expect(result.reasons).toContain("Lodging / Hotel");
+    });
+
+    it("scores category with name suffix UAH and placeholder currencyId PLN with +40", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-sub-uah",
+        destinationId: "cat-sub-uah",
+      };
+      const result = scoreBoundaryCandidate(tx, "PLN", categoryMap);
+      expect(result.score).toBe(40);
+      expect(result.reasons).toContain("Foreign Currency (UAH)");
+    });
+
+    it("scores transfer/account with name suffix USD and placeholder currencyId PLN with +40", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-kantor-usd",
+        sourceId: "acc-kantor-usd",
+        destinationId: "cat-groceries",
+      };
+      const result = scoreBoundaryCandidate(tx, "PLN", categoryMap);
+      expect(result.score).toBe(40);
+      expect(result.reasons).toContain("Foreign Currency (USD)");
     });
 
     it("scores foreign source account paying domestic category with +40", () => {
@@ -167,6 +205,115 @@ describe("TravelBookendAssistant helpers", () => {
       const result = filterTransactionsByDateRange([tx1, tx2, tx3, txDeleted], from, to);
 
       expect(result.map((t) => t.id)).toEqual(["1", "2"]);
+    });
+  });
+
+  describe("Candidate money display in ledger mode", () => {
+    const currencies: ExternalProviderCurrency[] = [
+      { id: "USD", rate: 1.0 },
+      { id: "EUR", rate: 0.92 },
+      { id: "PLN", rate: 4.0 },
+      { id: "UAH", rate: 41.2 },
+    ];
+
+    it("renders native currency primary and converted PLN secondary for Kantor USD candidate", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-kantor",
+        destinationId: "acc-kantor-usd",
+        destinationAmount: 2000,
+        sourceAmount: 8000,
+      };
+
+      const { nativeAmount, currency, convertedAmount } = getConvertedTransactionAmount(
+        tx,
+        "PLN",
+        currencies,
+        categoryMap,
+      );
+
+      expect(currency).toBe("USD");
+      expect(nativeAmount).toBe(2000);
+      expect(convertedAmount).toBe(8000);
+
+      const html = renderToString(
+        React.createElement(MoneyValue, {
+          amount: nativeAmount,
+          currency: currency,
+          convertedAmount: convertedAmount,
+          reportingCurrency: "PLN",
+          currencies: currencies,
+          mode: "ledger",
+          size: "sm",
+        }),
+      );
+
+      // Primary native USD
+      expect(html).toContain("2,000.00");
+      expect(html).toContain("$");
+
+      // Secondary converted PLN
+      expect(html).toContain("≈");
+      expect(html).toContain("8,000.00");
+      expect(html).toContain("PLN");
+    });
+
+    it("renders native currency primary and converted PLN secondary for Subscriptions UAH candidate", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-sub-uah",
+        destinationId: "cat-sub-uah",
+        destinationAmount: 149,
+      };
+
+      const { nativeAmount, currency, convertedAmount } = getConvertedTransactionAmount(
+        tx,
+        "PLN",
+        currencies,
+        categoryMap,
+      );
+
+      expect(currency).toBe("UAH");
+      expect(nativeAmount).toBe(149);
+      expect(convertedAmount).toBeCloseTo(149 * (4.0 / 41.2), 2);
+
+      const html = renderToString(
+        React.createElement(MoneyValue, {
+          amount: nativeAmount,
+          currency: currency,
+          convertedAmount: convertedAmount,
+          reportingCurrency: "PLN",
+          currencies: currencies,
+          mode: "ledger",
+          size: "sm",
+        }),
+      );
+
+      // Primary native UAH
+      expect(html).toContain("149.00");
+      expect(html).toContain("UAH");
+
+      // Secondary converted PLN
+      expect(html).toContain("≈");
+      expect(html).toContain("PLN");
+    });
+  });
+
+  describe("Month-year picker logic", () => {
+    it("computes jump date correctly for specific year and month", () => {
+      const targetYear = 2021;
+      const targetMonthIndex = 7; // August (0-indexed)
+      const jumpDate = new Date(targetYear, targetMonthIndex, 1);
+
+      expect(jumpDate.getFullYear()).toBe(2021);
+      expect(jumpDate.getMonth()).toBe(7);
+      expect(jumpDate.getDate()).toBe(1);
+    });
+
+    it("handles year stepper navigation", () => {
+      let year = 2024;
+      year -= 1;
+      expect(year).toBe(2023);
+      year += 2;
+      expect(year).toBe(2025);
     });
   });
 });

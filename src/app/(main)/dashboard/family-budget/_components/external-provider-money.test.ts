@@ -16,7 +16,7 @@ import {
 
 describe("external-provider-money", () => {
   describe("resolveCategoryCurrency", () => {
-    it("prioritizes category.currencyId over category name suffix", () => {
+    it("prioritizes category.currencyId over category name suffix when non-default currency", () => {
       const cat: ExternalProviderCategory = {
         id: "cat-1",
         name: "Hotels USD",
@@ -24,6 +24,24 @@ describe("external-provider-money", () => {
         categoryType: CategoryType.Expense,
       };
       expect(resolveCategoryCurrency(cat)).toBe("EUR");
+    });
+
+    it("prioritizes explicit name suffix when currencyId is default PLN placeholder", () => {
+      const cat1: ExternalProviderCategory = {
+        id: "cat-sub-uah",
+        name: "Subscriptions UAH",
+        currencyId: "PLN",
+        categoryType: CategoryType.Expense,
+      };
+      expect(resolveCategoryCurrency(cat1, "PLN")).toBe("UAH");
+
+      const cat2: ExternalProviderCategory = {
+        id: "acc-kantor-usd",
+        name: "Kantor USD",
+        currencyId: "PLN",
+        categoryType: CategoryType.Account,
+      };
+      expect(resolveCategoryCurrency(cat2, "PLN")).toBe("USD");
     });
 
     it("extracts 3-letter uppercase currency suffix from category name", () => {
@@ -241,6 +259,49 @@ describe("external-provider-money", () => {
       expect(result.source).toEqual({ amount: 5000, currency: "USD" });
       expect(result.destination).toEqual({ amount: 20250, currency: "PLN" });
       expect(result.primary).toEqual({ amount: 5000, currency: "USD" });
+    });
+
+    it("preserves foreign currency side as primary in cross-currency transfers", () => {
+      const txToUsd: ExternalProviderTransaction = {
+        id: "tx-transfer-to-usd",
+        sourceId: "acc-pln",
+        destinationId: "acc-usd",
+        sourceAmount: 8000,
+        destinationAmount: 2000,
+      };
+
+      const resultToUsd = resolveTransactionMoney(txToUsd, categoryMap, undefined, "PLN");
+      expect(resultToUsd.source).toEqual({ amount: 8000, currency: "PLN" });
+      expect(resultToUsd.destination).toEqual({ amount: 2000, currency: "USD" });
+      expect(resultToUsd.primary).toEqual({ amount: 2000, currency: "USD" });
+
+      const txFromUsd: ExternalProviderTransaction = {
+        id: "tx-transfer-from-usd",
+        sourceId: "acc-usd",
+        destinationId: "acc-pln",
+        sourceAmount: 2000,
+        destinationAmount: 8000,
+      };
+
+      const resultFromUsd = resolveTransactionMoney(txFromUsd, categoryMap, undefined, "PLN");
+      expect(resultFromUsd.source).toEqual({ amount: 2000, currency: "USD" });
+      expect(resultFromUsd.destination).toEqual({ amount: 8000, currency: "PLN" });
+      expect(resultFromUsd.primary).toEqual({ amount: 2000, currency: "USD" });
+    });
+
+    it("falls back across destination/source amounts when one side is missing", () => {
+      const txMissingSource: ExternalProviderTransaction = {
+        id: "tx-missing-source",
+        sourceId: "acc-eur",
+        destinationId: "cat-hotel",
+        sourceAmount: undefined,
+        destinationAmount: 120,
+      };
+
+      const result = resolveTransactionMoney(txMissingSource, categoryMap, undefined, "PLN");
+      expect(result.source).toEqual({ amount: 120, currency: "EUR" });
+      expect(result.destination).toEqual({ amount: 120, currency: "EUR" });
+      expect(result.primary).toEqual({ amount: 120, currency: "EUR" });
     });
   });
 

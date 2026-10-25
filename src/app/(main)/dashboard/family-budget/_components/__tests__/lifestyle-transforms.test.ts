@@ -553,6 +553,105 @@ describe("lifestyle-transforms", () => {
       expect(maldives.transactionCount).toBe(5);
     });
 
+    it("gives explicit bookends precedence over pre-booking clusters (Madeira Oct/Nov regression)", () => {
+      const madeiraTxs: ExternalProviderTransaction[] = [
+        // 5 October pre-booking transactions (total PLN 8,978.83)
+        {
+          id: "tx-mad-pre-1",
+          destinationId: "cat-transport",
+          destinationAmount: 2500,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira"],
+          dateTimestamp: new Date("2023-10-10").getTime(),
+        },
+        {
+          id: "tx-mad-pre-2",
+          destinationId: "cat-hotel",
+          destinationAmount: 1800,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira"],
+          dateTimestamp: new Date("2023-10-12").getTime(),
+        },
+        {
+          id: "tx-mad-pre-3",
+          destinationId: "cat-transport",
+          destinationAmount: 1200,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira"],
+          dateTimestamp: new Date("2023-10-15").getTime(),
+        },
+        {
+          id: "tx-mad-pre-4",
+          destinationId: "cat-hotel",
+          destinationAmount: 1478.83,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira"],
+          dateTimestamp: new Date("2023-10-20").getTime(),
+        },
+        {
+          id: "tx-mad-pre-5",
+          destinationId: "cat-hotel",
+          destinationAmount: 2000,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira"],
+          dateTimestamp: new Date("2023-10-24").getTime(),
+        },
+        // November on-site trip with explicit #travel and #end-travel (total PLN 8,016.53)
+        {
+          id: "tx-mad-onsite-start",
+          destinationId: "cat-transport",
+          destinationAmount: 3000,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira", "travel"],
+          dateTimestamp: new Date("2023-11-09").getTime(),
+        },
+        {
+          id: "tx-mad-onsite-mid",
+          destinationId: "cat-hotel",
+          destinationAmount: 2016.53,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira"],
+          dateTimestamp: new Date("2023-11-15").getTime(),
+        },
+        {
+          id: "tx-mad-onsite-end",
+          destinationId: "cat-transport",
+          destinationAmount: 3000,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["madeira", "end-travel"],
+          dateTimestamp: new Date("2023-11-22").getTime(),
+        },
+      ];
+
+      const episodes = detectTravelEpisodes({
+        transactions: madeiraTxs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      // Strict precedence: pre-booking cluster folds into November episode; zero duplicate October episodes
+      expect(episodes.length).toBe(1);
+      const episode = episodes[0];
+      expect(episode.destinationTag).toBe("madeira");
+      expect(episode.name).toContain("Madeira (Nov 2023)");
+      expect(episode.startDate).toBe("2023-11-09");
+      expect(episode.endDate).toBe("2023-11-22");
+      expect(episode.preBookingTotal).toBe(8978.83);
+      expect(episode.onSiteTotal).toBe(8016.53);
+      expect(episode.totalCost).toBe(16995.36);
+      expect(episode.preBookingTransactions.length).toBe(5);
+      expect(episode.onSiteTransactions.length).toBe(3);
+    });
+
     it("excludes recurring tax and subscription tags from spawning travel episodes", () => {
       const recurringTxs: ExternalProviderTransaction[] = [
         // Taxes (#zus, #vat-7, #ppe) across multiple months
