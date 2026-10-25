@@ -75,7 +75,7 @@ export function TaxAuditCard({
   return (
     <SectionShell
       title="Missing Tax Tag Audit"
-      description="Tax transactions lacking recognized tags (#pit, #zus, #health, #vat, #belka)"
+      description="Tax transactions lacking recognized tags (#PPE, #zus, #health, #VAT-7, #belka)"
       action={
         !isLoading ? (
           untaggedTransactions.length > 0 ? (
@@ -151,7 +151,7 @@ export function TaxAuditCard({
                   <SelectContent position="popper" align="end">
                     {KNOWN_TAX_BUCKETS.map((b) => (
                       <SelectItem key={b.canonicalTag} value={b.canonicalTag} className="text-xs">
-                        #{b.canonicalTag} ({b.id.toUpperCase()})
+                        #{b.canonicalTag} ({b.id === "vat" ? "VAT-7" : b.id.toUpperCase()})
                       </SelectItem>
                     ))}
                   </SelectContent>

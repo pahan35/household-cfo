@@ -19,10 +19,11 @@ export interface TaxTagBucket {
 
 export const KNOWN_TAX_BUCKETS: TaxTagBucket[] = [
   {
-    id: "pit",
-    label: "Personal Income Tax (PIT)",
-    canonicalTag: "pit",
+    id: "ppe",
+    label: "Flat-rate Income Tax (PPE)",
+    canonicalTag: "PPE",
     matches: [
+      "ppe",
       "pit",
       "income-tax",
       "income_tax",
@@ -46,9 +47,9 @@ export const KNOWN_TAX_BUCKETS: TaxTagBucket[] = [
   },
   {
     id: "vat",
-    label: "Value Added Tax (VAT)",
-    canonicalTag: "vat",
-    matches: ["vat", "ptun", "ндс"],
+    label: "Value Added Tax (VAT-7)",
+    canonicalTag: "VAT-7",
+    matches: ["vat-7", "vat7", "vat", "ptun", "ндс"],
   },
   {
     id: "capital-gains",
@@ -85,7 +86,11 @@ export function matchTaxBucket(tag: string): TaxTagBucket | null {
   if (!normalized) return null;
 
   for (const bucket of KNOWN_TAX_BUCKETS) {
-    if (bucket.matches.includes(normalized) || bucket.canonicalTag === normalized || bucket.id === normalized) {
+    if (
+      bucket.matches.includes(normalized) ||
+      bucket.canonicalTag.toLowerCase() === normalized ||
+      bucket.id.toLowerCase() === normalized
+    ) {
       return bucket;
     }
   }
@@ -691,5 +696,397 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
     coverageRatio,
     netSurplus,
     incomeSources,
+  };
+}
+
+export type TaxTimelineTimingMode = "cash" | "accrual";
+
+export interface IncomeTaxTimelinePoint {
+  monthKey: string;
+  monthLabel: string;
+  grossIncome: number;
+  incomeBySource: Record<string, number>;
+  ppe: number;
+  health: number;
+  grossZus: number;
+  pfronCashback: number;
+  netZus: number;
+  passThroughVat: number;
+  otherPersonalTaxes: number;
+  totalPersonalTaxes: number;
+  effectiveTaxRate: number;
+  netYield: number;
+}
+
+export interface IncomeSourceFilterItem {
+  id: string;
+  name: string;
+  currency: string;
+  totalConverted: number;
+}
+
+export interface IncomeTaxTimelineResult {
+  points: IncomeTaxTimelinePoint[];
+  availableSources: IncomeSourceFilterItem[];
+  timingMode: TaxTimelineTimingMode;
+  totalSelectedGross: number;
+  totalPersonalTaxes: number;
+  overallEffectiveRate: number;
+}
+
+export interface ComputeIncomeTaxTimelineInput {
+  transactions: ExternalProviderTransaction[];
+  categories: ExternalProviderCategory[];
+  currencies: ExternalProviderCurrency[];
+  defaultCurrency: string;
+  taxCategoryIds?: Iterable<string>;
+  timingMode?: TaxTimelineTimingMode;
+  selectedSourceIds?: string[] | Set<string> | null;
+}
+
+/**
+ * Extracts "yyyy-MM" from a ExternalProvider transaction.
+ */
+export function getTransactionMonthKey(tx: ExternalProviderTransaction): string | null {
+  if (tx.dateTimestampISO) {
+    const match = /^(\d{4}-\d{2})/.exec(tx.dateTimestampISO);
+    if (match) return match[1];
+  }
+  if (typeof tx.dateTimestamp === "number" && !isNaN(tx.dateTimestamp) && tx.dateTimestamp > 0) {
+    try {
+      return format(new Date(tx.dateTimestamp), "yyyy-MM");
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Computes previous month key "yyyy-MM" (M - 1).
+ */
+export function getPreviousMonthKey(monthKey: string): string {
+  const [yearStr, monthStr] = monthKey.split("-");
+  let year = parseInt(yearStr, 10);
+  let month = parseInt(monthStr, 10);
+  month -= 1;
+  if (month === 0) {
+    month = 12;
+    year -= 1;
+  }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * Formats "yyyy-MM" into human-friendly label like "Jan 2024".
+ */
+export function formatMonthLabel(monthKey: string): string {
+  const [yearStr, monthStr] = monthKey.split("-");
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  if (isNaN(year) || isNaN(month)) return monthKey;
+  const date = new Date(year, month - 1, 1);
+  return format(date, "MMM yyyy");
+}
+
+/**
+ * Aggregates historical transactions chronologically into monthly timeline points:
+ * - Isolates client gross income by source (excluding PFRON cashback rebates)
+ * - Computes PPE, Health, Gross ZUS, and nets PFRON cashback against ZUS (Net ZUS)
+ * - Supports Cash Basis (taxes in payment month M) vs. Accrual Basis (taxes shifted to M - 1)
+ * - Dynamically recalculates selected gross and effective tax rate when sources are filtered
+ */
+export function computeIncomeTaxTimeline(input: ComputeIncomeTaxTimelineInput): IncomeTaxTimelineResult {
+  const { transactions, categories, currencies, defaultCurrency } = input;
+  const timingMode: TaxTimelineTimingMode = input.timingMode ?? "cash";
+
+  const categoryMap = new Map(categories.map((c) => [c.id, c]));
+  const taxIdSet = input.taxCategoryIds
+    ? input.taxCategoryIds instanceof Set
+      ? input.taxCategoryIds
+      : new Set(input.taxCategoryIds)
+    : getTaxCategoryIds(categories);
+
+  const selectedSourcesSet = input.selectedSourceIds
+    ? input.selectedSourceIds instanceof Set
+      ? input.selectedSourceIds
+      : new Set(input.selectedSourceIds)
+    : null;
+
+  const isSourceSelected = (sourceId: string) => selectedSourcesSet === null || selectedSourcesSet.has(sourceId);
+
+  interface RawMonthData {
+    incomesBySource: Map<string, number>;
+    ppe: number;
+    health: number;
+    grossZus: number;
+    pfronCashback: number;
+    passThroughVat: number;
+    otherPersonalTaxes: number;
+  }
+
+  const rawMonthMap = new Map<string, RawMonthData>();
+
+  function getOrCreateMonthData(m: string): RawMonthData {
+    let entry = rawMonthMap.get(m);
+    if (!entry) {
+      entry = {
+        incomesBySource: new Map(),
+        ppe: 0,
+        health: 0,
+        grossZus: 0,
+        pfronCashback: 0,
+        passThroughVat: 0,
+        otherPersonalTaxes: 0,
+      };
+      rawMonthMap.set(m, entry);
+    }
+    return entry;
+  }
+
+  const availableSourcesMap = new Map<string, IncomeSourceFilterItem>();
+
+  for (const tx of transactions) {
+    if (tx.deleted) continue;
+    const monthKey = getTransactionMonthKey(tx);
+    if (!monthKey) continue;
+
+    const nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
+    const currency = (tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? defaultCurrency).toUpperCase();
+    const converted = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
+
+    // 1. Tax payment
+    if (tx.destinationId && taxIdSet.has(tx.destinationId)) {
+      const matchedBucketIds = new Set<string>();
+      if (Array.isArray(tx.tags) && tx.tags.length > 0) {
+        for (const rawTag of tx.tags) {
+          if (typeof rawTag === "string") {
+            const matched = matchTaxBucket(rawTag);
+            if (matched) {
+              matchedBucketIds.add(matched.id);
+            }
+          }
+        }
+      }
+
+      const monthData = getOrCreateMonthData(monthKey);
+      if (matchedBucketIds.size === 0) {
+        monthData.otherPersonalTaxes += converted;
+      } else {
+        const share = converted / matchedBucketIds.size;
+        for (const bucketId of matchedBucketIds) {
+          if (bucketId === "vat") {
+            monthData.passThroughVat += share;
+          } else if (bucketId === "zus") {
+            monthData.grossZus += share;
+          } else if (bucketId === "ppe") {
+            monthData.ppe += share;
+          } else if (bucketId === "health") {
+            monthData.health += share;
+          } else {
+            monthData.otherPersonalTaxes += share;
+          }
+        }
+      }
+      continue;
+    }
+
+    // 2. Income stream
+    const sourceCat = tx.sourceId ? categoryMap.get(tx.sourceId) : undefined;
+    const destCat = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
+
+    const isSourceIncome =
+      Number(tx.sourceType) === CategoryType.Income || Number(sourceCat?.categoryType) === CategoryType.Income;
+    const isDestAccount =
+      isAccountType(tx.destinationType) || (destCat !== undefined && isAccountType(destCat.categoryType));
+
+    if (isSourceIncome && isDestAccount) {
+      const sourceId = tx.sourceId ?? "unknown-income";
+      const sourceName = tx.sourceName ?? sourceCat?.name ?? "Unknown Income";
+      const isTaxRebate =
+        isPfronCashbackCategory(sourceName) || (sourceCat ? isPfronCashbackCategory(sourceCat.name) : false);
+
+      const monthData = getOrCreateMonthData(monthKey);
+
+      if (isTaxRebate) {
+        monthData.pfronCashback += converted;
+      } else {
+        monthData.incomesBySource.set(sourceId, (monthData.incomesBySource.get(sourceId) ?? 0) + converted);
+
+        const existing = availableSourcesMap.get(sourceId);
+        if (existing) {
+          existing.totalConverted += converted;
+        } else {
+          availableSourcesMap.set(sourceId, {
+            id: sourceId,
+            name: sourceName,
+            currency,
+            totalConverted: converted,
+          });
+        }
+      }
+    }
+  }
+
+  interface MonthTaxes {
+    ppe: number;
+    health: number;
+    grossZus: number;
+    pfronCashback: number;
+    passThroughVat: number;
+    otherPersonalTaxes: number;
+  }
+
+  const finalTaxesByMonth = new Map<string, MonthTaxes>();
+
+  function getOrCreateFinalTax(m: string): MonthTaxes {
+    let entry = finalTaxesByMonth.get(m);
+    if (!entry) {
+      entry = {
+        ppe: 0,
+        health: 0,
+        grossZus: 0,
+        pfronCashback: 0,
+        passThroughVat: 0,
+        otherPersonalTaxes: 0,
+      };
+      finalTaxesByMonth.set(m, entry);
+    }
+    return entry;
+  }
+
+  const allInflowMonths = Array.from(rawMonthMap.entries())
+    .filter(([_, d]) => d.incomesBySource.size > 0)
+    .map(([m]) => m)
+    .sort();
+  const minInflowMonth = allInflowMonths.length > 0 ? allInflowMonths[0] : null;
+
+  for (const [m, data] of rawMonthMap.entries()) {
+    const hasTaxActivity =
+      data.ppe > 0 ||
+      data.health > 0 ||
+      data.grossZus > 0 ||
+      data.pfronCashback > 0 ||
+      data.passThroughVat > 0 ||
+      data.otherPersonalTaxes > 0;
+
+    if (!hasTaxActivity) continue;
+
+    if (timingMode === "cash") {
+      const dest = getOrCreateFinalTax(m);
+      dest.ppe += data.ppe;
+      dest.health += data.health;
+      dest.grossZus += data.grossZus;
+      dest.pfronCashback += data.pfronCashback;
+      dest.passThroughVat += data.passThroughVat;
+      dest.otherPersonalTaxes += data.otherPersonalTaxes;
+    } else {
+      // Accrual basis: Shift taxes to month M - 1
+      const prevMonth = getPreviousMonthKey(m);
+      // In accrual mode, do not shift taxes into periods preceding the earliest recorded inflow month
+      if (minInflowMonth !== null && prevMonth < minInflowMonth) {
+        continue;
+      }
+      const dest = getOrCreateFinalTax(prevMonth);
+      dest.ppe += data.ppe;
+      dest.health += data.health;
+      dest.grossZus += data.grossZus;
+      dest.pfronCashback += data.pfronCashback;
+      dest.passThroughVat += data.passThroughVat;
+      dest.otherPersonalTaxes += data.otherPersonalTaxes;
+    }
+  }
+
+  const allMonthKeysSet = new Set<string>();
+  for (const [m, data] of rawMonthMap.entries()) {
+    if (data.incomesBySource.size > 0) {
+      allMonthKeysSet.add(m);
+    }
+  }
+  for (const [m, data] of finalTaxesByMonth.entries()) {
+    const hasTaxActivity =
+      data.ppe > 0 ||
+      data.health > 0 ||
+      data.grossZus > 0 ||
+      data.pfronCashback > 0 ||
+      data.passThroughVat > 0 ||
+      data.otherPersonalTaxes > 0;
+    if (hasTaxActivity) {
+      allMonthKeysSet.add(m);
+    }
+  }
+
+  const allMonthKeys = Array.from(allMonthKeysSet).sort();
+
+  const points: IncomeTaxTimelinePoint[] = [];
+
+  for (const m of allMonthKeys) {
+    const raw = rawMonthMap.get(m);
+    const tax = finalTaxesByMonth.get(m) ?? {
+      ppe: 0,
+      health: 0,
+      grossZus: 0,
+      pfronCashback: 0,
+      passThroughVat: 0,
+      otherPersonalTaxes: 0,
+    };
+
+    let grossIncome = 0;
+    const incomeBySource: Record<string, number> = {};
+    if (raw?.incomesBySource) {
+      for (const [sId, amt] of raw.incomesBySource.entries()) {
+        incomeBySource[sId] = Number(amt.toFixed(2));
+        if (isSourceSelected(sId)) {
+          grossIncome += amt;
+        }
+      }
+    }
+    grossIncome = Number(grossIncome.toFixed(2));
+
+    const ppe = Number(tax.ppe.toFixed(2));
+    const health = Number(tax.health.toFixed(2));
+    const grossZus = Number(tax.grossZus.toFixed(2));
+    const pfronCashback = Number(tax.pfronCashback.toFixed(2));
+    const netZus = Number(Math.max(0, grossZus - pfronCashback).toFixed(2));
+    const passThroughVat = Number(tax.passThroughVat.toFixed(2));
+    const otherPersonalTaxes = Number(tax.otherPersonalTaxes.toFixed(2));
+    const totalPersonalTaxes = Number((ppe + health + netZus + otherPersonalTaxes).toFixed(2));
+    const effectiveTaxRate = grossIncome > 0 ? Number(((totalPersonalTaxes / grossIncome) * 100).toFixed(2)) : 0;
+    const netYield = Number((grossIncome - totalPersonalTaxes).toFixed(2));
+
+    points.push({
+      monthKey: m,
+      monthLabel: formatMonthLabel(m),
+      grossIncome,
+      incomeBySource,
+      ppe,
+      health,
+      grossZus,
+      pfronCashback,
+      netZus,
+      passThroughVat,
+      otherPersonalTaxes,
+      totalPersonalTaxes,
+      effectiveTaxRate,
+      netYield,
+    });
+  }
+
+  const totalSelectedGross = Number(points.reduce((sum, p) => sum + p.grossIncome, 0).toFixed(2));
+  const totalPersonalTaxes = Number(points.reduce((sum, p) => sum + p.totalPersonalTaxes, 0).toFixed(2));
+  const overallEffectiveRate =
+    totalSelectedGross > 0 ? Number(((totalPersonalTaxes / totalSelectedGross) * 100).toFixed(2)) : 0;
+
+  const availableSources = Array.from(availableSourcesMap.values())
+    .map((s) => ({ ...s, totalConverted: Number(s.totalConverted.toFixed(2)) }))
+    .sort((a, b) => b.totalConverted - a.totalConverted);
+
+  return {
+    points,
+    availableSources,
+    timingMode,
+    totalSelectedGross,
+    totalPersonalTaxes,
+    overallEffectiveRate,
   };
 }

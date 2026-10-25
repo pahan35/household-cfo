@@ -20,6 +20,7 @@ import {
 } from "./external-provider-data";
 import { IncomeMetricsStrip } from "./income-metrics-strip";
 import { IncomeSourcesCard } from "./income-sources-card";
+import { IncomeTaxTimelineCard } from "./income-tax-timeline-card";
 import { RecentTransactionsCard } from "./recent-transactions-card";
 import { TaxAuditCard } from "./tax-audit-card";
 import { TaxBreakdownCard } from "./tax-breakdown-card";
@@ -60,7 +61,7 @@ export function IncomeDashboard() {
         getSettings({ signal, forceRefresh }),
         getCategories({ signal, forceRefresh }),
         getCurrencies({ signal, forceRefresh }),
-        getTransactionPage({ skip: 0, take: 500, signal, forceRefresh }),
+        getTransactionPage({ skip: 0, take: 1500, signal, forceRefresh }),
         getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
       ]);
 
@@ -278,7 +279,17 @@ export function IncomeDashboard() {
         isLoading={isLoading}
       />
 
-      {/* 2. Main Content Grid */}
+      {/* 2. Historical Income & Taxation Timeline */}
+      <IncomeTaxTimelineCard
+        transactions={transactions}
+        categories={categories}
+        currencies={currencies}
+        defaultCurrency={defaultCurrency}
+        taxCategoryIds={taxCategoryIds}
+        isLoading={isLoading}
+      />
+
+      {/* 3. Main Content Grid */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Left Column: Income Sources Management */}
         <div className="lg:col-span-6 xl:col-span-5">

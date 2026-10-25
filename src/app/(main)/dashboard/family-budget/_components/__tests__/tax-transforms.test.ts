@@ -10,10 +10,14 @@ import {
   aggregateTaxesByTag,
   computeFxFriction,
   computeIncomeTaxMetrics,
+  computeIncomeTaxTimeline,
   computeTradeSpreadLoss,
   computeVatCurrencyDrag,
   detectUntaggedTaxTransactions,
   findTaxCategories,
+  formatMonthLabel,
+  getPreviousMonthKey,
+  getTransactionMonthKey,
   hasRecognizedTaxTag,
   isPfronCashbackCategory,
   matchTaxBucket,
@@ -53,19 +57,29 @@ describe("tax-transforms", () => {
 
     it("normalizes and matches tax tags properly", () => {
       expect(normalizeTaxTag("#PIT")).toBe("pit");
+      expect(normalizeTaxTag("#PPE")).toBe("ppe");
       expect(normalizeTaxTag(" #zus ")).toBe("zus");
       expect(normalizeTaxTag("health")).toBe("health");
+      expect(normalizeTaxTag("#VAT-7")).toBe("vat-7");
 
-      expect(matchTaxBucket("#pit")?.id).toBe("pit");
-      expect(matchTaxBucket("income-tax")?.id).toBe("pit");
+      expect(matchTaxBucket("#ppe")?.id).toBe("ppe");
+      expect(matchTaxBucket("#PPE")?.id).toBe("ppe");
+      expect(matchTaxBucket("#pit")?.id).toBe("ppe");
+      expect(matchTaxBucket("income-tax")?.id).toBe("ppe");
       expect(matchTaxBucket("#ZUS")?.id).toBe("zus");
       expect(matchTaxBucket("nfz")?.id).toBe("health");
+      expect(matchTaxBucket("#vat")?.id).toBe("vat");
+      expect(matchTaxBucket("#VAT-7")?.id).toBe("vat");
+      expect(matchTaxBucket("vat7")?.id).toBe("vat");
       expect(matchTaxBucket("belka")?.id).toBe("capital-gains");
       expect(matchTaxBucket("unknown-tag")).toBeNull();
     });
 
     it("evaluates hasRecognizedTaxTag", () => {
-      expect(hasRecognizedTaxTag({ id: "t1", tags: ["#pit"] })).toBe(true);
+      expect(hasRecognizedTaxTag({ id: "t1", tags: ["#PPE"] })).toBe(true);
+      expect(hasRecognizedTaxTag({ id: "t1b", tags: ["#VAT-7"] })).toBe(true);
+      expect(hasRecognizedTaxTag({ id: "t1c", tags: ["#pit"] })).toBe(true);
+      expect(hasRecognizedTaxTag({ id: "t1d", tags: ["#vat"] })).toBe(true);
       expect(hasRecognizedTaxTag({ id: "t2", tags: ["random"] })).toBe(false);
       expect(hasRecognizedTaxTag({ id: "t3", tags: [] })).toBe(false);
       expect(hasRecognizedTaxTag({ id: "t4" })).toBe(false);
@@ -83,6 +97,22 @@ describe("tax-transforms", () => {
         destinationCurrencyId: "PLN",
         tags: ["#pit"],
         dateTimestamp: 1700000000000,
+      },
+      {
+        id: "tx-ppe",
+        destinationId: "cat-tax-pln",
+        destinationAmount: 1500,
+        destinationCurrencyId: "PLN",
+        tags: ["#PPE"],
+        dateTimestamp: 1700000050000,
+      },
+      {
+        id: "tx-vat7",
+        destinationId: "cat-tax-pln",
+        destinationAmount: 1200,
+        destinationCurrencyId: "PLN",
+        tags: ["#VAT-7"],
+        dateTimestamp: 1700000080000,
       },
       {
         id: "tx-2",
@@ -162,11 +192,12 @@ describe("tax-transforms", () => {
       expect(result.untaggedCount).toBe(1);
       expect(result.untaggedTotalConverted).toBe(500);
 
-      const pitAggregate = result.byTag.find((t) => t.tagId === "pit");
-      expect(pitAggregate).toBeDefined();
-      expect(pitAggregate?.totalConverted).toBe(6000); // 4000 PLN + 2000 PLN
-      expect(pitAggregate?.percentage).toBeCloseTo((6000 / 7500) * 100, 1);
-      expect(pitAggregate?.byCurrency).toEqual([
+      const ppeAggregate = result.byTag.find((t) => t.tagId === "ppe");
+      expect(ppeAggregate).toBeDefined();
+      expect(ppeAggregate?.canonicalTag).toBe("PPE");
+      expect(ppeAggregate?.totalConverted).toBe(6000); // 4000 PLN + 2000 PLN
+      expect(ppeAggregate?.percentage).toBeCloseTo((6000 / 7500) * 100, 1);
+      expect(ppeAggregate?.byCurrency).toEqual([
         { currency: "PLN", amount: 4000 },
         { currency: "USD", amount: 500 },
       ]);
@@ -356,12 +387,13 @@ describe("tax-transforms", () => {
       expect(result.personalTags).toHaveLength(2);
       expect(result.passThroughTags).toHaveLength(1);
       expect(result.passThroughTags[0].tagId).toBe("vat");
+      expect(result.passThroughTags[0].canonicalTag).toBe("VAT-7");
       expect(result.passThroughTags[0].totalConverted).toBe(2000);
       expect(result.passThroughTags[0].isPassThrough).toBe(true);
 
-      // PIT percentage should be relative to personal taxes (4000 / 5000 = 80%)
-      const pitTag = result.personalTags.find((t) => t.tagId === "pit");
-      expect(pitTag?.percentage).toBe(80);
+      // PPE percentage should be relative to personal taxes (4000 / 5000 = 80%)
+      const ppeTag = result.personalTags.find((t) => t.tagId === "ppe");
+      expect(ppeTag?.percentage).toBe(80);
     });
   });
 
@@ -413,6 +445,265 @@ describe("tax-transforms", () => {
       expect(friction.transfers[0].realizedRate).toBe(3.98);
       expect(friction.tradeSpreadLossPln).toBe(60);
       expect(friction.totalFxFrictionPln).toBe(60);
+    });
+  });
+
+  describe("computeIncomeTaxTimeline", () => {
+    const timelineCategories: ExternalProviderCategory[] = [
+      ...taxCategories,
+      { id: "inc-b2b-client", name: "B2B Client", categoryType: CategoryType.Income, currencyId: "PLN" },
+      { id: "inc-pfron", name: "Cashback taxes", categoryType: CategoryType.Income, currencyId: "PLN" },
+    ];
+
+    it("extracts monthKey and handles previous month shifts", () => {
+      expect(getTransactionMonthKey({ id: "t1", dateTimestampISO: "2024-03-15T10:00:00Z" })).toBe("2024-03");
+      expect(getPreviousMonthKey("2024-03")).toBe("2024-02");
+      expect(getPreviousMonthKey("2024-01")).toBe("2023-12");
+      expect(formatMonthLabel("2024-03")).toBe("Mar 2024");
+    });
+
+    it("aggregates monthly points with PFRON netting and isolated client sources in cash mode", () => {
+      const transactions: ExternalProviderTransaction[] = [
+        // 2024-01: Main Job 30,000 PLN + B2B Client 10,000 PLN = 40,000 PLN gross
+        {
+          id: "tx-inc-1",
+          sourceId: "inc-salary",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 30000,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-01-10T12:00:00Z",
+        },
+        {
+          id: "tx-inc-2",
+          sourceId: "inc-b2b-client",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 10000,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-01-15T12:00:00Z",
+        },
+        // 2024-01: PFRON cashback 1,200 PLN
+        {
+          id: "tx-pfron",
+          sourceId: "inc-pfron",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 1200,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-01-20T12:00:00Z",
+        },
+        // 2024-01: ZUS 2,000 PLN
+        {
+          id: "tx-zus",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 2000,
+          destinationCurrencyId: "PLN",
+          tags: ["#zus"],
+          dateTimestampISO: "2024-01-20T12:00:00Z",
+        },
+        // 2024-01: PPE 3,000 PLN
+        {
+          id: "tx-ppe",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 3000,
+          destinationCurrencyId: "PLN",
+          tags: ["#PPE"],
+          dateTimestampISO: "2024-01-20T12:00:00Z",
+        },
+        // 2024-01: Health 1,000 PLN
+        {
+          id: "tx-health",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 1000,
+          destinationCurrencyId: "PLN",
+          tags: ["#health"],
+          dateTimestampISO: "2024-01-20T12:00:00Z",
+        },
+        // 2024-01: VAT-7 2,300 PLN
+        {
+          id: "tx-vat",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 2300,
+          destinationCurrencyId: "PLN",
+          tags: ["#VAT-7"],
+          dateTimestampISO: "2024-01-20T12:00:00Z",
+        },
+      ];
+
+      const result = computeIncomeTaxTimeline({
+        transactions,
+        categories: timelineCategories,
+        currencies,
+        defaultCurrency: "PLN",
+        timingMode: "cash",
+      });
+
+      expect(result.points).toHaveLength(1);
+      const pt = result.points[0];
+      expect(pt.monthKey).toBe("2024-01");
+      expect(pt.grossIncome).toBe(40000);
+      expect(pt.incomeBySource["inc-salary"]).toBe(30000);
+      expect(pt.incomeBySource["inc-b2b-client"]).toBe(10000);
+
+      expect(pt.grossZus).toBe(2000);
+      expect(pt.pfronCashback).toBe(1200);
+      expect(pt.netZus).toBe(800); // 2000 - 1200
+      expect(pt.ppe).toBe(3000);
+      expect(pt.health).toBe(1000);
+      expect(pt.passThroughVat).toBe(2300);
+
+      // Total personal taxes = 3000 (PPE) + 1000 (Health) + 800 (Net ZUS) = 4800
+      expect(pt.totalPersonalTaxes).toBe(4800);
+      // Effective tax rate = 4800 / 40000 = 12%
+      expect(pt.effectiveTaxRate).toBe(12);
+      expect(pt.netYield).toBe(35200);
+
+      // Available sources
+      expect(result.availableSources).toHaveLength(2);
+      expect(result.availableSources[0].id).toBe("inc-salary");
+      expect(result.availableSources[0].totalConverted).toBe(30000);
+      expect(result.availableSources[1].id).toBe("inc-b2b-client");
+      expect(result.availableSources[1].totalConverted).toBe(10000);
+    });
+
+    it("filters selected income sources and recalculates effective tax rate dynamically", () => {
+      const transactions: ExternalProviderTransaction[] = [
+        {
+          id: "tx-inc-salary",
+          sourceId: "inc-salary",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 30000,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-01-10T12:00:00Z",
+        },
+        {
+          id: "tx-inc-b2b",
+          sourceId: "inc-b2b-client",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 10000,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-01-15T12:00:00Z",
+        },
+        {
+          id: "tx-tax",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 3000,
+          destinationCurrencyId: "PLN",
+          tags: ["#PPE"],
+          dateTimestampISO: "2024-01-20T12:00:00Z",
+        },
+      ];
+
+      // Select only inc-salary
+      const result = computeIncomeTaxTimeline({
+        transactions,
+        categories: timelineCategories,
+        currencies,
+        defaultCurrency: "PLN",
+        selectedSourceIds: ["inc-salary"],
+      });
+
+      expect(result.points).toHaveLength(1);
+      const pt = result.points[0];
+      expect(pt.grossIncome).toBe(30000); // 10,000 from inc-b2b is excluded from gross
+      expect(pt.totalPersonalTaxes).toBe(3000);
+      // Effective tax rate: 3000 / 30000 = 10%
+      expect(pt.effectiveTaxRate).toBe(10);
+      expect(pt.netYield).toBe(27000);
+    });
+
+    it("shifts tax payments to M - 1 in accrual mode to align with invoice earnings", () => {
+      const transactions: ExternalProviderTransaction[] = [
+        // Jan 2024: 30,000 PLN earned from client
+        {
+          id: "tx-inc-jan",
+          sourceId: "inc-salary",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 30000,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-01-15T12:00:00Z",
+        },
+        // Feb 2024: 40,000 PLN earned from client
+        {
+          id: "tx-inc-feb",
+          sourceId: "inc-salary",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 40000,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-02-15T12:00:00Z",
+        },
+        // Feb 2024: Tax payments for Jan's liability
+        {
+          id: "tx-ppe-feb",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 3600,
+          destinationCurrencyId: "PLN",
+          tags: ["#PPE"],
+          dateTimestampISO: "2024-02-20T12:00:00Z",
+        },
+        {
+          id: "tx-zus-feb",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 2000,
+          destinationCurrencyId: "PLN",
+          tags: ["#zus"],
+          dateTimestampISO: "2024-02-20T12:00:00Z",
+        },
+        {
+          id: "tx-pfron-feb",
+          sourceId: "inc-pfron",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 1200,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2024-02-20T12:00:00Z",
+        },
+      ];
+
+      // In Accrual mode, Feb's taxes (PPE 3600, Net ZUS 800 -> 4400) shift to Jan 2024
+      const result = computeIncomeTaxTimeline({
+        transactions,
+        categories: timelineCategories,
+        currencies,
+        defaultCurrency: "PLN",
+        timingMode: "accrual",
+      });
+
+      expect(result.points).toHaveLength(2);
+      const janPt = result.points.find((p) => p.monthKey === "2024-01");
+      const febPt = result.points.find((p) => p.monthKey === "2024-02");
+
+      expect(janPt).toBeDefined();
+      expect(janPt?.grossIncome).toBe(30000);
+      expect(janPt?.ppe).toBe(3600);
+      expect(janPt?.netZus).toBe(800);
+      expect(janPt?.totalPersonalTaxes).toBe(4400);
+      // Effective tax rate: 4400 / 30000 = 14.67%
+      expect(janPt?.effectiveTaxRate).toBeCloseTo(14.67, 1);
+
+      expect(febPt).toBeDefined();
+      expect(febPt?.grossIncome).toBe(40000);
+      expect(febPt?.totalPersonalTaxes).toBe(0); // March taxes haven't been recorded yet
     });
   });
 });

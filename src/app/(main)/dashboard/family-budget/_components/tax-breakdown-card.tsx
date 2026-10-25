@@ -50,6 +50,7 @@ export function TaxBreakdownCard({
   const passThroughVat = controlledVat ?? taxBreakdown.totalPassThroughConverted;
 
   const tagColorMap: Record<string, { bg: string; text: string; bar: string }> = {
+    ppe: { bg: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400", bar: "bg-blue-500" },
     pit: { bg: "bg-blue-500/10", text: "text-blue-600 dark:text-blue-400", bar: "bg-blue-500" },
     zus: { bg: "bg-purple-500/10", text: "text-purple-600 dark:text-purple-400", bar: "bg-purple-500" },
     health: { bg: "bg-teal-500/10", text: "text-teal-600 dark:text-teal-400", bar: "bg-teal-500" },
@@ -63,7 +64,7 @@ export function TaxBreakdownCard({
   return (
     <SectionShell
       title="Income Streams & Tax Flow"
-      description="Mapping gross revenue through currency friction, net ZUS (after PFRON), and PIT down to true net disposable income"
+      description="Mapping gross revenue through currency friction, net ZUS (after PFRON), and PPE / PIT down to true net disposable income"
       action={
         !isLoading && totalTaxesConverted > 0 ? (
           <div className="flex items-center gap-2">
@@ -119,7 +120,7 @@ export function TaxBreakdownCard({
                 </span>
               </div>
               <div className="flex flex-col">
-                <span className="text-muted-foreground">Personal Taxes (PIT)</span>
+                <span className="text-muted-foreground">Personal Taxes (PPE / PIT)</span>
                 <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
                   -{formatMoney(Math.max(0, totalTaxesConverted - resolvedNetZus), currency)}
                 </span>
@@ -169,7 +170,7 @@ export function TaxBreakdownCard({
               <span className="text-sm font-semibold tabular-nums text-amber-600 dark:text-amber-400">
                 {formatMoney(passThroughVat, currency)}
               </span>
-              <div className="text-[10px] text-muted-foreground">#vat</div>
+              <div className="text-[10px] text-muted-foreground">#VAT-7</div>
             </div>
           </button>
         )}
