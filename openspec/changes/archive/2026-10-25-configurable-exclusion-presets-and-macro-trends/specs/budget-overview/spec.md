@@ -34,6 +34,14 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 - **WHEN** the household has both regular transit (e.g. `Transport PLN`) and ride-hailing (e.g. `Taxi PLN`) categories
 - **THEN** the system links both categories into a smart "Transport" group, aggregating them into a unified "Transport (incl. Taxi)" slice on the donut chart when either falls below the minor-slice threshold (< 3%), and displaying distinct child line items under the Transport group header in the breakdown legend
 
+#### Scenario: Generalized smart grouping for multi-currency categories
+- **WHEN** the active period contains spending across multiple categories that share the same canonical base name across different currencies (such as `Medicine` and `Medicine UAH`, or `Hotels` and `Hotels UAH`)
+- **THEN** the system merges their spending amounts into a single unified smart group slice titled with the canonical base name (e.g. `Medicine`) on the donut chart, and displays the unified group row in the breakdown list
+
+#### Scenario: Foreign currency indicator icon and child currency breakdown
+- **WHEN** a category or smart group includes expenses incurred in a currency different from the dashboard's default currency (PLN)
+- **THEN** the category row in the breakdown list displays an extra foreign-currency indicator icon/badge, and expanding or inspecting the row displays the itemized breakdown showing spending in the default currency and spending in the foreign currency
+
 #### Scenario: Launching category expense trace sheet
 - **WHEN** the user clicks any category row or child item in the Expenses Breakdown list
 - **THEN** a Category Expense Trace slide-over sheet opens, presenting the category name, total spent in the active month, and a reverse-chronological list of all transactions belonging to that category across all accounts

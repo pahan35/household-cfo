@@ -191,7 +191,7 @@ All upstream access from this screen SHALL go through the local proxy path `/api
 
 ### Requirement: Expense composition pie chart
 
-The Family Budget overview dashboard SHALL include an interactive Expenses Breakdown (pie/donut chart) card for the active reporting period, displaying the proportional distribution of spending across expense categories according to the active exclusion preset, surfacing available cash capacity, supporting generalized smart category grouping for multi-currency categories sharing a canonical base name and Transport/Taxi, rendering canonical base names (omitting default currency suffixes), displaying foreign currency indicator icons/badges when non-default currency expenses occur, and showing per-category deltas and variance sorting when a comparison baseline period is active.
+The Family Budget overview dashboard SHALL include an interactive Expenses Breakdown (pie/donut chart) card for the active reporting period, displaying the proportional distribution of spending across expense categories according to the active exclusion preset, surfacing available cash capacity, supporting an interactive Preset Configuration Dialog trigger to configure excluded categories, supporting smart category grouping for Transport and Taxi, showing per-category deltas and variance sorting when a comparison baseline period is active, and allowing users to click any category row to trace its underlying transactions across all accounts and comparison periods in a dedicated slide-over sheet.
 
 #### Scenario: Rendering expense pie chart
 - **WHEN** the dashboard loads with expense data for the active period
@@ -199,11 +199,15 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 
 #### Scenario: Hovering or inspecting a category slice
 - **WHEN** the user hovers over a category slice or tooltip in the Expenses Breakdown chart
-- **THEN** the tooltip displays the category or group name, spent amount, percentage of included expenses, budget limit if configured, and a breakdown by constituent currency if non-default currencies are present
+- **THEN** the tooltip displays the category or group name, spent amount, percentage of included expenses, and budget limit if configured
+
+#### Scenario: Managing presets via configuration dialog
+- **WHEN** the user clicks the manage presets button next to the preset selector on the Expenses Breakdown card
+- **THEN** an interactive Preset Configuration Dialog opens, displaying all expense categories with checkboxes to customize which categories (such as Rent, Insurance PLN, etc.) are excluded from controllable spending and deducted from the income pool
 
 #### Scenario: Quick exclusion toggle on the chart card
-- **WHEN** the user toggles the quick "Exclude Rent" switch on the Expenses Breakdown card
-- **THEN** the pie chart recalculates immediately with the category omitted or restored without navigating away, and Net Cash Margin remains invariant
+- **WHEN** the user toggles category exclusions via the preset selector or configuration dialog
+- **THEN** the pie chart recalculates immediately with the selected categories omitted or restored without navigating away, and Net Cash Margin remains invariant
 
 #### Scenario: Category comparison deltas and variance sorting
 - **WHEN** a comparison baseline month is active on the Budget Overview screen
@@ -214,7 +218,7 @@ The Family Budget overview dashboard SHALL include an interactive Expenses Break
 - **THEN** the card summary strip displays badges for Controllable/Included spending, Excluded fixed spending (if any), and Cash Left (`Net Disposable Income - Total Living Expenses`)
 
 #### Scenario: Smart grouping for Transport and Taxi
-- **WHEN** the household has both regular transit (e.g. `Transport`) and ride-hailing (e.g. `Taxi`) categories
+- **WHEN** the household has both regular transit (e.g. `Transport PLN`) and ride-hailing (e.g. `Taxi PLN`) categories
 - **THEN** the system links both categories into a smart "Transport" group, aggregating them into a unified "Transport (incl. Taxi)" slice on the donut chart when either falls below the minor-slice threshold (< 3%), and displaying distinct child line items under the Transport group header in the breakdown legend
 
 #### Scenario: Generalized smart grouping for multi-currency categories
