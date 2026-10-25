@@ -397,7 +397,7 @@ The Family Budget overview screen and its server proxy SHALL deduplicate concurr
 #### Scenario: Category reorder write invalidates cached category reads
 
 - **WHEN** the client sends a category write payload (`entityJson` containing updated categories) to `/api/external-provider/Exchange/Ping`
-- **THEN** the server proxy bypasses caching for the write request, invalidates cached `/Exchange/Ping` entries in the proxy cache, and the client updates its cached `categories` entry with the latest category state
+- **THEN** the server proxy bypasses caching for the write request, invalidates cached `/Exchange/Ping` and `/stat/ping` entries in the proxy cache, and the client updates its cached `categories` entry while purging client-side `stat:*` cache entries so subsequent reads reflect updated category ordering and names
 
 #### Scenario: Transaction write invalidates cached transaction, category, and statistics reads
 
@@ -410,8 +410,8 @@ The application SHALL include automated unit tests verifying the data ingestion 
 
 #### Scenario: Unit tests validate category spend extraction and fallbacks
 
-- **WHEN** `transformExpenses` and `computeBudgetSummaryItems` receive statistics categories with `value`, `amount`, or `currentAmount`, or missing metadata names
-- **THEN** the transforms prioritize period-specific `value` over static category `amount` snapshots (falling back to `amount` and `currentAmount` only when `value` is absent) and accurately extract non-zero spent amounts and category names without defaulting to zero or repeating current-month snapshots across historical periods
+- **WHEN** `transformExpenses` and `computeBudgetSummaryItems` receive statistics categories with `value`, `amount`, or `currentAmount`, alongside a `categoryNameMap`
+- **THEN** the transforms prioritize period-specific `value` over static category `amount` snapshots (falling back to `amount` and `currentAmount` only when `value` is absent) and prioritize canonical names from `categoryNameMap` over snapshot `cat.title` and `cat.name` fields, accurately extracting non-zero spent amounts and category names without defaulting to zero or retaining stale category names
 
 #### Scenario: Unit tests validate date parsing across historical points
 
