@@ -13,7 +13,10 @@ import {
   computeWellnessMetrics,
   detectConcertEvents,
   detectTravelEpisodes,
+  EXCLUDED_LIFESTYLE_DESTINATION_TAGS,
+  extractCategoryCurrency,
   findUntaggedTripCandidates,
+  getConvertedTransactionAmount,
   getPassMultiplierFromTags,
   getTransactionDate,
   isMedicalCoveredTag,
@@ -44,6 +47,9 @@ describe("lifestyle-transforms", () => {
     { id: "cat-learning", name: "Learning PLN", categoryType: CategoryType.Expense },
     { id: "cat-transport", name: "Transport PLN", categoryType: CategoryType.Expense },
     { id: "cat-hotel", name: "Hotels EUR", categoryType: CategoryType.Expense },
+    { id: "cat-taxes-pln", name: "Taxes PLN", categoryType: CategoryType.Expense },
+    { id: "cat-sub-uah", name: "Subscriptions UAH", categoryType: CategoryType.Expense },
+    { id: "cat-tool-usd", name: "Software USD", categoryType: CategoryType.Expense },
     { id: "cat-salary", name: "Salary PLN", categoryType: CategoryType.Income },
   ];
 
@@ -64,6 +70,10 @@ describe("lifestyle-transforms", () => {
       expect(normalizeUnifiedCategory("Menthal Health EUR")).toBe("Mental Health");
       expect(normalizeUnifiedCategory("Mental Health")).toBe("Mental Health");
       expect(normalizeUnifiedCategory("Education USD")).toBe("Learning");
+      expect(normalizeUnifiedCategory("Software & Tools PLN")).toBe("Software & Tools");
+      expect(normalizeUnifiedCategory("Software USD")).toBe("Software & Tools");
+      expect(normalizeUnifiedCategory("Tools & Software EUR")).toBe("Software & Tools");
+      expect(normalizeUnifiedCategory("Dev Tools")).toBe("Software & Tools");
     });
 
     it("normalizes lifestyle tags", () => {
@@ -456,6 +466,254 @@ describe("lifestyle-transforms", () => {
         expect(episodes[0].startDate).toBe("2024-10-01");
         expect(episodes[0].endDate).toBe("2024-10-07");
       }).not.toThrow();
+    });
+
+    it("unifies long-gap pre-trip payments and on-site stay into a single episode (Maldives scenario)", () => {
+      const maldivesTxs: ExternalProviderTransaction[] = [
+        // 1. May 2025: Flight downpayment (133 days prior to stay)
+        {
+          id: "tx-malediwy-may-flight",
+          destinationId: "cat-transport",
+          destinationAmount: 3500,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["malediwy", "flight"],
+          dateTimestamp: new Date("2025-05-15").getTime(),
+        },
+        // 2. August 2025: Resort balance payment (36 days prior to stay, >90 days after downpayment)
+        {
+          id: "tx-malediwy-aug-resort",
+          destinationId: "cat-hotel",
+          destinationAmount: 1200, // 1200 EUR = 5217.39 PLN
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: ["malediwy", "hotel"],
+          dateTimestamp: new Date("2025-08-20").getTime(),
+        },
+        // 3. Late September - Early October 2025: On-site stay cluster (no #travel bookends)
+        {
+          id: "tx-malediwy-onsite-checkin",
+          destinationId: "cat-hotel",
+          destinationAmount: 300,
+          destinationCurrencyId: "USD",
+          destinationType: CategoryType.Expense,
+          tags: ["malediwy"],
+          dateTimestamp: new Date("2025-09-25").getTime(),
+        },
+        {
+          id: "tx-malediwy-onsite-dining",
+          destinationId: "cat-transport",
+          destinationAmount: 150,
+          destinationCurrencyId: "USD",
+          destinationType: CategoryType.Expense,
+          tags: ["malediwy"],
+          dateTimestamp: new Date("2025-09-28").getTime(),
+        },
+        {
+          id: "tx-malediwy-onsite-checkout",
+          destinationId: "cat-hotel",
+          destinationAmount: 500,
+          destinationCurrencyId: "USD",
+          destinationType: CategoryType.Expense,
+          tags: ["malediwy"],
+          dateTimestamp: new Date("2025-10-02").getTime(),
+        },
+      ];
+
+      const episodes = detectTravelEpisodes({
+        transactions: maldivesTxs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      // Must unite into a single trip episode without spawning 1-day ghost episodes
+      expect(episodes.length).toBe(1);
+      const maldives = episodes[0];
+      expect(maldives.destinationTag).toBe("malediwy");
+      expect(maldives.name).toContain("Malediwy (Sep 2025)");
+      expect(maldives.startDate).toBe("2025-09-25");
+      expect(maldives.endDate).toBe("2025-10-02");
+
+      // Both May and August payments should be in preBookingTransactions
+      expect(maldives.preBookingTransactions.length).toBe(2);
+      expect(maldives.preBookingTransactions.map((t) => t.id)).toEqual([
+        "tx-malediwy-may-flight",
+        "tx-malediwy-aug-resort",
+      ]);
+      expect(maldives.preBookingTotal).toBeGreaterThan(8000);
+
+      // On-site transactions
+      expect(maldives.onSiteTransactions.length).toBe(3);
+      expect(maldives.onSiteTransactions.map((t) => t.id)).toEqual([
+        "tx-malediwy-onsite-checkin",
+        "tx-malediwy-onsite-dining",
+        "tx-malediwy-onsite-checkout",
+      ]);
+      expect(maldives.transactionCount).toBe(5);
+    });
+
+    it("excludes recurring tax and subscription tags from spawning travel episodes", () => {
+      const recurringTxs: ExternalProviderTransaction[] = [
+        // Taxes (#zus, #vat-7, #ppe) across multiple months
+        {
+          id: "tx-zus-1",
+          destinationId: "cat-taxes-pln",
+          destinationAmount: 1500,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["zus"],
+          dateTimestamp: new Date("2025-01-10").getTime(),
+        },
+        {
+          id: "tx-zus-2",
+          destinationId: "cat-taxes-pln",
+          destinationAmount: 1500,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["zus"],
+          dateTimestamp: new Date("2025-02-10").getTime(),
+        },
+        {
+          id: "tx-zus-3",
+          destinationId: "cat-taxes-pln",
+          destinationAmount: 1500,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["zus"],
+          dateTimestamp: new Date("2025-03-10").getTime(),
+        },
+        // VAT-7
+        {
+          id: "tx-vat-1",
+          destinationId: "cat-taxes-pln",
+          destinationAmount: 2000,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["vat-7", "tax"],
+          dateTimestamp: new Date("2025-01-25").getTime(),
+        },
+        {
+          id: "tx-vat-2",
+          destinationId: "cat-taxes-pln",
+          destinationAmount: 2200,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["vat-7"],
+          dateTimestamp: new Date("2025-02-25").getTime(),
+        },
+        {
+          id: "tx-vat-3",
+          destinationId: "cat-taxes-pln",
+          destinationAmount: 2100,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["vat-7"],
+          dateTimestamp: new Date("2025-03-25").getTime(),
+        },
+        // Subscriptions (#youtube, #storytel, #evernote)
+        {
+          id: "tx-yt-1",
+          destinationId: "cat-sub-uah",
+          destinationAmount: 149,
+          destinationType: CategoryType.Expense,
+          tags: ["youtube", "subscription"],
+          dateTimestamp: new Date("2025-01-05").getTime(),
+        },
+        {
+          id: "tx-yt-2",
+          destinationId: "cat-sub-uah",
+          destinationAmount: 149,
+          destinationType: CategoryType.Expense,
+          tags: ["youtube"],
+          dateTimestamp: new Date("2025-02-05").getTime(),
+        },
+        {
+          id: "tx-yt-3",
+          destinationId: "cat-sub-uah",
+          destinationAmount: 149,
+          destinationType: CategoryType.Expense,
+          tags: ["youtube"],
+          dateTimestamp: new Date("2025-03-05").getTime(),
+        },
+        // Evernote
+        {
+          id: "tx-en-1",
+          destinationId: "cat-tool-usd",
+          destinationAmount: 12,
+          destinationType: CategoryType.Expense,
+          tags: ["evernote"],
+          dateTimestamp: new Date("2025-01-15").getTime(),
+        },
+        {
+          id: "tx-en-2",
+          destinationId: "cat-tool-usd",
+          destinationAmount: 12,
+          destinationType: CategoryType.Expense,
+          tags: ["evernote"],
+          dateTimestamp: new Date("2025-02-15").getTime(),
+        },
+        {
+          id: "tx-en-3",
+          destinationId: "cat-tool-usd",
+          destinationAmount: 12,
+          destinationType: CategoryType.Expense,
+          tags: ["evernote"],
+          dateTimestamp: new Date("2025-03-15").getTime(),
+        },
+      ];
+
+      const episodes = detectTravelEpisodes({
+        transactions: recurringTxs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      // Must produce zero episodes for recurring subscriptions, taxes, and software tools
+      expect(episodes.length).toBe(0);
+      expect(EXCLUDED_LIFESTYLE_DESTINATION_TAGS.has("zus")).toBe(true);
+      expect(EXCLUDED_LIFESTYLE_DESTINATION_TAGS.has("youtube")).toBe(true);
+      expect(EXCLUDED_LIFESTYLE_DESTINATION_TAGS.has("evernote")).toBe(true);
+      expect(EXCLUDED_LIFESTYLE_DESTINATION_TAGS.has("vat-7")).toBe(true);
+    });
+
+    it("hierarchically resolves category currency and converts accurately using exchange rates", () => {
+      const categoryMap = new Map<string, ExternalProviderCategory>(mockCategories.map((c) => [c.id, c]));
+
+      // 1. Transaction in foreign currency category without transaction-level currency fields (149 UAH from cat-sub-uah)
+      const uahTx: ExternalProviderTransaction = {
+        id: "tx-sub-uah",
+        destinationId: "cat-sub-uah",
+        destinationAmount: 149,
+        destinationType: CategoryType.Expense,
+      };
+
+      const uahResult = getConvertedTransactionAmount(uahTx, "PLN", mockCurrencies, categoryMap);
+      expect(uahResult.currency).toBe("UAH");
+      // 149 UAH / 41 UAH per USD * 4 PLN per USD = 14.5365 PLN
+      const expectedUahPln = (149 / 41) * 4;
+      expect(uahResult.convertedAmount).toBeCloseTo(expectedUahPln, 2);
+      expect(uahResult.convertedAmount).not.toBe(149);
+
+      // 2. Transaction in USD category without transaction-level currency fields (Software USD)
+      const usdTx: ExternalProviderTransaction = {
+        id: "tx-tool-usd",
+        destinationId: "cat-tool-usd",
+        destinationAmount: 100,
+        destinationType: CategoryType.Expense,
+      };
+
+      const usdResult = getConvertedTransactionAmount(usdTx, "PLN", mockCurrencies, categoryMap);
+      expect(usdResult.currency).toBe("USD");
+      // 100 USD / 1 USD per USD * 4 PLN per USD = 400 PLN
+      expect(usdResult.convertedAmount).toBe(400);
+
+      // 3. extractCategoryCurrency helper test
+      expect(extractCategoryCurrency(mockCategories.find((c) => c.id === "cat-hotel"))).toBe("EUR");
+      expect(extractCategoryCurrency(mockCategories.find((c) => c.id === "cat-sub-uah"))).toBe("UAH");
+      expect(extractCategoryCurrency(mockCategories.find((c) => c.id === "cat-tool-usd"))).toBe("USD");
+      expect(extractCategoryCurrency(undefined)).toBeUndefined();
     });
   });
 

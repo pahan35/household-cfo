@@ -83,6 +83,16 @@ export function normalizeUnifiedCategory(categoryName: string): string {
   if (lower === "sport" || lower === "sports") {
     return "Sport";
   }
+  if (
+    lower === "software & tools" ||
+    lower === "software and tools" ||
+    lower === "software" ||
+    lower === "tools & software" ||
+    lower === "tools and software" ||
+    lower === "dev tools"
+  ) {
+    return "Software & Tools";
+  }
   return stripped;
 }
 
@@ -118,15 +128,47 @@ export function getTransactionDate(tx: ExternalProviderTransaction): Date {
 }
 
 /**
+ * Resolves currency code from category either via currencyId or trailing 3-letter currency code in the name.
+ */
+export function extractCategoryCurrency(cat?: ExternalProviderCategory): string | undefined {
+  if (!cat) return undefined;
+  if (typeof cat.currencyId === "string" && cat.currencyId.trim().length > 0) {
+    return cat.currencyId.trim().toUpperCase();
+  }
+  const match = cat.name.trim().match(CURRENCY_SUFFIX_REGEX);
+  if (match) {
+    const code = match[1].toUpperCase();
+    if (KNOWN_CURRENCY_CODES.includes(code as (typeof KNOWN_CURRENCY_CODES)[number])) {
+      return code;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Resolves the native amount and currency of a transaction, converted to the default currency.
+ * If transaction-level currency fields are missing, resolves currency hierarchically from
+ * destination category or source account via categoryMap.
  */
 export function getConvertedTransactionAmount(
   tx: ExternalProviderTransaction,
   defaultCurrency: string,
   currencies: ExternalProviderCurrency[],
+  categoryMap?: Map<string, ExternalProviderCategory>,
 ): { nativeAmount: number; currency: string; convertedAmount: number } {
   const nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
-  const currency = (tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? defaultCurrency).toUpperCase();
+  let currency = (tx.destinationCurrencyId ?? tx.sourceCurrencyId)?.trim().toUpperCase();
+
+  if (!currency && categoryMap) {
+    if (tx.destinationId) {
+      currency = extractCategoryCurrency(categoryMap.get(tx.destinationId));
+    }
+    if (!currency && tx.sourceId) {
+      currency = extractCategoryCurrency(categoryMap.get(tx.sourceId));
+    }
+  }
+
+  currency = currency || defaultCurrency.toUpperCase();
   const convertedAmount = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
   return { nativeAmount, currency, convertedAmount };
 }
@@ -277,7 +319,7 @@ export function aggregateDonutData(input: AggregateDonutInput): DonutAggregateRe
     let totalDrillDownAmount = 0;
 
     for (const tx of targetTransactions) {
-      const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+      const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
       totalDrillDownAmount += convertedAmount;
 
       const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
@@ -348,7 +390,7 @@ export function aggregateDonutData(input: AggregateDonutInput): DonutAggregateRe
     let totalTagAmount = 0;
 
     for (const tx of filteredTx) {
-      const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+      const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
       totalTagAmount += convertedAmount;
 
       const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
@@ -430,7 +472,7 @@ export function aggregateDonutData(input: AggregateDonutInput): DonutAggregateRe
     const bucketId = viewMode === "unified-category" ? normalizeUnifiedCategory(rawName) : (catId ?? "other");
     const label = viewMode === "unified-category" ? normalizeUnifiedCategory(rawName) : rawName;
 
-    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
     totalPeriodAmount += convertedAmount;
 
     let bucket = categoryBuckets.get(bucketId);
@@ -567,7 +609,7 @@ export function buildMonthlyTrendSeries(input: TrendSeriesInput): MonthlyTrendPo
     }
 
     const monthKey = format(txDate, "yyyy-MM");
-    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
 
     let bucket = monthBuckets.get(monthKey);
     if (!bucket) {
@@ -650,14 +692,48 @@ export interface ConcertEvent {
   transactions: ExternalProviderTransaction[];
 }
 
-const EXCLUDED_TRAVEL_BOOKEND_TAGS = new Set(["travel", "end-travel", "flight", "hotel", "ticket", "concert"]);
-const TRAVEL_CATEGORY_REGEX =
-  /(transport|flight|airline|hotel|hostel|restaurant|cafe|dining|uber|taxi|rail|tour|rent)/i;
-const FIXED_EXPENSE_CATEGORY_REGEX = /(?:\btax(?:es)?\b|podat|rent|czynsz|flat|apartment|utilit|prąd|gaz|mieszkanie)/i;
+export const EXCLUDED_TRAVEL_BOOKEND_TAGS = new Set(["travel", "end-travel", "flight", "hotel", "ticket", "concert"]);
+
+export const EXCLUDED_LIFESTYLE_DESTINATION_TAGS = new Set([
+  "subscription",
+  "subscriptions",
+  "sub",
+  "tax",
+  "taxes",
+  "zus",
+  "vat-7",
+  "vat",
+  "ppe",
+  "salary",
+  "transfer",
+  "cash",
+  "refund",
+  "wc",
+  "youtube",
+  "storytel",
+  "evernote",
+  "googledrive",
+  "polytopia",
+  "nizhelskyi",
+  "jetbrains",
+  "google",
+  "netflix",
+  "spotify",
+  "apple",
+  "icloud",
+]);
+
+export const EXCLUDED_DESTINATION_CATEGORY_REGEX =
+  /(?:\btax(?:es)?\b|podat|rent|czynsz|flat|apartment|utilit|prąd|gaz|mieszkanie|salary|wynagrodz|insurance|ubezpiecz|software|tools|debt|kredyt)/i;
+
+export const TRAVEL_CATEGORY_REGEX =
+  /(transport|flight|airline|airplane|hotel|hostel|restaurant|cafe|dining|uber|taxi|rail|railway|train|tour|rent|ticket|travel|bilety|nocleg|wycieczk|lotnicz)/i;
+const FIXED_EXPENSE_CATEGORY_REGEX =
+  /(?:\btax(?:es)?\b|podat|rent|czynsz|flat|apartment|utilit|prąd|gaz|mieszkanie|salary|wynagrodz|insurance|ubezpiecz|software|tools)/i;
 
 /**
  * Detects travel episodes from transactions using bookends (#travel/#end-travel),
- * >60-day gap clustering on reused destination tags, and pre-booking lookback.
+ * heuristic on-site stay anchor identification, and 300-day pre-booking lookback.
  */
 export function detectTravelEpisodes(input: {
   transactions: ExternalProviderTransaction[];
@@ -678,14 +754,37 @@ export function detectTravelEpisodes(input: {
     if (tx.deleted) continue;
     if (!isExpenseTransaction(tx, categoryMap)) continue;
 
+    // Filter candidate transactions in non-travel categories
+    const cat = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
+    if (cat?.name && EXCLUDED_DESTINATION_CATEGORY_REGEX.test(cat.name)) {
+      continue;
+    }
+
     const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
     const cleanTags = rawTags.map(normalizeLifestyleTag);
 
-    // Look for non-system tags when #travel or #end-travel or #trip is present
+    // Reject transactions tagged with non-travel / reserved tags
+    const hasReservedExclusionTag = cleanTags.some(
+      (t) =>
+        t === "subscription" ||
+        t === "sub" ||
+        t === "tax" ||
+        t === "zus" ||
+        t === "vat-7" ||
+        t === "vat" ||
+        t === "ppe" ||
+        t === "salary" ||
+        t === "transfer" ||
+        t === "cash" ||
+        t === "refund",
+    );
+    if (hasReservedExclusionTag) continue;
+
     const hasTravelMarker =
       cleanTags.includes("travel") || cleanTags.includes("end-travel") || cleanTags.includes("trip");
+
     for (const tag of cleanTags) {
-      if (!EXCLUDED_TRAVEL_BOOKEND_TAGS.has(tag) && tag.length > 1) {
+      if (!EXCLUDED_TRAVEL_BOOKEND_TAGS.has(tag) && !EXCLUDED_LIFESTYLE_DESTINATION_TAGS.has(tag) && tag.length > 1) {
         if (hasTravelMarker || cleanTags.length >= 1) {
           const list = destinationTxMap.get(tag) ?? [];
           list.push(tx);
@@ -695,144 +794,192 @@ export function detectTravelEpisodes(input: {
     }
   }
 
-  // Filter destination tags: must have at least one #travel / #end-travel marker OR >= 3 transactions in a foreign currency or travel category
-  const validDestinationTags = new Set<string>();
-  for (const [tag, txs] of destinationTxMap.entries()) {
-    const hasMarker = txs.some((tx) => {
-      const tags = (tx.tags ?? []).map((t) => normalizeLifestyleTag(String(t)));
-      return tags.includes("travel") || tags.includes("end-travel");
-    });
-    if (hasMarker || txs.length >= 3) {
-      validDestinationTags.add(tag);
+  interface CandidateCluster {
+    txs: ExternalProviderTransaction[];
+    hasBookend: boolean;
+    startDate: Date;
+    endDate: Date;
+    isAnchor: boolean;
+  }
+
+  function evaluateCluster(clusterTxs: ExternalProviderTransaction[], hasBookendHint: boolean): CandidateCluster {
+    const startDate = getTransactionDate(clusterTxs[0]);
+    const endDate = getTransactionDate(clusterTxs[clusterTxs.length - 1]);
+    const durationMs = endDate.getTime() - startDate.getTime();
+
+    const hasBookend =
+      hasBookendHint ||
+      clusterTxs.some((tx) => {
+        const tags = (tx.tags ?? []).map((t) => normalizeLifestyleTag(String(t)));
+        return tags.includes("travel") || tags.includes("end-travel");
+      });
+
+    let isAnchor = false;
+    if (hasBookend) {
+      // Bookended clusters (#travel / #end-travel) are always valid stay anchors
+      isAnchor = true;
+    } else {
+      // Un-bookended heuristic anchor requires:
+      // 1. Spanning multiple calendar days (durationMs >= 86,400,000)
+      // 2. At least 2 transactions
+      // 3. Travel/on-site spending (foreign currency or travel category)
+      const hasTravelSpending = clusterTxs.some((tx) => {
+        const { currency } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
+        if (currency !== defaultCurrency.toUpperCase()) return true;
+        const c = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
+        return c?.name ? TRAVEL_CATEGORY_REGEX.test(c.name) : false;
+      });
+
+      if (durationMs >= 86400000 && clusterTxs.length >= 2 && hasTravelSpending) {
+        isAnchor = true;
+      }
     }
+
+    return {
+      txs: clusterTxs,
+      hasBookend,
+      startDate,
+      endDate,
+      isAnchor,
+    };
   }
 
   const episodes: TravelEpisode[] = [];
 
-  for (const destTag of validDestinationTags) {
-    const allTxs = destinationTxMap.get(destTag) ?? [];
+  for (const [destTag, allTxs] of destinationTxMap.entries()) {
     // Sort chronologically
     allTxs.sort((a, b) => getTransactionDate(a).getTime() - getTransactionDate(b).getTime());
 
-    // 1. Identify on-site clusters.
-    // An on-site cluster is anchored by `#travel` / `#end-travel` or consecutive on-site transactions separated by <= 60 days.
-    // Transactions before `#travel` without bookend tags are candidate pre-bookings for the upcoming on-site cluster.
-    const onSiteClusters: ExternalProviderTransaction[][] = [];
-    const unattachedPreBookings: ExternalProviderTransaction[] = [];
+    // 1. Group transactions into contiguous candidate clusters
+    const clusters: CandidateCluster[] = [];
+    let currentTxs: ExternalProviderTransaction[] = [];
+    let inBookendedTrip = false;
 
-    let currentCluster: ExternalProviderTransaction[] = [];
-    let lastDate: Date | null = null;
-    let hasBookend = false;
-
-    for (const tx of allTxs) {
-      const d = getTransactionDate(tx);
+    for (let i = 0; i < allTxs.length; i++) {
+      const tx = allTxs[i];
+      const txDate = getTransactionDate(tx);
       const tags = (tx.tags ?? []).map((t) => normalizeLifestyleTag(String(t)));
       const isStart = tags.includes("travel");
       const isEnd = tags.includes("end-travel");
 
+      if (currentTxs.length > 0) {
+        const prevTx = currentTxs[currentTxs.length - 1];
+        const prevDate = getTransactionDate(prevTx);
+        const gapDays = (txDate.getTime() - prevDate.getTime()) / (1000 * 3600 * 24);
+
+        // Break cluster if a new explicit #travel begins, or if gap between transactions exceeds 14 days
+        // (or 30 days if inside a bookended trip)
+        const maxGap = inBookendedTrip ? 30 : 14;
+        if (isStart || gapDays > maxGap) {
+          clusters.push(evaluateCluster(currentTxs, inBookendedTrip));
+          currentTxs = [];
+          inBookendedTrip = false;
+        }
+      }
+
       if (isStart) {
-        // If we had transactions collected without a travel start, they were pre-bookings for this upcoming trip!
-        if (currentCluster.length > 0 && !hasBookend) {
-          unattachedPreBookings.push(...currentCluster);
-          currentCluster = [];
-        } else if (
-          currentCluster.length > 0 &&
-          lastDate &&
-          (d.getTime() - lastDate.getTime()) / (1000 * 3600 * 24) > 14
-        ) {
-          onSiteClusters.push(currentCluster);
-          currentCluster = [];
-        }
-        hasBookend = true;
+        inBookendedTrip = true;
       }
 
-      if (lastDate && (d.getTime() - lastDate.getTime()) / (1000 * 3600 * 24) > 60) {
-        if (currentCluster.length > 0) {
-          onSiteClusters.push(currentCluster);
-          currentCluster = [];
-          hasBookend = false;
-        }
-      }
+      currentTxs.push(tx);
 
-      currentCluster.push(tx);
-      lastDate = d;
-
-      if (isEnd && currentCluster.length > 0) {
-        onSiteClusters.push(currentCluster);
-        currentCluster = [];
-        lastDate = null;
-        hasBookend = false;
+      if (isEnd) {
+        clusters.push(evaluateCluster(currentTxs, true));
+        currentTxs = [];
+        inBookendedTrip = false;
       }
     }
 
-    if (currentCluster.length > 0) {
-      onSiteClusters.push(currentCluster);
+    if (currentTxs.length > 0) {
+      clusters.push(evaluateCluster(currentTxs, inBookendedTrip));
     }
 
-    // For each on-site cluster, form an episode and attach pre-trip bookings (up to 270 days prior)
-    for (let i = 0; i < onSiteClusters.length; i++) {
-      const cluster = onSiteClusters[i];
-      if (cluster.length === 0) continue;
+    // 2. Identify anchors and gather pre-bookings
+    const anchors = clusters.filter((c) => c.isAnchor);
+    if (anchors.length === 0) continue;
 
-      const clusterStartDate = getTransactionDate(cluster[0]);
-      const clusterEndDate = getTransactionDate(cluster[cluster.length - 1]);
+    const nonAnchorTxs = clusters.filter((c) => !c.isAnchor).flatMap((c) => c.txs);
 
+    // Build episodes for each anchor
+    for (let i = 0; i < anchors.length; i++) {
+      const anchor = anchors[i];
       const preBookings: ExternalProviderTransaction[] = [];
       const onSite: ExternalProviderTransaction[] = [];
 
-      // Check unattached pre-bookings that fall up to 270 days prior to cluster start date
-      for (let p = unattachedPreBookings.length - 1; p >= 0; p--) {
-        const pTx = unattachedPreBookings[p];
+      // Sort non-anchor transactions: gather prior payments occurring within [anchor.startDate - 300 days, anchor.startDate]
+      // into the first upcoming anchor
+      for (let n = nonAnchorTxs.length - 1; n >= 0; n--) {
+        const pTx = nonAnchorTxs[n];
         const pDate = getTransactionDate(pTx);
-        const daysPrior = (clusterStartDate.getTime() - pDate.getTime()) / (1000 * 3600 * 24);
-        if (daysPrior >= 0 && daysPrior <= 270) {
-          preBookings.push(pTx);
-          unattachedPreBookings.splice(p, 1);
+        const daysPrior = (anchor.startDate.getTime() - pDate.getTime()) / (1000 * 3600 * 24);
+
+        if (daysPrior >= 0 && daysPrior <= 300) {
+          // Check if this anchor is indeed the first upcoming anchor for this transaction
+          const isFirstUpcoming = !anchors.some(
+            (other, idx) => idx < i && other.startDate.getTime() >= pDate.getTime(),
+          );
+          if (isFirstUpcoming) {
+            preBookings.push(pTx);
+            nonAnchorTxs.splice(n, 1);
+          }
         }
       }
 
-      for (const tx of cluster) {
+      // Inside the anchor itself, separate pre-bookings (>14 days prior without travel markers) from on-site
+      for (const tx of anchor.txs) {
         const txDate = getTransactionDate(tx);
-        const diffDays = (clusterEndDate.getTime() - txDate.getTime()) / (1000 * 3600 * 24);
+        const diffDays = (anchor.endDate.getTime() - txDate.getTime()) / (1000 * 3600 * 24);
         const tags = (tx.tags ?? []).map((t) => normalizeLifestyleTag(String(t)));
 
-        // If bought more than 14 days before the main cluster end date and has flight/ticket/hotel without #travel, treat as pre-booking
-        if (diffDays > 14 && !tags.includes("travel") && !tags.includes("end-travel") && cluster.length > 1) {
+        if (diffDays > 14 && !tags.includes("travel") && !tags.includes("end-travel") && anchor.txs.length > 1) {
           preBookings.push(tx);
         } else {
           onSite.push(tx);
         }
       }
 
-      const effectiveStartDate = onSite.length > 0 ? getTransactionDate(onSite[0]) : clusterStartDate;
-      const effectiveEndDate = onSite.length > 0 ? getTransactionDate(onSite[onSite.length - 1]) : clusterEndDate;
+      if (onSite.length === 0 && preBookings.length > 0) {
+        const lastPre = preBookings.pop();
+        if (lastPre) {
+          onSite.push(lastPre);
+        }
+      }
+
+      preBookings.sort((a, b) => getTransactionDate(a).getTime() - getTransactionDate(b).getTime());
+      onSite.sort((a, b) => getTransactionDate(a).getTime() - getTransactionDate(b).getTime());
+
+      const effectiveStartDate = onSite.length > 0 ? getTransactionDate(onSite[0]) : anchor.startDate;
+      const effectiveEndDate = onSite.length > 0 ? getTransactionDate(onSite[onSite.length - 1]) : anchor.endDate;
 
       const validStartDate = isValid(effectiveStartDate) ? effectiveStartDate : new Date(0);
       const validEndDate = isValid(effectiveEndDate) ? effectiveEndDate : validStartDate;
 
       let preBookingTotal = 0;
       for (const tx of preBookings) {
-        preBookingTotal += getConvertedTransactionAmount(tx, defaultCurrency, currencies).convertedAmount;
+        preBookingTotal += getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap).convertedAmount;
       }
 
       let onSiteTotal = 0;
       for (const tx of onSite) {
-        onSiteTotal += getConvertedTransactionAmount(tx, defaultCurrency, currencies).convertedAmount;
+        onSiteTotal += getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap).convertedAmount;
       }
+
+      const isMultiDay = validEndDate.getTime() - validStartDate.getTime() >= 86400000;
+      const untaggedCandidates =
+        anchor.hasBookend || isMultiDay
+          ? findUntaggedTripCandidates({
+              transactions,
+              categories: categoryMap,
+              currencies,
+              defaultCurrency,
+              startDate: validStartDate,
+              endDate: validEndDate,
+            })
+          : [];
 
       const capDestination = destTag.charAt(0).toUpperCase() + destTag.slice(1);
       const name = `${capDestination} (${format(validStartDate, "MMM yyyy")})`;
       const episodeId = `trip-${destTag}-${format(validStartDate, "yyyy-MM")}-${i + 1}`;
-
-      // Discover untagged candidate transactions in this trip window [validStartDate, validEndDate]
-      const untaggedCandidates = findUntaggedTripCandidates({
-        transactions,
-        categories: categoryMap,
-        currencies,
-        defaultCurrency,
-        startDate: validStartDate,
-        endDate: validEndDate,
-      });
 
       episodes.push({
         id: episodeId,
@@ -891,7 +1038,7 @@ export function findUntaggedTripCandidates(input: {
     const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
     if (rawTags.length > 0) continue;
 
-    const { convertedAmount, currency } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+    const { convertedAmount, currency } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
     const cat = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
     const catName = cat?.name ?? "";
 
@@ -1192,7 +1339,7 @@ export function computeWellnessMetrics(input: {
     const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
     const cleanTags = rawTags.map(normalizeLifestyleTag);
 
-    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
 
     // Classify into wellness stream
     let targetStream: WellnessStreamId | null = null;
@@ -1277,7 +1424,7 @@ export function computeWellnessMetrics(input: {
           : (singleVisitCosts[mid - 1] + singleVisitCosts[mid]) / 2;
 
       for (const tx of bucket.txs) {
-        const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+        const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
         if (convertedAmount >= 4 * median && getPassMultiplierFromTags(tx.tags) === null) {
           auditQueue.push({
             transaction: tx,
@@ -1371,7 +1518,7 @@ export function computeLearningMetrics(input: {
     const unifiedCat = normalizeUnifiedCategory(cat?.name ?? "");
     if (unifiedCat !== "Learning") continue;
 
-    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
     totalSpend += convertedAmount;
     learningTxs.push(tx);
 
