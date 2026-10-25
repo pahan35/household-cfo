@@ -958,5 +958,203 @@ describe("lifestyle-transforms", () => {
       expect(sportAudit).toBeDefined();
       expect(sportAudit?.suggestedTags).toEqual(["gym", "multisport", "pilates", "wife"]);
     });
+
+    it("implements foreign source currency precedence when paying to default-currency categories", () => {
+      const extraCategories: ExternalProviderCategory[] = [
+        ...mockCategories,
+        { id: "acc-eur", name: "Bank EUR", categoryType: CategoryType.Account, currencyId: "EUR" },
+      ];
+      const categoryMap = new Map<string, ExternalProviderCategory>(extraCategories.map((c) => [c.id, c]));
+
+      // Expense transaction from EUR account to Sport PLN category
+      const tx: ExternalProviderTransaction = {
+        id: "tx-sport-foreign-acc",
+        sourceId: "acc-eur",
+        destinationId: "cat-sport-pln",
+        sourceAmount: 700,
+        destinationAmount: 700,
+        destinationType: CategoryType.Expense,
+      };
+
+      const result = getConvertedTransactionAmount(tx, "PLN", mockCurrencies, categoryMap);
+      expect(result.currency).toBe("EUR");
+      expect(result.nativeAmount).toBe(700);
+      // 700 EUR / 0.92 * 4 PLN = ~3043.48 PLN
+      const expectedPln = (700 / 0.92) * 4;
+      expect(result.convertedAmount).toBeCloseTo(expectedPln, 2);
+    });
+
+    it("formats outlier reasons with native currency and populates native amount on audit items", () => {
+      const txs: ExternalProviderTransaction[] = [
+        {
+          id: "tx-mh-1",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 70,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-01-10").getTime(),
+        },
+        {
+          id: "tx-mh-2",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 70,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-01-20").getTime(),
+        },
+        {
+          id: "tx-mh-3",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 70,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-02-01").getTime(),
+        },
+        {
+          id: "tx-mh-pkg",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 700, // 10x single visit cost
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-03-01").getTime(),
+        },
+      ];
+
+      const { auditQueue } = computeWellnessMetrics({
+        transactions: txs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      const outlier = auditQueue.find((a) => a.transaction.id === "tx-mh-pkg");
+      expect(outlier).toBeDefined();
+      expect(outlier?.isOutlierPackage).toBe(true);
+      expect(outlier?.nativeAmount).toBe(700);
+      expect(outlier?.nativeCurrency).toBe("EUR");
+      expect(outlier?.reason).toBe("Likely multi-session package (700 EUR vs median 70 EUR)");
+    });
+
+    it("keeps transactions with only scope tags in the audit queue while suggesting missing activity tags", () => {
+      const txs: ExternalProviderTransaction[] = [
+        {
+          id: "tx-sport-wife",
+          destinationId: "cat-sport-pln",
+          destinationAmount: 200,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: ["wife"], // Has scope tag but no activity tag
+          dateTimestamp: new Date("2025-05-12").getTime(),
+        },
+      ];
+
+      const { auditQueue } = computeWellnessMetrics({
+        transactions: txs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      const item = auditQueue.find((a) => a.transaction.id === "tx-sport-wife");
+      expect(item).toBeDefined();
+      expect(item?.reason).toBe("Missing sport activity tag");
+      expect(item?.suggestedTags).toEqual(["gym", "multisport", "pilates"]);
+      expect(item?.suggestedTags).not.toContain("wife");
+    });
+
+    it("reorders audit queue: package outliers first, followed by untagged entries, newest date first within each tier", () => {
+      const txs: ExternalProviderTransaction[] = [
+        {
+          id: "tx-sport-old",
+          destinationId: "cat-sport-pln",
+          destinationAmount: 100,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-01-01").getTime(),
+        },
+        {
+          id: "tx-sport-new",
+          destinationId: "cat-sport-pln",
+          destinationAmount: 150,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-05-01").getTime(),
+        },
+        // Mental Health baseline
+        {
+          id: "tx-mh-b1",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 50,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: ["mental-health"],
+          dateTimestamp: new Date("2025-01-10").getTime(),
+        },
+        {
+          id: "tx-mh-b2",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 50,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: ["mental-health"],
+          dateTimestamp: new Date("2025-01-20").getTime(),
+        },
+        {
+          id: "tx-mh-b3",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 50,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: ["mental-health"],
+          dateTimestamp: new Date("2025-01-30").getTime(),
+        },
+        // Outlier 1 (newer)
+        {
+          id: "tx-outlier-new",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 500,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-04-01").getTime(),
+        },
+        // Outlier 2 (older)
+        {
+          id: "tx-outlier-old",
+          destinationId: "cat-mh-eur",
+          destinationAmount: 500,
+          destinationCurrencyId: "EUR",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-02-15").getTime(),
+        },
+      ];
+
+      const { auditQueue } = computeWellnessMetrics({
+        transactions: txs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      expect(auditQueue.length).toBe(4);
+      // Tier 1: Outliers first, descending by date
+      expect(auditQueue[0].transaction.id).toBe("tx-outlier-new");
+      expect(auditQueue[0].isOutlierPackage).toBe(true);
+      expect(auditQueue[1].transaction.id).toBe("tx-outlier-old");
+      expect(auditQueue[1].isOutlierPackage).toBe(true);
+
+      // Tier 2: Routine untagged/missing activity, descending by date
+      expect(auditQueue[2].transaction.id).toBe("tx-sport-new");
+      expect(auditQueue[2].isOutlierPackage).toBe(false);
+      expect(auditQueue[3].transaction.id).toBe("tx-sport-old");
+      expect(auditQueue[3].isOutlierPackage).toBe(false);
+    });
   });
 });

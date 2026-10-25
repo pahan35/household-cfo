@@ -149,6 +149,10 @@ export function extractCategoryCurrency(cat?: ExternalProviderCategory): string 
  * Resolves the native amount and currency of a transaction, converted to the default currency.
  * If transaction-level currency fields are missing, resolves currency hierarchically from
  * destination category or source account via categoryMap.
+ *
+ * Implements foreign source currency precedence: when an expense transaction originates from
+ * a foreign source account or carries a foreign source currency (e.g. EUR), that foreign currency
+ * and amount take precedence over default-currency destination categories.
  */
 export function getConvertedTransactionAmount(
   tx: ExternalProviderTransaction,
@@ -156,20 +160,46 @@ export function getConvertedTransactionAmount(
   currencies: ExternalProviderCurrency[],
   categoryMap?: Map<string, ExternalProviderCategory>,
 ): { nativeAmount: number; currency: string; convertedAmount: number } {
-  const nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
-  let currency = (tx.destinationCurrencyId ?? tx.sourceCurrencyId)?.trim().toUpperCase();
+  const normDefault = defaultCurrency.trim().toUpperCase();
 
-  if (!currency && categoryMap) {
-    if (tx.destinationId) {
-      currency = extractCategoryCurrency(categoryMap.get(tx.destinationId));
-    }
-    if (!currency && tx.sourceId) {
-      currency = extractCategoryCurrency(categoryMap.get(tx.sourceId));
-    }
+  const sourceCategory = tx.sourceId && categoryMap ? categoryMap.get(tx.sourceId) : undefined;
+  const destCategory = tx.destinationId && categoryMap ? categoryMap.get(tx.destinationId) : undefined;
+
+  const sourceCurrency = (tx.sourceCurrencyId ?? (sourceCategory ? extractCategoryCurrency(sourceCategory) : undefined))
+    ?.trim()
+    .toUpperCase();
+
+  const destCurrency = (tx.destinationCurrencyId ?? (destCategory ? extractCategoryCurrency(destCategory) : undefined))
+    ?.trim()
+    .toUpperCase();
+
+  const sourceNum = tx.sourceAmount != null ? Math.abs(Number(tx.sourceAmount)) : undefined;
+  const destNum = tx.destinationAmount != null ? Math.abs(Number(tx.destinationAmount)) : undefined;
+  const defaultNum = tx.defaultAmount != null ? Math.abs(Number(tx.defaultAmount)) : undefined;
+
+  let currency = normDefault;
+  let nativeAmount = 0;
+
+  if (sourceCurrency && sourceCurrency !== normDefault) {
+    currency = sourceCurrency;
+    nativeAmount = (sourceNum && sourceNum > 0 ? sourceNum : (destNum ?? defaultNum)) ?? 0;
+  } else if (destCurrency && destCurrency !== normDefault) {
+    currency = destCurrency;
+    nativeAmount = (destNum && destNum > 0 ? destNum : (sourceNum ?? defaultNum)) ?? 0;
+  } else {
+    currency = sourceCurrency ?? destCurrency ?? normDefault;
+    nativeAmount = destNum ?? sourceNum ?? defaultNum ?? 0;
   }
 
-  currency = currency || defaultCurrency.toUpperCase();
-  const convertedAmount = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
+  if (!currency) {
+    currency = normDefault;
+  }
+
+  const convertedAmount =
+    currency === normDefault
+      ? nativeAmount
+      : (convertCurrencyAmount(nativeAmount, currency, normDefault, currencies) ?? nativeAmount);
+
   return { nativeAmount, currency, convertedAmount };
 }
 
@@ -1207,6 +1237,8 @@ export interface WellnessAuditItem {
   isOutlierPackage: boolean;
   convertedAmount: number;
   currency: string;
+  nativeAmount?: number;
+  nativeCurrency?: string;
 }
 
 export interface LearningFacetMetric {
@@ -1244,6 +1276,34 @@ export const MEDICAL_OUT_OF_POCKET_TAGS = [
 export const SPORT_COVERED_TAGS = ["gym", "multisport", "fitness", "pool", "swim"] as const;
 export const SPORT_OUT_OF_POCKET_TAGS = ["pilates", "trainer", "coach"] as const;
 export const SCOPE_PERSON_TAGS = ["wife", "partner", "family", "me", "kid", "child"] as const;
+
+export const SPORT_ACTIVITY_TAGS = ["pilates", "gym", "multisport"] as const;
+export const MEDICAL_SERVICE_TAGS = ["consult", "exams", "dentist", "pharmacy", "physio", "vaccine"] as const;
+export const SCOPE_TAGS = ["wife", "partner", "family", "me"] as const;
+export const PASS_TAGS = ["10x", "5x", "1x"] as const;
+
+export function isSportActivityTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return (
+    SPORT_ACTIVITY_TAGS.includes(norm as (typeof SPORT_ACTIVITY_TAGS)[number]) ||
+    isSportCoveredTag(norm) ||
+    isSportOutOfPocketTag(norm)
+  );
+}
+
+export function isMedicalServiceTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return (
+    MEDICAL_SERVICE_TAGS.includes(norm as (typeof MEDICAL_SERVICE_TAGS)[number]) ||
+    isMedicalCoveredTag(norm) ||
+    isMedicalOutOfPocketTag(norm)
+  );
+}
+
+export function isScopeTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return SCOPE_TAGS.includes(norm as (typeof SCOPE_TAGS)[number]) || isSpouseOrFamilyTag(norm);
+}
 
 export function isMedicalCoveredTag(tag: string): boolean {
   const norm = normalizeLifestyleTag(tag);
@@ -1339,7 +1399,12 @@ export function computeWellnessMetrics(input: {
     const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
     const cleanTags = rawTags.map(normalizeLifestyleTag);
 
-    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
+    const { convertedAmount, nativeAmount, currency } = getConvertedTransactionAmount(
+      tx,
+      defaultCurrency,
+      currencies,
+      categoryMap,
+    );
 
     // Classify into wellness stream
     let targetStream: WellnessStreamId | null = null;
@@ -1364,30 +1429,41 @@ export function computeWellnessMetrics(input: {
     } else if (unifiedCat === "Medicine") {
       targetStream = "medical";
       defaultMultiplier = 1;
-      // If untagged medicine, suggest sub-tags in audit queue
-      if (cleanTags.length === 0) {
+      const hasServiceTag = cleanTags.some(isMedicalServiceTag);
+      if (!hasServiceTag) {
+        const baseSuggestions = ["consult", "exams", "dentist", "pharmacy", "wife"];
+        const suggestedTags = baseSuggestions.filter((t) => !cleanTags.includes(t));
+        const reason = cleanTags.length === 0 ? "Untagged medical expense" : "Missing medical service tag";
         auditQueue.push({
           transaction: tx,
           streamId: "medical",
-          suggestedTags: ["consult", "exams", "dentist", "pharmacy", "wife"],
-          reason: "Untagged medical expense",
+          suggestedTags,
+          reason,
           isOutlierPackage: false,
           convertedAmount,
           currency: defaultCurrency,
+          nativeAmount,
+          nativeCurrency: currency,
         });
       }
     } else if (unifiedCat === "Sport") {
       targetStream = "sport";
       defaultMultiplier = 1;
-      if (cleanTags.length === 0) {
+      const hasActivityTag = cleanTags.some(isSportActivityTag);
+      if (!hasActivityTag) {
+        const baseSuggestions = ["gym", "multisport", "pilates", "wife"];
+        const suggestedTags = baseSuggestions.filter((t) => !cleanTags.includes(t));
+        const reason = cleanTags.length === 0 ? "Untagged sport expense" : "Missing sport activity tag";
         auditQueue.push({
           transaction: tx,
           streamId: "sport",
-          suggestedTags: ["gym", "multisport", "pilates", "wife"],
-          reason: "Untagged sport expense",
+          suggestedTags,
+          reason,
           isOutlierPackage: false,
           convertedAmount,
           currency: defaultCurrency,
+          nativeAmount,
+          nativeCurrency: currency,
         });
       }
     } else if (unifiedCat === "Learning") {
@@ -1413,7 +1489,7 @@ export function computeWellnessMetrics(input: {
 
     const singleVisitCosts = bucket.txs
       .filter((tx) => getPassMultiplierFromTags(tx.tags) === null)
-      .map((tx) => getConvertedTransactionAmount(tx, defaultCurrency, currencies).convertedAmount)
+      .map((tx) => getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap).convertedAmount)
       .sort((a, b) => a - b);
 
     if (singleVisitCosts.length > 0) {
@@ -1424,21 +1500,53 @@ export function computeWellnessMetrics(input: {
           : (singleVisitCosts[mid - 1] + singleVisitCosts[mid]) / 2;
 
       for (const tx of bucket.txs) {
-        const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
+        const {
+          convertedAmount,
+          nativeAmount,
+          currency: txCurrency,
+        } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
         if (convertedAmount >= 4 * median && getPassMultiplierFromTags(tx.tags) === null) {
+          const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
+          const cleanTags = rawTags.map(normalizeLifestyleTag);
+          const baseSuggestions = ["10x", "5x", "wife"];
+          const suggestedTags = baseSuggestions.filter((t) => !cleanTags.includes(t));
+
+          const normTxCurrency = txCurrency.toUpperCase();
+          const normDefault = defaultCurrency.toUpperCase();
+          let nativeMedian = Math.round(median);
+          if (normTxCurrency !== normDefault) {
+            const converted = convertCurrencyAmount(median, normDefault, normTxCurrency, currencies);
+            if (converted != null && !Number.isNaN(converted)) {
+              nativeMedian = Math.round(converted);
+            }
+          }
+
           auditQueue.push({
             transaction: tx,
             streamId,
-            suggestedTags: ["10x", "5x"],
-            reason: `Likely multi-session package (${convertedAmount} ${defaultCurrency} vs median ${Math.round(median)})`,
+            suggestedTags,
+            reason: `Likely multi-session package (${nativeAmount} ${txCurrency} vs median ${nativeMedian} ${txCurrency})`,
             isOutlierPackage: true,
             convertedAmount,
             currency: defaultCurrency,
+            nativeAmount,
+            nativeCurrency: txCurrency,
           });
         }
       }
     }
   }
+
+  // Reorder audit queue: package outliers first, then untagged entries, descending by date within each tier
+  auditQueue.sort((a, b) => {
+    if (a.isOutlierPackage && !b.isOutlierPackage) return -1;
+    if (!a.isOutlierPackage && b.isOutlierPackage) return 1;
+
+    const dateA = getTransactionDate(a.transaction).getTime();
+    const dateB = getTransactionDate(b.transaction).getTime();
+    if (dateB !== dateA) return dateB - dateA;
+    return b.transaction.id.localeCompare(a.transaction.id);
+  });
 
   // Calculate cadence and format stream metrics
   const streams: WellnessStreamMetric[] = [];

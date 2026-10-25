@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { format } from "date-fns";
 import {
@@ -21,11 +21,11 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
-import { formatMoney } from "../../_components/external-provider-data";
+import { type ExternalProviderTransaction, formatMoney } from "../../_components/external-provider-data";
 import {
   computeWellnessMetrics,
-  getConvertedTransactionAmount,
   getTransactionDate,
+  normalizeLifestyleTag,
   type WellnessAuditItem,
   type WellnessStreamId,
   type WellnessStreamMetric,
@@ -71,10 +71,18 @@ function getStreamColorClass(streamId: WellnessStreamId) {
   }
 }
 
+interface DismissalTimerEntry {
+  secondsLeft: number;
+  isPaused: boolean;
+  item: WellnessAuditItem;
+}
+
 export function HealthSportDashboard() {
   const { categoryMap, currencies, transactions, defaultCurrency, updateTxTags } = useLifestyleData();
 
   const [savingTxId, setSavingTxId] = useState<string | null>(null);
+  const [dismissedTxIds, setDismissedTxIds] = useState<Set<string>>(() => new Set());
+  const [dismissalTimers, setDismissalTimers] = useState<Record<string, DismissalTimerEntry>>({});
 
   // Compute metrics and audit queue
   const { streams, auditQueue } = useMemo(() => {
@@ -86,6 +94,82 @@ export function HealthSportDashboard() {
     });
   }, [transactions, categoryMap, currencies, defaultCurrency]);
 
+  // Manage 4-second auto-dismissal countdown
+  useEffect(() => {
+    const hasActiveTimer = Object.values(dismissalTimers).some(
+      (entry) => !entry.isPaused && !dismissedTxIds.has(entry.item.transaction.id),
+    );
+    if (!hasActiveTimer) return;
+
+    const interval = setInterval(() => {
+      setDismissalTimers((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        const newlyDismissed: string[] = [];
+
+        for (const [id, entry] of Object.entries(next)) {
+          if (entry.isPaused || dismissedTxIds.has(id)) continue;
+          if (entry.secondsLeft <= 1) {
+            delete next[id];
+            newlyDismissed.push(id);
+            changed = true;
+          } else {
+            next[id] = { ...entry, secondsLeft: entry.secondsLeft - 1 };
+            changed = true;
+          }
+        }
+
+        if (newlyDismissed.length > 0) {
+          setDismissedTxIds((prevDismissed) => {
+            const nextDismissed = new Set(prevDismissed);
+            for (const id of newlyDismissed) {
+              nextDismissed.add(id);
+            }
+            return nextDismissed;
+          });
+        }
+
+        return changed ? next : prev;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [dismissalTimers, dismissedTxIds]);
+
+  // Combined visible audit queue retaining items under active countdown
+  const visibleAuditQueue = useMemo(() => {
+    const queueMap = new Map<string, WellnessAuditItem>();
+
+    for (const item of auditQueue) {
+      const txId = item.transaction.id;
+      if (dismissedTxIds.has(txId)) continue;
+      if (dismissalTimers[txId]) {
+        queueMap.set(txId, dismissalTimers[txId].item);
+      } else {
+        queueMap.set(txId, item);
+      }
+    }
+
+    for (const [txId, entry] of Object.entries(dismissalTimers)) {
+      if (dismissedTxIds.has(txId)) continue;
+      if (!queueMap.has(txId)) {
+        queueMap.set(txId, entry.item);
+      }
+    }
+
+    const items = Array.from(queueMap.values());
+    items.sort((a, b) => {
+      if (a.isOutlierPackage && !b.isOutlierPackage) return -1;
+      if (!a.isOutlierPackage && b.isOutlierPackage) return 1;
+      const dateA = getTransactionDate(a.transaction).getTime();
+      const dateB = getTransactionDate(b.transaction).getTime();
+      if (dateB !== dateA) return dateB - dateA;
+      return b.transaction.id.localeCompare(a.transaction.id);
+    });
+
+    return items;
+  }, [auditQueue, dismissedTxIds, dismissalTimers]);
+
   // Overall KPIs
   const kpis = useMemo(() => {
     const totalCost = streams.reduce((acc, s) => acc + s.totalCost, 0);
@@ -95,9 +179,23 @@ export function HealthSportDashboard() {
       totalCost,
       totalSessions,
       avgCostPerSession,
-      auditCount: auditQueue.length,
+      auditCount: visibleAuditQueue.length,
     };
-  }, [streams, auditQueue]);
+  }, [streams, visibleAuditQueue]);
+
+  const isPrimaryRequirement = (item: WellnessAuditItem, tag: string): boolean => {
+    const norm = normalizeLifestyleTag(tag);
+    if (item.isOutlierPackage) {
+      return norm.endsWith("x") || /^[0-9]+x$/i.test(norm);
+    }
+    if (item.streamId === "sport") {
+      return ["pilates", "gym", "multisport"].includes(norm);
+    }
+    if (item.streamId === "medical") {
+      return ["consult", "exams", "dentist", "pharmacy", "physio", "vaccine"].includes(norm);
+    }
+    return !["wife", "partner", "family", "me"].includes(norm);
+  };
 
   const handleApplyTag = async (item: WellnessAuditItem, tagToAdd: string) => {
     setSavingTxId(item.transaction.id);
@@ -107,11 +205,75 @@ export function HealthSportDashboard() {
         : [];
       const newTags = Array.from(new Set([...existingTags, tagToAdd]));
       await updateTxTags(item.transaction, newTags);
+
+      const isPrimary = isPrimaryRequirement(item, tagToAdd);
+      const updatedTx: ExternalProviderTransaction = {
+        ...item.transaction,
+        tags: newTags,
+      };
+      const updatedItem: WellnessAuditItem = {
+        ...item,
+        transaction: updatedTx,
+        suggestedTags: item.suggestedTags.filter((t) => normalizeLifestyleTag(t) !== normalizeLifestyleTag(tagToAdd)),
+      };
+
+      if (isPrimary) {
+        setDismissalTimers((prev) => ({
+          ...prev,
+          [item.transaction.id]: {
+            secondsLeft: 4,
+            isPaused: false,
+            item: updatedItem,
+          },
+        }));
+      } else {
+        setDismissalTimers((prev) => {
+          if (!prev[item.transaction.id]) return prev;
+          return {
+            ...prev,
+            [item.transaction.id]: {
+              ...prev[item.transaction.id],
+              item: updatedItem,
+            },
+          };
+        });
+      }
     } catch {
       // Error handled in updateTxTags
     } finally {
       setSavingTxId(null);
     }
+  };
+
+  const handlePauseTimer = (txId: string) => {
+    setDismissalTimers((prev) => {
+      const entry = prev[txId];
+      if (!entry) return prev;
+      return {
+        ...prev,
+        [txId]: { ...entry, isPaused: true },
+      };
+    });
+  };
+
+  const handleResumeTimer = (txId: string) => {
+    setDismissalTimers((prev) => {
+      const entry = prev[txId];
+      if (!entry) return prev;
+      return {
+        ...prev,
+        [txId]: { ...entry, isPaused: false },
+      };
+    });
+  };
+
+  const handleDismissNow = (txId: string) => {
+    setDismissedTxIds((prev) => new Set(prev).add(txId));
+    setDismissalTimers((prev) => {
+      const next = { ...prev };
+      delete next[txId];
+      return next;
+    });
   };
 
   return (
@@ -242,7 +404,7 @@ export function HealthSportDashboard() {
         title="Wellness Tag &amp; Pass Audit Queue"
         description="Untagged medicine/sport transactions and detected package outliers (>= 4x median single visit cost)"
       >
-        {auditQueue.length === 0 ? (
+        {visibleAuditQueue.length === 0 ? (
           <div className="flex h-28 items-center justify-center rounded-lg border bg-card p-6 text-center text-muted-foreground text-xs">
             <div className="flex flex-col items-center gap-1.5">
               <Check className="size-5 text-emerald-500" />
@@ -251,10 +413,19 @@ export function HealthSportDashboard() {
           </div>
         ) : (
           <div className="flex flex-col divide-y rounded-lg border bg-card">
-            {auditQueue.map((item) => {
+            {visibleAuditQueue.map((item) => {
               const tx = item.transaction;
               const txDate = format(getTransactionDate(tx), "yyyy-MM-dd");
               const isSaving = savingTxId === tx.id;
+              const timerEntry = dismissalTimers[tx.id];
+              const isForeign = Boolean(
+                item.nativeCurrency &&
+                  item.nativeCurrency.toUpperCase() !== defaultCurrency.toUpperCase() &&
+                  item.nativeAmount != null,
+              );
+              const activeTags = Array.isArray(tx.tags)
+                ? tx.tags.filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+                : [];
 
               return (
                 <div
@@ -271,14 +442,19 @@ export function HealthSportDashboard() {
                     </div>
 
                     <div className="flex flex-col">
-                      <div className="flex items-center gap-2 font-medium text-foreground">
+                      <div className="flex flex-wrap items-center gap-1.5 font-medium text-foreground">
                         <span>{tx.destinationName ?? "Expense"}</span>
-                        {tx.comment && <span className="text-muted-foreground font-normal">({tx.comment})</span>}
+                        {tx.comment && <span className="font-normal text-muted-foreground">({tx.comment})</span>}
                         {item.isOutlierPackage && (
                           <Badge className="bg-amber-500/15 text-[10px] text-amber-700 dark:text-amber-300">
                             Package Outlier
                           </Badge>
                         )}
+                        {activeTags.map((tag) => (
+                          <Badge key={tag} variant="secondary" className="px-1.5 py-0 font-normal text-[10px]">
+                            #{normalizeLifestyleTag(tag)}
+                          </Badge>
+                        ))}
                       </div>
                       <span className="text-[10px] text-muted-foreground">
                         {txDate} • {item.reason}
@@ -286,13 +462,55 @@ export function HealthSportDashboard() {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold font-mono text-foreground text-sm">
-                      {formatMoney(item.convertedAmount, defaultCurrency)}
-                    </span>
+                  <div className="flex flex-col items-end gap-2 sm:flex-row sm:items-center sm:gap-3">
+                    <div className="flex shrink-0 flex-col items-end">
+                      <span className="font-bold font-mono text-foreground text-sm">
+                        {formatMoney(item.convertedAmount, defaultCurrency)}
+                      </span>
+                      {isForeign && (
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          {formatMoney(item.nativeAmount!, item.nativeCurrency!)}
+                        </span>
+                      )}
+                    </div>
 
-                    {/* Quick action buttons */}
+                    {/* Auto-Dismissal Timer & Quick Action Buttons */}
                     <div className="flex flex-wrap items-center gap-1.5">
+                      {timerEntry ? (
+                        <div className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1">
+                          <span className="font-medium text-[11px] text-muted-foreground">
+                            {timerEntry.isPaused ? "Paused" : `Dismissing in ${timerEntry.secondsLeft}s...`}
+                          </span>
+                          {timerEntry.isPaused ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleResumeTimer(tx.id)}
+                              className="h-6 px-1.5 text-[10px]"
+                            >
+                              Resume
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handlePauseTimer(tx.id)}
+                              className="h-6 px-1.5 text-[10px]"
+                            >
+                              Pause / Add more
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDismissNow(tx.id)}
+                            className="h-6 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
+                          >
+                            Dismiss now
+                          </Button>
+                        </div>
+                      ) : null}
+
                       {item.suggestedTags.map((tag) => (
                         <Button
                           key={tag}
