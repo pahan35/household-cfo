@@ -615,6 +615,7 @@ export function BudgetOverviewDashboard() {
             onMoveCategoriesAboveArchived={handleMoveCategoriesAboveArchived}
             onMoveCategoriesToBottom={handleMoveCategoriesToBottom}
             onOrganizeByCurrencyTier={handleOrganizeByCurrencyTier}
+            onCategoriesUpdated={setCategories}
           />
         </div>
       </div>

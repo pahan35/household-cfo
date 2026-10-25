@@ -293,6 +293,7 @@ export function IncomeDashboard() {
             onSelectSource={handleSelectSource}
             incomeBySourceId={incomeBySourceId}
             onOpenNormalizeCategories={() => setIsRenamingDialogOpen(true)}
+            onCategoriesUpdated={setCategories}
           />
         </div>
 

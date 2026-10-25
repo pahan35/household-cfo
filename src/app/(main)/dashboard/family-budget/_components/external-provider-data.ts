@@ -2293,3 +2293,344 @@ export function organizeExpenseCategoriesByCurrencyTier(
   const newGroup = [...primary, ...foreign, ...archived, ...removed];
   return applyCategoryGroupUpdates(allCategories, newGroup, isExpenseCategory, { includeDeleted: true });
 }
+
+// ---------------------------------------------------------------------------
+// Category Lifecycle & Activity Optimizer Engine
+// ---------------------------------------------------------------------------
+
+export type CategoryActivityLookbackScope = "all-time" | "180-days" | "90-days";
+
+export interface CategoryActivityScoreOptions {
+  lookbackScope?: CategoryActivityLookbackScope;
+  lookbackDays?: number | null;
+  halfLifeDays?: number;
+  now?: Date | number;
+}
+
+export interface CategoryActivityScore {
+  categoryId: string;
+  score: number;
+  transactionCount: number;
+  lastActiveTimestamp: number | null;
+  lastActiveDate: Date | null;
+}
+
+export function getTransactionTimestamp(tx: ExternalProviderTransaction): number | null {
+  if (typeof tx.dateTimestamp === "number" && !Number.isNaN(tx.dateTimestamp) && tx.dateTimestamp > 0) {
+    const d = parseExternalProviderTimestamp(tx.dateTimestamp);
+    if (d && !Number.isNaN(d.getTime())) return d.getTime();
+  }
+  if (tx.dateTimestampISO) {
+    const parsed = Date.parse(tx.dateTimestampISO);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Computes time-decayed category activity scores using exponential half-life decay:
+ * Score(c) = sum_{tx in c} 2^(-age(tx) / tau) with tau = 30 days.
+ * Supports configurable lookback scopes ("all-time", "180-days", "90-days").
+ */
+export function computeCategoryActivityScores(
+  categories: ExternalProviderCategory[],
+  transactions: ExternalProviderTransaction[],
+  options?: CategoryActivityScoreOptions,
+): Map<string, CategoryActivityScore> {
+  const halfLifeDays = options?.halfLifeDays ?? 30;
+  const nowMs =
+    options?.now instanceof Date ? options.now.getTime() : typeof options?.now === "number" ? options.now : Date.now();
+
+  let lookbackDays: number | null = null;
+  if (typeof options?.lookbackDays === "number") {
+    lookbackDays = options.lookbackDays;
+  } else if (options?.lookbackScope === "90-days") {
+    lookbackDays = 90;
+  } else if (options?.lookbackScope === "180-days") {
+    lookbackDays = 180;
+  }
+
+  const cutoffMs = lookbackDays !== null && lookbackDays > 0 ? nowMs - lookbackDays * 86_400_000 : null;
+
+  const scores = new Map<string, CategoryActivityScore>();
+  for (const cat of categories) {
+    scores.set(cat.id, {
+      categoryId: cat.id,
+      score: 0,
+      transactionCount: 0,
+      lastActiveTimestamp: null,
+      lastActiveDate: null,
+    });
+  }
+
+  for (const tx of transactions) {
+    if (tx.deleted) continue;
+    const txTime = getTransactionTimestamp(tx);
+    if (txTime === null) continue;
+    if (cutoffMs !== null && txTime < cutoffMs) continue;
+
+    const ageInDays = Math.max(0, (nowMs - txTime) / 86_400_000);
+    const decay = 2 ** (-ageInDays / halfLifeDays);
+
+    const catIdsToUpdate = new Set<string>();
+    if (tx.destinationId && scores.has(tx.destinationId)) {
+      catIdsToUpdate.add(tx.destinationId);
+    }
+    if (tx.sourceId && scores.has(tx.sourceId)) {
+      catIdsToUpdate.add(tx.sourceId);
+    }
+
+    for (const catId of catIdsToUpdate) {
+      const entry = scores.get(catId);
+      if (entry) {
+        entry.score += decay;
+        entry.transactionCount += 1;
+        if (entry.lastActiveTimestamp === null || txTime > entry.lastActiveTimestamp) {
+          entry.lastActiveTimestamp = txTime;
+          entry.lastActiveDate = new Date(txTime);
+        }
+      }
+    }
+  }
+
+  return scores;
+}
+
+export type CategoryAuditStatus = "active" | "low-frequency" | "zero-transaction" | "standalone-foreign";
+
+export interface CategoryActivityAudit {
+  categoryId: string;
+  category: ExternalProviderCategory;
+  lifetimeTransactionCount: number;
+  lastActiveTimestamp: number | null;
+  lastActiveDate: Date | null;
+  status: CategoryAuditStatus;
+  isStandaloneForeign: boolean;
+  isOrphanCandidate: boolean;
+  hasDefaultCurrencyCounterpart: boolean;
+  counterpartCategoryId?: string;
+}
+
+export interface CategoryActivityAuditOptions {
+  defaultCurrency?: string;
+  allCategories?: ExternalProviderCategory[];
+}
+
+/**
+ * Classifies categories across all-time history into:
+ * - Active (> 3 transactions)
+ * - Low-Frequency (1 to 3 transactions)
+ * - Zero-Transaction (0 transactions)
+ * - Standalone Foreign (foreign currency category without default currency counterpart)
+ */
+export function classifyCategoryActivity(
+  categories: ExternalProviderCategory[],
+  transactions: ExternalProviderTransaction[],
+  options?: CategoryActivityAuditOptions,
+): Map<string, CategoryActivityAudit> {
+  const defaultCurrency = options?.defaultCurrency ?? "PLN";
+  const pool = options?.allCategories ?? categories;
+
+  // Build lifetime transaction counts and last active timestamps
+  const txCounts = new Map<string, number>();
+  const lastActiveMap = new Map<string, number>();
+
+  for (const cat of categories) {
+    txCounts.set(cat.id, 0);
+  }
+
+  for (const tx of transactions) {
+    if (tx.deleted) continue;
+    const txTime = getTransactionTimestamp(tx);
+
+    const catIds = new Set<string>();
+    if (tx.destinationId && txCounts.has(tx.destinationId)) catIds.add(tx.destinationId);
+    if (tx.sourceId && txCounts.has(tx.sourceId)) catIds.add(tx.sourceId);
+
+    for (const cid of catIds) {
+      txCounts.set(cid, (txCounts.get(cid) ?? 0) + 1);
+      if (txTime !== null) {
+        const prev = lastActiveMap.get(cid) ?? 0;
+        if (txTime > prev) lastActiveMap.set(cid, txTime);
+      }
+    }
+  }
+
+  // Pre-index default-currency counterparts in pool by canonical base name
+  const primaryByBase = new Map<string, ExternalProviderCategory>();
+  for (const cat of pool) {
+    if (cat.deleted) continue;
+    if (getCategoryCurrencyTier(cat.name, defaultCurrency) === "primary") {
+      const { stem } = splitArchivePrefix(cat.name);
+      const base = extractCanonicalBaseName(stem, defaultCurrency).toLowerCase();
+      if (base) {
+        primaryByBase.set(base, cat);
+      }
+    }
+  }
+
+  const results = new Map<string, CategoryActivityAudit>();
+
+  for (const cat of categories) {
+    const count = txCounts.get(cat.id) ?? 0;
+    const lastActiveTs = lastActiveMap.get(cat.id) ?? null;
+    const lastActiveDate = lastActiveTs ? new Date(lastActiveTs) : null;
+
+    const isForeign = isForeignCurrencyCategoryName(cat.name, defaultCurrency);
+    const { stem } = splitArchivePrefix(cat.name);
+    const baseName = extractCanonicalBaseName(stem, defaultCurrency).toLowerCase();
+    const counterpart = primaryByBase.get(baseName);
+    const hasCounterpart = Boolean(counterpart && counterpart.id !== cat.id);
+
+    const isStandaloneForeign = isForeign && !hasCounterpart;
+
+    let status: CategoryAuditStatus;
+    let isOrphanCandidate = false;
+
+    if (isStandaloneForeign) {
+      status = "standalone-foreign";
+      isOrphanCandidate = false;
+    } else if (count === 0) {
+      status = "zero-transaction";
+      isOrphanCandidate = true;
+    } else if (count <= 3) {
+      status = "low-frequency";
+      isOrphanCandidate = false;
+    } else {
+      status = "active";
+      isOrphanCandidate = false;
+    }
+
+    results.set(cat.id, {
+      categoryId: cat.id,
+      category: cat,
+      lifetimeTransactionCount: count,
+      lastActiveTimestamp: lastActiveTs,
+      lastActiveDate,
+      status,
+      isStandaloneForeign,
+      isOrphanCandidate,
+      hasDefaultCurrencyCounterpart: hasCounterpart,
+      counterpartCategoryId: hasCounterpart ? counterpart?.id : undefined,
+    });
+  }
+
+  return results;
+}
+
+export interface OptimizeCategoryOrderOptions {
+  defaultCurrency?: string;
+  isSameGroup?: (c: ExternalProviderCategory) => boolean;
+}
+
+export interface SmartOrderItemPreview {
+  category: ExternalProviderCategory;
+  previousOrder: number;
+  newOrder: number;
+  rankDelta: number; // previousOrder - newOrder (positive if moved up towards rank 0)
+  tier: CategoryCurrencyTier;
+  score: number;
+  transactionCount: number;
+  lastActiveDate: Date | null;
+}
+
+/**
+ * Optimizes category ordering by activity score while preserving architectural tiers:
+ * Tier 1: Active Primary (default currency) categories sorted by activity score descending.
+ * Tier 2: Active Foreign currency categories sorted by activity score descending.
+ * Tier 3: Soft-Archived categories (`_` prefix), preserving relative position.
+ * Tier 4: Soft-Deleted categories (`deleted: true`), preserved at bottom.
+ */
+export function optimizeCategoryOrderByActivity(
+  allCategories: ExternalProviderCategory[],
+  scores: Map<string, CategoryActivityScore> | Map<string, number>,
+  options?: OptimizeCategoryOrderOptions,
+): ReorderCategoriesResult {
+  const defaultCurrency = options?.defaultCurrency ?? "PLN";
+  const groupPredicate = options?.isSameGroup ?? isExpenseCategory;
+
+  const getScore = (id: string): number => {
+    const val = scores.get(id);
+    if (typeof val === "number") return val;
+    if (val && typeof val.score === "number") return val.score;
+    return 0;
+  };
+
+  const groupCategories = sortCategoriesByOrder(allCategories.filter((c) => groupPredicate(c)));
+
+  const primary: ExternalProviderCategory[] = [];
+  const foreign: ExternalProviderCategory[] = [];
+  const archived: ExternalProviderCategory[] = [];
+  const removed: ExternalProviderCategory[] = [];
+
+  for (const c of groupCategories) {
+    if (c.deleted) {
+      removed.push(c);
+      continue;
+    }
+    const tier = getCategoryCurrencyTier(c.name, defaultCurrency);
+    if (tier === "archived") {
+      archived.push(c);
+    } else if (tier === "foreign") {
+      foreign.push(c);
+    } else {
+      primary.push(c);
+    }
+  }
+
+  // Sort primary by score descending, tie-breaking by order then id
+  primary.sort((a, b) => {
+    const diff = getScore(b.id) - getScore(a.id);
+    if (Math.abs(diff) > 1e-6) return diff;
+    const orderA = typeof a.order === "number" ? a.order : 0;
+    const orderB = typeof b.order === "number" ? b.order : 0;
+    if (orderA !== orderB) return orderA - orderB;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+
+  // Sort foreign by score descending, tie-breaking by order then id
+  foreign.sort((a, b) => {
+    const diff = getScore(b.id) - getScore(a.id);
+    if (Math.abs(diff) > 1e-6) return diff;
+    const orderA = typeof a.order === "number" ? a.order : 0;
+    const orderB = typeof b.order === "number" ? b.order : 0;
+    if (orderA !== orderB) return orderA - orderB;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+
+  const newGroup = [...primary, ...foreign, ...archived, ...removed];
+  return applyCategoryGroupUpdates(allCategories, newGroup, groupPredicate, { includeDeleted: true });
+}
+
+/**
+ * Builds a preview comparison of category order changes before and after smart optimization.
+ */
+export function buildSmartOrderPreviewItems(
+  originalCategories: ExternalProviderCategory[],
+  optimizedCategories: ExternalProviderCategory[],
+  scores: Map<string, CategoryActivityScore>,
+  options?: { defaultCurrency?: string; isSameGroup?: (c: ExternalProviderCategory) => boolean },
+): SmartOrderItemPreview[] {
+  const defaultCurrency = options?.defaultCurrency ?? "PLN";
+  const groupPredicate = options?.isSameGroup ?? isExpenseCategory;
+
+  const originalMap = new Map(originalCategories.map((c) => [c.id, c]));
+  const group = sortCategoriesByOrder(optimizedCategories.filter((c) => groupPredicate(c) && !c.deleted));
+
+  return group.map((cat, newIndex) => {
+    const orig = originalMap.get(cat.id);
+    const prevOrder = typeof orig?.order === "number" ? orig.order : newIndex;
+    const scoreData = scores.get(cat.id);
+
+    return {
+      category: cat,
+      previousOrder: prevOrder,
+      newOrder: newIndex,
+      rankDelta: prevOrder - newIndex,
+      tier: getCategoryCurrencyTier(cat.name, defaultCurrency),
+      score: scoreData?.score ?? 0,
+      transactionCount: scoreData?.transactionCount ?? 0,
+      lastActiveDate: scoreData?.lastActiveDate ?? null,
+    };
+  });
+}

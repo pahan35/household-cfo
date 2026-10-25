@@ -14,6 +14,7 @@ import {
   Coins,
   GripVertical,
   MoreHorizontal,
+  Pencil,
   Sparkles,
   Target,
 } from "lucide-react";
@@ -59,6 +60,7 @@ import {
 } from "./external-provider-data";
 import { ExternalProviderIcon } from "./external-provider-icons";
 import { LastTransactionBadge } from "./last-transaction-badge";
+import { RenameCategoryDialog } from "./rename-category-dialog";
 import { SectionShell } from "./section-shell";
 import { isPfronCashbackCategory } from "./tax-transforms";
 
@@ -78,6 +80,7 @@ export interface IncomeSourcesCardProps {
   onSelectSource?: (sourceId: string | null) => void;
   incomeBySourceId?: Map<string, number>;
   onOpenNormalizeCategories?: () => void;
+  onCategoriesUpdated?: (updatedCategories: ExternalProviderCategory[]) => void;
 }
 
 export function IncomeSourcesCard({
@@ -90,6 +93,7 @@ export function IncomeSourcesCard({
   onArchiveSource,
   onUnarchiveSource,
   onMoveSourcesAboveArchived,
+  onCategoriesUpdated,
   lastTransactionByCategoryId,
   selectedSourceId = null,
   onSelectSource,
@@ -101,6 +105,7 @@ export function IncomeSourcesCard({
   const [internalError, setInternalError] = useState<Error | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [sourceToArchive, setSourceToArchive] = useState<ExternalProviderCategory | null>(null);
+  const [renamingCategory, setRenamingCategory] = useState<ExternalProviderCategory | null>(null);
   const [isMutating, setIsMutating] = useState(false);
 
   const isControlled = controlledCategories !== undefined;
@@ -375,11 +380,26 @@ export function IncomeSourcesCard({
                   onRequestArchive={(cat) => setSourceToArchive(cat)}
                   onUnarchive={(id) => void handleUnarchive(id)}
                   onMoveAboveArchived={(id) => void handleMoveAboveArchived(id)}
+                  onRename={(cat) => setRenamingCategory(cat)}
                 />
               );
             })}
           </div>
         </DragDropProvider>
+
+        {/* Rename Category Dialog */}
+        <RenameCategoryDialog
+          open={Boolean(renamingCategory)}
+          onOpenChange={(open) => !open && setRenamingCategory(null)}
+          category={renamingCategory}
+          allCategories={categories}
+          onSuccess={(_updatedCat, allUpdated) => {
+            if (!isControlled) {
+              setInternalCategories(allUpdated);
+            }
+            onCategoriesUpdated?.(allUpdated);
+          }}
+        />
 
         {/* Archive Confirmation Dialog */}
         <AlertDialog open={Boolean(sourceToArchive)} onOpenChange={(open) => !open && setSourceToArchive(null)}>
@@ -425,6 +445,7 @@ interface SortableIncomeRowProps {
   onRequestArchive?: (category: ExternalProviderCategory) => void;
   onUnarchive?: (id: string) => void;
   onMoveAboveArchived?: (id: string) => void;
+  onRename?: (category: ExternalProviderCategory) => void;
 }
 
 function SortableIncomeRow({
@@ -443,6 +464,7 @@ function SortableIncomeRow({
   onRequestArchive,
   onUnarchive,
   onMoveAboveArchived,
+  onRename,
 }: SortableIncomeRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -588,6 +610,15 @@ function SortableIncomeRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuItem
+              onClick={(e) => {
+                e.stopPropagation();
+                onRename?.(category);
+              }}
+            >
+              <Pencil className="mr-2 size-4" />
+              <span>Rename category...</span>
+            </DropdownMenuItem>
             {isArchived ? (
               <DropdownMenuItem
                 onClick={(e) => {

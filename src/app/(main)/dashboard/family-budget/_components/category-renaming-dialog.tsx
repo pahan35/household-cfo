@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "cn";
-import { AlertTriangle, ArrowRight, CheckCheck, Link2, Loader2, Search, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, ArrowRight, CheckCheck, Link2, Loader2, Search, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,13 +25,16 @@ import { updateCategoriesOrder } from "./external-provider-client";
 import {
   buildCategoryNormalizationPlan,
   buildLastTransactionMap,
+  type CategoryActivityAudit,
   type CategoryImpactRow,
   type CategoryNormalizationPlan,
   type CategoryNormalizationScope,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
+  classifyCategoryActivity,
   evaluateCategoryRenameState,
   formatMoney,
+  isArchivedCategoryName,
   isInNormalizationScope,
   type ProposedCategoryRename,
   sortRenamesTopologically,
@@ -43,7 +46,7 @@ interface PendingRenameItem extends ProposedCategoryRename {
   editedName: string;
 }
 
-type ViewMode = "changes" | "all" | "collisions";
+type ViewMode = "changes" | "all" | "audit" | "collisions";
 
 export interface CategoryRenamingDialogProps {
   open: boolean;
@@ -108,18 +111,38 @@ export function CategoryRenamingDialog({
     setShowRemoved(false);
   }, [open, defaultScope]);
 
-  // Re-generate proposed renames whenever dialog opens or input categories change
+  // Re-generate proposed and arbitrary renames whenever dialog opens or plans change
   useEffect(() => {
     if (!open) return;
     setItems(
-      SCOPES.flatMap((s) =>
-        plans[s].renames.map((p) => ({
-          ...p,
-          scope: s,
-          selected: !p.isCollision,
-          editedName: p.proposedName,
-        })),
-      ),
+      SCOPES.flatMap((s) => {
+        const renamesById = new Map(plans[s].renames.map((p) => [p.id, p]));
+        return plans[s].rows.map((row) => {
+          const p = renamesById.get(row.id);
+          if (p) {
+            return {
+              ...p,
+              scope: s,
+              selected: !p.isCollision,
+              editedName: p.proposedName,
+            };
+          }
+          return {
+            id: row.id,
+            category: row.category,
+            currentName: row.name,
+            proposedName: row.name,
+            editedName: row.name,
+            selected: false,
+            isCollision: false,
+            tags: [],
+            reasons: [],
+            dependsOnCategoryIds: [],
+            stepOrder: 2,
+            scope: s,
+          };
+        });
+      }),
     );
   }, [open, plans]);
 
@@ -144,14 +167,99 @@ export function CategoryRenamingDialog({
   const selectedItems = useMemo(() => scopeItems.filter((i) => i.selected), [scopeItems]);
   const selectedCount = selectedItems.length;
   const blockedCount = selectedItems.filter((i) => evaluation[i.id]?.status !== "ok").length;
-  const allSelected = scopeItems.length > 0 && scopeItems.every((i) => i.selected);
+  const proposedOrModifiedItems = useMemo(
+    () => scopeItems.filter((i) => i.tags.length > 0 || i.editedName.trim() !== i.currentName.trim()),
+    [scopeItems],
+  );
+  const allSelected = proposedOrModifiedItems.length > 0 && proposedOrModifiedItems.every((i) => i.selected);
   const collisionCount = scopeItems.filter((i) => i.selected && evaluation[i.id]?.status !== "ok").length;
 
   const normalizedSearch = search.trim().toLowerCase();
-  const matchesSearch = (name: string) => !normalizedSearch || name.toLowerCase().includes(normalizedSearch);
+  const matchesSearch = useCallback(
+    (name: string) => !normalizedSearch || name.toLowerCase().includes(normalizedSearch),
+    [normalizedSearch],
+  );
+
+  const categoryAuditMap = useMemo(
+    () => classifyCategoryActivity(categories, transactions ?? [], { defaultCurrency }),
+    [categories, transactions, defaultCurrency],
+  );
+
+  const [selectedZeroForArchive, setSelectedZeroForArchive] = useState<Set<string>>(new Set());
+
+  const auditItems = useMemo(() => {
+    const scopeCats = categories.filter((c) => isInNormalizationScope(c, scope, { includeDeleted: showRemoved }));
+    const list: CategoryActivityAudit[] = [];
+    for (const c of scopeCats) {
+      const audit = categoryAuditMap.get(c.id);
+      if (!audit) continue;
+      if (
+        audit.status === "zero-transaction" ||
+        audit.status === "low-frequency" ||
+        audit.status === "standalone-foreign"
+      ) {
+        if (matchesSearch(c.name)) {
+          list.push(audit);
+        }
+      }
+    }
+    const priority = { "zero-transaction": 0, "low-frequency": 1, "standalone-foreign": 2, active: 3 };
+    return list.sort((a, b) => {
+      const pA = priority[a.status];
+      const pB = priority[b.status];
+      if (pA !== pB) return pA - pB;
+      return a.lifetimeTransactionCount - b.lifetimeTransactionCount;
+    });
+  }, [categories, categoryAuditMap, scope, showRemoved, matchesSearch]);
+
+  const unarchivedZeroCategories = useMemo(
+    () =>
+      auditItems.filter(
+        (a) => a.status === "zero-transaction" && !isArchivedCategoryName(a.category.name) && !a.category.deleted,
+      ),
+    [auditItems],
+  );
+
+  const handleBulkArchiveZero = async () => {
+    if (selectedZeroForArchive.size === 0 || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const modified: ExternalProviderCategory[] = [];
+      const byId = new Map(categories.map((c) => [c.id, c]));
+
+      for (const id of selectedZeroForArchive) {
+        const cat = byId.get(id);
+        if (cat) {
+          const cleanName = cat.name.replace(/^_+/, "").trim();
+          modified.push({
+            ...cat,
+            name: cleanName.length > 0 ? `_${cleanName}` : "_",
+          });
+        }
+      }
+
+      const modifiedMap = new Map(modified.map((c) => [c.id, c]));
+      const allUpdatedCategories = categories.map((c) => modifiedMap.get(c.id) ?? c);
+
+      await updateCategoriesOrder(modified, { allUpdatedCategories });
+      toast.success(`Archived ${modified.length} zero-transaction categories`);
+      setSelectedZeroForArchive(new Set());
+      onRenamed?.(allUpdatedCategories);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to archive categories");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   function handleToggleAll(checked: boolean) {
-    setItems((prev) => prev.map((item) => (item.scope === scope ? { ...item, selected: checked } : item)));
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.scope !== scope) return item;
+        const isRelevant = item.tags.length > 0 || item.editedName.trim() !== item.currentName.trim();
+        return isRelevant ? { ...item, selected: checked } : item;
+      }),
+    );
   }
 
   function handleToggleItem(id: string, checked: boolean) {
@@ -159,11 +267,25 @@ export function CategoryRenamingDialog({
   }
 
   function handleEditName(id: string, newName: string) {
-    setItems((prev) => prev.map((item) => (item.id === id ? { ...item, editedName: newName } : item)));
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id !== id) return item;
+        const isModified = newName.trim() !== item.currentName.trim();
+        return {
+          ...item,
+          editedName: newName,
+          selected: isModified ? true : item.tags.length > 0 ? item.selected : false,
+        };
+      }),
+    );
   }
 
   async function handleApply() {
-    const toApply = sortRenamesTopologically(selectedItems.filter((i) => i.editedName.trim().length > 0));
+    const toApply = sortRenamesTopologically(
+      selectedItems.filter(
+        (i) => i.editedName.trim().length > 0 && (i.tags.length > 0 || i.editedName.trim() !== i.currentName.trim()),
+      ),
+    );
     if (toApply.length === 0 || blockedCount > 0) return;
 
     setIsSubmitting(true);
@@ -275,28 +397,40 @@ export function CategoryRenamingDialog({
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-foreground font-semibold break-words">{item.currentName}</span>
               <ArrowRight className="text-muted-foreground size-3 shrink-0" />
-              {item.tags.map((tag) => (
+              {item.tags.length > 0 ? (
+                item.tags.map((tag) => (
+                  <Badge
+                    key={tag}
+                    variant="outline"
+                    className={cn(
+                      "h-4 px-1.5 text-[9px] leading-none font-medium",
+                      tag.includes("Strip") && "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+                      tag.includes("Translate") && "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400",
+                      tag.includes("Add") &&
+                        "border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400",
+                    )}
+                  >
+                    {tag}
+                  </Badge>
+                ))
+              ) : item.editedName.trim() !== item.currentName.trim() ? (
                 <Badge
-                  key={tag}
                   variant="outline"
-                  className={cn(
-                    "h-4 px-1.5 text-[9px] leading-none font-medium",
-                    tag.includes("Strip") && "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-                    tag.includes("Translate") && "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400",
-                    tag.includes("Add") && "border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400",
-                  )}
+                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 h-4 px-1.5 text-[9px] leading-none font-medium"
                 >
-                  {tag}
+                  Custom Rename
                 </Badge>
-              ))}
+              ) : null}
               {!item.selected && (
                 <Badge variant="secondary" className="h-4 px-1.5 text-[9px] leading-none">
-                  Skipped / Unchanged
+                  {item.editedName.trim() !== item.currentName.trim() ? "Unchecked" : "Unchanged"}
                 </Badge>
               )}
-              <Badge variant="outline" className="h-4 px-1.5 text-[9px] leading-none">
-                Step {item.stepOrder}
-              </Badge>
+              {item.tags.length > 0 && (
+                <Badge variant="outline" className="h-4 px-1.5 text-[9px] leading-none">
+                  Step {item.stepOrder}
+                </Badge>
+              )}
             </div>
             {renderImpactMeta(row)}
             {hasProblem && evalState?.message && (
@@ -318,7 +452,7 @@ export function CategoryRenamingDialog({
             disabled={isSubmitting}
             aria-label={`Target name for ${item.currentName}`}
             className="h-7 text-xs font-medium"
-            placeholder="Target name..."
+            placeholder={item.currentName}
           />
         </div>
       </div>
@@ -341,8 +475,118 @@ export function CategoryRenamingDialog({
         .filter((r): r is CategoryImpactRow => Boolean(r))
         .map(renderRow);
     }
+    if (view === "audit") {
+      if (auditItems.length === 0) {
+        return (
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-xs text-muted-foreground">
+            <CheckCheck className="size-6 text-emerald-600 dark:text-emerald-400" />
+            <p className="font-medium">No zero-transaction or low-frequency categories found in {scope}.</p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex flex-col gap-2">
+          {unarchivedZeroCategories.length > 0 && (
+            <div className="flex items-center justify-between border-b pb-2 px-1 text-xs">
+              <span className="text-muted-foreground text-[11px]">
+                {unarchivedZeroCategories.length} unarchived zero-transaction categories detected
+              </span>
+              <Button
+                type="button"
+                variant="secondary"
+                size="xs"
+                onClick={handleBulkArchiveZero}
+                disabled={selectedZeroForArchive.size === 0 || isSubmitting}
+                className="h-6 gap-1 px-2 text-[11px]"
+              >
+                <Archive className="size-3" />
+                <span>Archive selected ({selectedZeroForArchive.size})</span>
+              </Button>
+            </div>
+          )}
+          {auditItems.map((audit) => {
+            const isZero = audit.status === "zero-transaction";
+            const isLow = audit.status === "low-frequency";
+            const isForeign = audit.status === "standalone-foreign";
+            const isAlreadyArchived = isArchivedCategoryName(audit.category.name);
+            const isSelected = selectedZeroForArchive.has(audit.categoryId);
+
+            return (
+              <div
+                key={audit.categoryId}
+                className={cn(
+                  "flex items-center justify-between gap-3 rounded-md border p-2.5 text-xs transition-colors",
+                  isZero && !isAlreadyArchived && "bg-destructive/5 border-destructive/30",
+                  isForeign && "bg-amber-500/5 border-amber-500/30",
+                  isLow && "bg-card border-border/70",
+                )}
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  {isZero && !isAlreadyArchived && !audit.category.deleted ? (
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={(checked) => {
+                        setSelectedZeroForArchive((prev) => {
+                          const next = new Set(prev);
+                          if (checked) next.add(audit.categoryId);
+                          else next.delete(audit.categoryId);
+                          return next;
+                        });
+                      }}
+                      aria-label={`Select ${audit.category.name} for bulk archive`}
+                    />
+                  ) : (
+                    <div className="size-4 shrink-0" />
+                  )}
+
+                  <div className="flex flex-col gap-0.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-semibold text-foreground truncate">{audit.category.name}</span>
+                      <Badge variant="outline" className="h-4 px-1 font-mono text-[9px] leading-none">
+                        #{audit.category.order ?? 0}
+                      </Badge>
+                      {isZero && (
+                        <Badge variant="destructive" className="h-4 px-1.5 text-[9px] leading-none">
+                          0 tx (Orphan)
+                        </Badge>
+                      )}
+                      {isLow && (
+                        <Badge variant="secondary" className="h-4 px-1.5 text-[9px] leading-none">
+                          {audit.lifetimeTransactionCount} tx (Low activity)
+                        </Badge>
+                      )}
+                      {isForeign && (
+                        <Badge
+                          variant="outline"
+                          className="h-4 px-1.5 text-[9px] leading-none text-amber-700 dark:text-amber-400 border-amber-500/40 bg-amber-500/10"
+                        >
+                          Standalone Foreign
+                        </Badge>
+                      )}
+                      {isAlreadyArchived && (
+                        <Badge variant="outline" className="h-4 px-1.5 text-[9px] leading-none">
+                          Archived
+                        </Badge>
+                      )}
+                    </div>
+                    <span className="text-muted-foreground text-[10px]">
+                      {audit.lastActiveDate
+                        ? `Last active: ${audit.lastActiveDate.toLocaleDateString()}`
+                        : isForeign
+                          ? "Standalone foreign currency category (preserved)"
+                          : "No recorded transactions in lifetime"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
     const coupled = plan.groups.filter((g) => g.isCoupled);
-    const standalone = scopeItems.filter((i) => !groupedIds.has(i.id) && matchesSearch(i.currentName));
+    const standalone = proposedOrModifiedItems.filter((i) => !groupedIds.has(i.id) && matchesSearch(i.currentName));
     return (
       <>
         {coupled.map((group) => {
@@ -389,8 +633,9 @@ export function CategoryRenamingDialog({
           </Tabs>
           <Tabs value={view} onValueChange={(v) => setView(v as ViewMode)}>
             <TabsList>
-              <TabsTrigger value="changes">Concept Groups &amp; Changes</TabsTrigger>
-              <TabsTrigger value="all">All Categories (#Order)</TabsTrigger>
+              <TabsTrigger value="changes">Changes ({proposedOrModifiedItems.length})</TabsTrigger>
+              <TabsTrigger value="all">All Categories ({plan.rows.length})</TabsTrigger>
+              <TabsTrigger value="audit">Zero / Low Activity ({auditItems.length})</TabsTrigger>
               <TabsTrigger value="collisions">Collisions ({collisionCount})</TabsTrigger>
             </TabsList>
           </Tabs>
@@ -421,7 +666,7 @@ export function CategoryRenamingDialog({
           )}
         </div>
 
-        {scopeItems.length === 0 && view !== "all" ? (
+        {proposedOrModifiedItems.length === 0 && view !== "all" && view !== "audit" ? (
           <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
             <div className="rounded-full bg-emerald-500/10 p-3 text-emerald-600 dark:text-emerald-400">
               <CheckCheck className="size-6" />
@@ -435,21 +680,23 @@ export function CategoryRenamingDialog({
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-3 py-2">
-            <div className="text-muted-foreground flex items-center justify-between px-1 text-xs">
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id={selectAllId}
-                  checked={allSelected}
-                  onCheckedChange={(checked) => handleToggleAll(Boolean(checked))}
-                />
-                <Label htmlFor={selectAllId} className="text-foreground cursor-pointer font-medium select-none">
-                  Select all ({scopeItems.length} proposed)
-                </Label>
+            {view !== "audit" && (
+              <div className="text-muted-foreground flex items-center justify-between px-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={selectAllId}
+                    checked={allSelected}
+                    onCheckedChange={(checked) => handleToggleAll(Boolean(checked))}
+                  />
+                  <Label htmlFor={selectAllId} className="text-foreground cursor-pointer font-medium select-none">
+                    Select all ({proposedOrModifiedItems.length} changes)
+                  </Label>
+                </div>
+                <span className="tabular-nums">
+                  {selectedCount} of {proposedOrModifiedItems.length} selected
+                </span>
               </div>
-              <span className="tabular-nums">
-                {selectedCount} of {scopeItems.length} selected
-              </span>
-            </div>
+            )}
 
             <div className="bg-muted/10 flex-1 space-y-2 overflow-y-auto rounded-md border p-2 pr-3">
               {renderBody()}

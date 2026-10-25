@@ -11,10 +11,13 @@ import {
   buildNewDebtAccountCategory,
   buildPrincipalOutflowTransaction,
   buildSettlementTransaction,
+  buildSmartOrderPreviewItems,
   CategoryType,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
+  classifyCategoryActivity,
   computeAccountLiquiditySummary,
+  computeCategoryActivityScores,
   computeTransactionsWithRunningBalance,
   convertCurrencyAmount,
   detectExpenseCategoryDisplacement,
@@ -42,6 +45,7 @@ import {
   moveExpenseCategoriesAboveArchived,
   moveExpenseCategoriesToBottom,
   moveIncomeSourcesAboveArchived,
+  optimizeCategoryOrderByActivity,
   organizeExpenseCategoriesByCurrencyTier,
   parseExternalProviderTimestamp,
   RENAME_TAGS,
@@ -1617,6 +1621,223 @@ describe("expense category lifecycle", () => {
       expect(isInNormalizationScope(activeCat, "expense")).toBe(true);
       expect(isInNormalizationScope(deletedCat, "expense")).toBe(false);
       expect(isInNormalizationScope(deletedCat, "expense", { includeDeleted: true })).toBe(true);
+    });
+  });
+
+  describe("Category Activity & Smart Order Optimizer Engine", () => {
+    const fixedNow = new Date("2026-03-01T12:00:00Z").getTime();
+    const dayMs = 86_400_000;
+
+    const makeCat = (id: string, name: string, order = 0, type = CategoryType.Expense): ExternalProviderCategory => ({
+      id,
+      name,
+      order,
+      categoryType: type,
+    });
+
+    const makeTx = (
+      id: string,
+      destId: string,
+      daysAgo: number,
+      sourceId = "acc-1",
+      deleted = false,
+    ): ExternalProviderTransaction => ({
+      id,
+      destinationId: destId,
+      sourceId,
+      dateTimestamp: fixedNow - daysAgo * dayMs,
+      deleted,
+    });
+
+    describe("computeCategoryActivityScores", () => {
+      it("computes time-decayed activity scores using 30-day exponential half-life", () => {
+        const c1 = makeCat("c1", "Groceries");
+        const c2 = makeCat("c2", "Rent");
+        const c3 = makeCat("c3", "Unused");
+
+        const txs: ExternalProviderTransaction[] = [
+          makeTx("tx1", "c1", 0), // age 0 -> 1.0
+          makeTx("tx2", "c1", 30), // age 30 -> 0.5
+          makeTx("tx3", "c1", 60), // age 60 -> 0.25
+          makeTx("tx4", "c2", 15), // age 15 -> ~0.707
+        ];
+
+        const scores = computeCategoryActivityScores([c1, c2, c3], txs, { now: fixedNow });
+
+        const s1 = scores.get("c1")!;
+        expect(s1.transactionCount).toBe(3);
+        expect(s1.score).toBeCloseTo(1.75, 4);
+        expect(s1.lastActiveTimestamp).toBe(fixedNow);
+        expect(s1.lastActiveDate).toEqual(new Date(fixedNow));
+
+        const s2 = scores.get("c2")!;
+        expect(s2.transactionCount).toBe(1);
+        expect(s2.score).toBeCloseTo(2 ** (-15 / 30), 4);
+
+        const s3 = scores.get("c3")!;
+        expect(s3.transactionCount).toBe(0);
+        expect(s3.score).toBe(0);
+        expect(s3.lastActiveTimestamp).toBeNull();
+        expect(s3.lastActiveDate).toBeNull();
+      });
+
+      it("filters transactions strictly by lookback window (90-days and 180-days)", () => {
+        const c1 = makeCat("c1", "Shopping");
+        const txs: ExternalProviderTransaction[] = [
+          makeTx("tx1", "c1", 20),
+          makeTx("tx2", "c1", 100),
+          makeTx("tx3", "c1", 200),
+        ];
+
+        const scoreAllTime = computeCategoryActivityScores([c1], txs, { now: fixedNow, lookbackScope: "all-time" });
+        expect(scoreAllTime.get("c1")!.transactionCount).toBe(3);
+
+        const score180 = computeCategoryActivityScores([c1], txs, { now: fixedNow, lookbackScope: "180-days" });
+        expect(score180.get("c1")!.transactionCount).toBe(2);
+
+        const score90 = computeCategoryActivityScores([c1], txs, { now: fixedNow, lookbackScope: "90-days" });
+        expect(score90.get("c1")!.transactionCount).toBe(1);
+      });
+
+      it("ignores deleted transactions", () => {
+        const c1 = makeCat("c1", "Food");
+        const txs: ExternalProviderTransaction[] = [
+          makeTx("tx1", "c1", 5, "acc-1", true), // deleted
+          makeTx("tx2", "c1", 10, "acc-1", false),
+        ];
+
+        const scores = computeCategoryActivityScores([c1], txs, { now: fixedNow });
+        expect(scores.get("c1")!.transactionCount).toBe(1);
+      });
+    });
+
+    describe("classifyCategoryActivity", () => {
+      it("correctly identifies zero-transaction, low-frequency, and active categories", () => {
+        const cZero = makeCat("c0", "Old Hobby");
+        const cLow = makeCat("cLow", "Concert Tickets");
+        const cActive = makeCat("cActive", "Groceries");
+
+        const txs: ExternalProviderTransaction[] = [
+          makeTx("tx1", "cLow", 10),
+          makeTx("tx2", "cLow", 20),
+          makeTx("tx3", "cLow", 30),
+          // cActive has 4 tx
+          makeTx("tx4", "cActive", 1),
+          makeTx("tx5", "cActive", 2),
+          makeTx("tx6", "cActive", 3),
+          makeTx("tx7", "cActive", 4),
+        ];
+
+        const audit = classifyCategoryActivity([cZero, cLow, cActive], txs, { defaultCurrency: "PLN" });
+
+        const aZero = audit.get("c0")!;
+        expect(aZero.status).toBe("zero-transaction");
+        expect(aZero.lifetimeTransactionCount).toBe(0);
+        expect(aZero.isOrphanCandidate).toBe(true);
+        expect(aZero.isStandaloneForeign).toBe(false);
+
+        const aLow = audit.get("cLow")!;
+        expect(aLow.status).toBe("low-frequency");
+        expect(aLow.lifetimeTransactionCount).toBe(3);
+        expect(aLow.isOrphanCandidate).toBe(false);
+
+        const aActive = audit.get("cActive")!;
+        expect(aActive.status).toBe("active");
+        expect(aActive.lifetimeTransactionCount).toBe(4);
+        expect(aActive.isOrphanCandidate).toBe(false);
+      });
+
+      it("protects standalone foreign currency categories without default currency counterparts", () => {
+        const standaloneEur = makeCat("f1", "Hotels EUR");
+        const pairedEur = makeCat("f2", "Dining EUR");
+        const pairedPln = makeCat("p1", "Dining");
+
+        const txs: ExternalProviderTransaction[] = []; // 0 tx for all
+
+        const audit = classifyCategoryActivity([standaloneEur, pairedEur], txs, {
+          defaultCurrency: "PLN",
+          allCategories: [standaloneEur, pairedEur, pairedPln],
+        });
+
+        // Hotels EUR has no "Hotels" or "Hotels PLN" -> standalone foreign protected
+        const aStandalone = audit.get("f1")!;
+        expect(aStandalone.status).toBe("standalone-foreign");
+        expect(aStandalone.isStandaloneForeign).toBe(true);
+        expect(aStandalone.isOrphanCandidate).toBe(false);
+
+        // Dining EUR has a PLN counterpart "Dining" -> normal zero-transaction orphan candidate
+        const aPaired = audit.get("f2")!;
+        expect(aPaired.status).toBe("zero-transaction");
+        expect(aPaired.isStandaloneForeign).toBe(false);
+        expect(aPaired.isOrphanCandidate).toBe(true);
+        expect(aPaired.hasDefaultCurrencyCounterpart).toBe(true);
+        expect(aPaired.counterpartCategoryId).toBe("p1");
+      });
+    });
+
+    describe("optimizeCategoryOrderByActivity", () => {
+      it("sorts active default and foreign tiers by score descending while keeping archived and deleted anchored", () => {
+        const p1 = makeCat("p1", "Low Prim", 0); // score 1.0
+        const p2 = makeCat("p2", "High Prim", 1); // score 5.0
+        const f1 = makeCat("f1", "Low Foreign EUR", 2); // score 0.5
+        const f2 = makeCat("f2", "High Foreign EUR", 3); // score 3.0
+        const a1 = makeCat("a1", "_Archived Old", 4);
+        const a2 = makeCat("a2", "_Archived Recent", 5);
+        const d1 = { ...makeCat("d1", "Deleted One", 6), deleted: true };
+
+        const allCats = [p1, p2, f1, f2, a1, a2, d1];
+        const scores = new Map<string, number>([
+          ["p1", 1.0],
+          ["p2", 5.0],
+          ["f1", 0.5],
+          ["f2", 3.0],
+          ["a1", 10.0], // Even with high score, archived stays in Tier 3
+        ]);
+
+        const result = optimizeCategoryOrderByActivity(allCats, scores, { defaultCurrency: "PLN" });
+        const ordered = sortCategoriesByOrder(result.updatedCategories);
+
+        expect(ordered.map((c) => c.id)).toEqual([
+          "p2", // Tier 1: p2 (5.0) > p1 (1.0)
+          "p1",
+          "f2", // Tier 2: f2 (3.0) > f1 (0.5)
+          "f1",
+          "a1", // Tier 3: _Archived preserved in relative position
+          "a2",
+          "d1", // Tier 4: Deleted at bottom
+        ]);
+
+        // Sequential 0, 1, 2, ...
+        ordered.forEach((cat, idx) => {
+          expect(cat.order).toBe(idx);
+        });
+      });
+
+      it("builds smart order preview items with correct rank delta", () => {
+        const p1 = makeCat("p1", "Groceries", 3);
+        const p2 = makeCat("p2", "Coffee", 0);
+
+        const original = [p1, p2];
+        const optimized = [
+          { ...p1, order: 0 }, // moved from 3 to 0 -> delta +3
+          { ...p2, order: 1 }, // moved from 0 to 1 -> delta -1
+        ];
+
+        const scores = new Map([
+          [
+            "p1",
+            { categoryId: "p1", score: 10, transactionCount: 15, lastActiveTimestamp: null, lastActiveDate: null },
+          ],
+          ["p2", { categoryId: "p2", score: 2, transactionCount: 3, lastActiveTimestamp: null, lastActiveDate: null }],
+        ]);
+
+        const preview = buildSmartOrderPreviewItems(original, optimized, scores);
+        expect(preview).toHaveLength(2);
+        expect(preview[0].category.id).toBe("p1");
+        expect(preview[0].rankDelta).toBe(3);
+        expect(preview[1].category.id).toBe("p2");
+        expect(preview[1].rankDelta).toBe(-1);
+      });
     });
   });
 });

@@ -17,8 +17,10 @@ import {
   ChevronRight,
   GripVertical,
   MoreHorizontal,
+  Pencil,
   PiggyBank,
   Receipt,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 
@@ -54,12 +56,14 @@ import {
 } from "./external-provider-data";
 import { type CategoryComparisonDelta, detectSliceCurrency, type ExpenseSlice } from "./expense-transforms";
 import { LastTransactionBadge } from "./last-transaction-badge";
+import { RenameCategoryDialog } from "./rename-category-dialog";
 import { SectionShell } from "./section-shell";
+import { SmartOrderOptimizerDialog } from "./smart-order-optimizer-dialog";
 import { parsePointDate } from "./yoy-transforms";
 
 export type BudgetPeriodMonth = "current" | "previous";
 export type BudgetSortMode = "custom" | "percent";
-export type BudgetViewMode = "active" | "all";
+export type BudgetViewMode = "active" | "all" | "zero-spend";
 
 export interface BudgetSummaryItem {
   id: string;
@@ -268,6 +272,7 @@ export interface BudgetSummaryCardProps {
   onMoveCategoriesAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
   onMoveCategoriesToBottom?: (categoryIds?: string[]) => Promise<void> | void;
   onOrganizeByCurrencyTier?: () => Promise<void> | void;
+  onCategoriesUpdated?: (updatedCategories: ExternalProviderCategory[]) => void;
 }
 
 export function BudgetSummaryCard({
@@ -291,11 +296,14 @@ export function BudgetSummaryCard({
   onMoveCategoriesAboveArchived,
   onMoveCategoriesToBottom,
   onOrganizeByCurrencyTier,
+  onCategoriesUpdated,
 }: BudgetSummaryCardProps) {
   const [sortMode, setSortMode] = useState<BudgetSortMode>("custom");
   const [viewMode, setViewMode] = useState<BudgetViewMode>("active");
   const [showArchived, setShowArchived] = useState(false);
   const [showRemoved, setShowRemoved] = useState(false);
+  const [renamingCategory, setRenamingCategory] = useState<ExternalProviderCategory | null>(null);
+  const [isSmartOrderOpen, setIsSmartOrderOpen] = useState(false);
 
   const [internalStatData, setInternalStatData] = useState<StatPingData | null>(null);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -363,6 +371,8 @@ export function BudgetSummaryCard({
     }
     return map;
   }, [categories]);
+
+  const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
   const categoryOrderMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -497,8 +507,32 @@ export function BudgetSummaryCard({
     [categories, defaultCurrency],
   );
 
+  const zeroSpendCount = useMemo(() => {
+    return allCategoryItems.filter((item) => {
+      if (item.current > 0) return false;
+      if (isArchivedCategoryName(item.name)) return false;
+      if (deletedCategoryIds.has(item.id)) return false;
+      return true;
+    }).length;
+  }, [allCategoryItems, deletedCategoryIds]);
+
   // Filter archived items
   const classifiedItems = useMemo(() => {
+    if (viewMode === "zero-spend") {
+      return allCategoryItems
+        .filter((item) => {
+          if (item.current > 0) return false;
+          if (!showArchived && isArchivedCategoryName(item.name)) return false;
+          if (!showRemoved && deletedCategoryIds.has(item.id)) return false;
+          return true;
+        })
+        .map((item) => ({
+          item,
+          isArchived: isArchivedCategoryName(item.name),
+          isRemoved: deletedCategoryIds.has(item.id),
+          isActive: false,
+        }));
+    }
     if (viewMode === "all") {
       return allCategoryItems.map((item) => ({
         item,
@@ -586,7 +620,8 @@ export function BudgetSummaryCard({
     });
   }, [classifiedItems, sortMode, viewMode, categoryOrderMap]);
 
-  const canReorder = (viewMode === "all" || sortMode === "custom") && Boolean(onReorderCategories);
+  const canReorder =
+    viewMode !== "zero-spend" && (viewMode === "all" || sortMode === "custom") && Boolean(onReorderCategories);
 
   function handleSelect(item: BudgetSummaryItem) {
     onSelectCategory?.({
@@ -626,7 +661,7 @@ export function BudgetSummaryCard({
       description={`Reporting currency: ${currency}`}
       action={
         <div className="flex flex-wrap items-center gap-2">
-          {/* Active in Month vs All Categories view */}
+          {/* Active in Month vs Zero Spend vs All Categories view */}
           <div className="bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs">
             <button
               type="button"
@@ -640,6 +675,19 @@ export function BudgetSummaryCard({
               onClick={() => setViewMode("active")}
             >
               Active in Month
+            </button>
+            <button
+              type="button"
+              aria-pressed={viewMode === "zero-spend"}
+              className={cn(
+                "cursor-pointer rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                viewMode === "zero-spend"
+                  ? "bg-background text-foreground shadow-xs"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setViewMode("zero-spend")}
+            >
+              Zero Spend ({zeroSpendCount})
             </button>
             <button
               type="button"
@@ -660,7 +708,7 @@ export function BudgetSummaryCard({
           <div
             className={cn(
               "bg-muted/40 flex items-center rounded-lg border p-0.5 text-xs",
-              viewMode === "all" && "hidden",
+              viewMode !== "active" && "hidden",
             )}
           >
             <button
@@ -688,6 +736,18 @@ export function BudgetSummaryCard({
               % Spent
             </button>
           </div>
+
+          {/* Smart Order Optimizer */}
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            onClick={() => setIsSmartOrderOpen(true)}
+            className="h-7 gap-1 px-2 text-[11px]"
+          >
+            <Sparkles className="text-primary size-3" />
+            <span>Smart Order</span>
+          </Button>
 
           {/* Foreign / legacy currency tier ordering */}
           {onOrganizeByCurrencyTier && canOrganizeByTier && (
@@ -826,11 +886,38 @@ export function BudgetSummaryCard({
                 onUnarchive={onUnarchiveCategory}
                 onMoveAboveArchived={onMoveCategoriesAboveArchived}
                 onMoveToBottom={onMoveCategoriesToBottom}
+                onRename={(catId) => {
+                  const cat = categoryById.get(catId);
+                  if (cat) setRenamingCategory(cat);
+                }}
               />
             );
           })}
         </div>
       </DragDropProvider>
+
+      <RenameCategoryDialog
+        open={Boolean(renamingCategory)}
+        onOpenChange={(open) => {
+          if (!open) setRenamingCategory(null);
+        }}
+        category={renamingCategory}
+        allCategories={categories}
+        onSuccess={(_updatedCat, allUpdated) => {
+          onCategoriesUpdated?.(allUpdated);
+        }}
+      />
+
+      <SmartOrderOptimizerDialog
+        open={isSmartOrderOpen}
+        onOpenChange={setIsSmartOrderOpen}
+        categories={categories}
+        transactions={_periodTransactions}
+        defaultCurrency={defaultCurrency}
+        onApplied={(updatedCats) => {
+          onCategoriesUpdated?.(updatedCats);
+        }}
+      />
     </SectionShell>
   );
 }
@@ -868,6 +955,7 @@ interface SortableBudgetCategoryRowProps {
   onUnarchive?: (categoryId: string) => Promise<void> | void;
   onMoveAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
   onMoveToBottom?: (categoryIds?: string[]) => Promise<void> | void;
+  onRename?: (categoryId: string) => void;
 }
 
 function SortableBudgetCategoryRow({
@@ -890,6 +978,7 @@ function SortableBudgetCategoryRow({
   onUnarchive,
   onMoveAboveArchived,
   onMoveToBottom,
+  onRename,
 }: SortableBudgetCategoryRowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -1029,7 +1118,11 @@ function SortableBudgetCategoryRow({
             </Badge>
           )}
 
-          {lastTx && <LastTransactionBadge summary={lastTx} defaultCurrency={currency} />}
+          {lastTx ? (
+            <LastTransactionBadge summary={lastTx} defaultCurrency={currency} />
+          ) : item.current === 0 ? (
+            <span className="text-muted-foreground/60 text-[10px]">No transactions</span>
+          ) : null}
         </div>
 
         <div className="text-muted-foreground flex shrink-0 items-center gap-1.5 pl-2">
@@ -1076,7 +1169,7 @@ function SortableBudgetCategoryRow({
             </>
           )}
 
-          {Boolean(onSelect ?? onArchive ?? onUnarchive ?? onMoveAboveArchived ?? onMoveToBottom) && (
+          {Boolean(onSelect ?? onRename ?? onArchive ?? onUnarchive ?? onMoveAboveArchived ?? onMoveToBottom) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -1094,6 +1187,12 @@ function SortableBudgetCategoryRow({
                   <DropdownMenuItem onClick={onSelect}>
                     <Receipt className="mr-2 size-4" />
                     <span>Inspect Transactions</span>
+                  </DropdownMenuItem>
+                )}
+                {onRename && (
+                  <DropdownMenuItem onClick={() => onRename(id)}>
+                    <Pencil className="mr-2 size-4" />
+                    <span>Rename category...</span>
                   </DropdownMenuItem>
                 )}
                 {isBelowArchived && !isArchived && !isRemoved && onMoveAboveArchived && (
