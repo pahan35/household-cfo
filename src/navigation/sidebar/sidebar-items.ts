@@ -22,6 +22,7 @@ import {
   Palmtree,
   PiggyBank,
   ReceiptText,
+  Scale,
   Server,
   ShoppingBag,
   SquareArrowUpRight,
@@ -91,6 +92,12 @@ export const sidebarItems: NavGroup[] = [
         title: "Income & Taxes",
         url: "/dashboard/family-budget/income",
         icon: Banknote,
+      },
+      {
+        id: "family-budget-offer-comparator",
+        title: "Offer Comparator",
+        url: "/dashboard/family-budget/offer-comparator",
+        icon: Scale,
       },
       {
         id: "family-budget-fx-inflation",

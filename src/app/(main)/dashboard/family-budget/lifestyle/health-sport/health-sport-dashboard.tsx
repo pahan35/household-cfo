@@ -292,7 +292,7 @@ export function HealthSportDashboard() {
                     </span>
 
                     {/* Quick action buttons */}
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {item.suggestedTags.map((tag) => (
                         <Button
                           key={tag}

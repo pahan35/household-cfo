@@ -1071,7 +1071,49 @@ export interface LearningDashboardMetrics {
   currency: string;
 }
 
-const PASS_OVERRIDE_REGEX = /^([0-9]+)x$/i;
+export const PASS_OVERRIDE_REGEX = /^([0-9]+)x$/i;
+
+// ---------------------------------------------------------------------------
+// 5.1 Wellness Coverage Sub-Tags & Scope/Person Tags Taxonomy
+// ---------------------------------------------------------------------------
+
+export const MEDICAL_COVERED_TAGS = ["consult", "exams", "vaccine", "insurance", "doctor", "lab"] as const;
+export const MEDICAL_OUT_OF_POCKET_TAGS = [
+  "dentist",
+  "pharmacy",
+  "physio",
+  "physiotherapy",
+  "optician",
+  "medicines",
+] as const;
+export const SPORT_COVERED_TAGS = ["gym", "multisport", "fitness", "pool", "swim"] as const;
+export const SPORT_OUT_OF_POCKET_TAGS = ["pilates", "trainer", "coach"] as const;
+export const SCOPE_PERSON_TAGS = ["wife", "partner", "family", "me", "kid", "child"] as const;
+
+export function isMedicalCoveredTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return MEDICAL_COVERED_TAGS.includes(norm as (typeof MEDICAL_COVERED_TAGS)[number]);
+}
+
+export function isMedicalOutOfPocketTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return MEDICAL_OUT_OF_POCKET_TAGS.includes(norm as (typeof MEDICAL_OUT_OF_POCKET_TAGS)[number]);
+}
+
+export function isSportCoveredTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return SPORT_COVERED_TAGS.includes(norm as (typeof SPORT_COVERED_TAGS)[number]);
+}
+
+export function isSportOutOfPocketTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return SPORT_OUT_OF_POCKET_TAGS.includes(norm as (typeof SPORT_OUT_OF_POCKET_TAGS)[number]);
+}
+
+export function isSpouseOrFamilyTag(tag: string): boolean {
+  const norm = normalizeLifestyleTag(tag);
+  return norm === "wife" || norm === "partner" || norm === "family";
+}
 
 /**
  * Extracts explicit pass multiplier overrides (e.g. #10x, #5x, #1x) from transaction tags.
@@ -1172,7 +1214,7 @@ export function computeWellnessMetrics(input: {
         auditQueue.push({
           transaction: tx,
           streamId: "medical",
-          suggestedTags: ["physio", "exams", "vaccine"],
+          suggestedTags: ["consult", "exams", "dentist", "pharmacy", "wife"],
           reason: "Untagged medical expense",
           isOutlierPackage: false,
           convertedAmount,
@@ -1186,7 +1228,7 @@ export function computeWellnessMetrics(input: {
         auditQueue.push({
           transaction: tx,
           streamId: "sport",
-          suggestedTags: ["pilates", "gym"],
+          suggestedTags: ["gym", "multisport", "pilates", "wife"],
           reason: "Untagged sport expense",
           isOutlierPackage: false,
           convertedAmount,

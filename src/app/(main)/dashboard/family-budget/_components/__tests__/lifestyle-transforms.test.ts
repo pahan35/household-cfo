@@ -15,6 +15,11 @@ import {
   detectTravelEpisodes,
   findUntaggedTripCandidates,
   getPassMultiplierFromTags,
+  isMedicalCoveredTag,
+  isMedicalOutOfPocketTag,
+  isSportCoveredTag,
+  isSportOutOfPocketTag,
+  isSpouseOrFamilyTag,
   normalizeLifestyleTag,
   normalizeUnifiedCategory,
   stripCurrencySuffix,
@@ -523,6 +528,58 @@ describe("lifestyle-transforms", () => {
       expect(metrics.totalSpend).toBe(920);
       expect(metrics.facets.find((f) => f.facetTag === "platform")?.totalCost).toBe(120);
       expect(metrics.facets.find((f) => f.facetTag === "cert")?.totalCost).toBe(800);
+    });
+
+    it("classifies medical and sport coverage sub-tags and scope tags", () => {
+      expect(isMedicalCoveredTag("consult")).toBe(true);
+      expect(isMedicalCoveredTag("exams")).toBe(true);
+      expect(isMedicalOutOfPocketTag("dentist")).toBe(true);
+      expect(isMedicalOutOfPocketTag("pharmacy")).toBe(true);
+      expect(isSportCoveredTag("gym")).toBe(true);
+      expect(isSportCoveredTag("multisport")).toBe(true);
+      expect(isSportOutOfPocketTag("pilates")).toBe(true);
+      expect(isSpouseOrFamilyTag("#wife")).toBe(true);
+      expect(isSpouseOrFamilyTag("partner")).toBe(true);
+      expect(isSpouseOrFamilyTag("family")).toBe(true);
+      expect(isSpouseOrFamilyTag("me")).toBe(false);
+    });
+
+    it("surfaces enhanced coverage sub-tags and spouse scope in audit queue for untagged medical/sport", () => {
+      const txs: ExternalProviderTransaction[] = [
+        {
+          id: "tx-med-untagged",
+          destinationId: "cat-med-pln",
+          destinationAmount: 250,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-05-10").getTime(),
+        },
+        {
+          id: "tx-sport-untagged",
+          destinationId: "cat-sport-pln",
+          destinationAmount: 180,
+          destinationCurrencyId: "PLN",
+          destinationType: CategoryType.Expense,
+          tags: [],
+          dateTimestamp: new Date("2025-05-11").getTime(),
+        },
+      ];
+
+      const { auditQueue } = computeWellnessMetrics({
+        transactions: txs,
+        categories: mockCategories,
+        currencies: mockCurrencies,
+        defaultCurrency: "PLN",
+      });
+
+      const medAudit = auditQueue.find((a) => a.transaction.id === "tx-med-untagged");
+      expect(medAudit).toBeDefined();
+      expect(medAudit?.suggestedTags).toEqual(["consult", "exams", "dentist", "pharmacy", "wife"]);
+
+      const sportAudit = auditQueue.find((a) => a.transaction.id === "tx-sport-untagged");
+      expect(sportAudit).toBeDefined();
+      expect(sportAudit?.suggestedTags).toEqual(["gym", "multisport", "pilates", "wife"]);
     });
   });
 });
