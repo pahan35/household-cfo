@@ -21,9 +21,38 @@ describe("TravelBookendAssistant helpers", () => {
       "cat-groceries",
       { id: "cat-groceries", name: "Groceries", currencyId: "PLN", categoryType: 0 } as ExternalProviderCategory,
     ],
+    ["cat-hotel-eur", { id: "cat-hotel-eur", name: "Hotels EUR", categoryType: 0 } as ExternalProviderCategory],
+    [
+      "acc-eur-card",
+      { id: "acc-eur-card", name: "EUR Card", currencyId: "EUR", categoryType: 2 } as ExternalProviderCategory,
+    ],
   ]);
 
   describe("scoreBoundaryCandidate", () => {
+    it("scores foreign currency transactions from category name suffix with +40", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-suffix",
+        destinationId: "cat-hotel-eur",
+      };
+      const result = scoreBoundaryCandidate(tx, "PLN", categoryMap);
+      // Foreign currency (40) + Lodging (45) = 85
+      expect(result.score).toBe(85);
+      expect(result.reasons).toContain("Foreign Currency (EUR)");
+      expect(result.reasons).toContain("Lodging / Hotel");
+    });
+
+    it("scores foreign source account paying domestic category with +40", () => {
+      const tx: ExternalProviderTransaction = {
+        id: "tx-foreign-acc",
+        sourceId: "acc-eur-card",
+        destinationId: "cat-transit",
+      };
+      const result = scoreBoundaryCandidate(tx, "PLN", categoryMap);
+      // Foreign currency (40) + Transit (35) = 75
+      expect(result.score).toBe(75);
+      expect(result.reasons).toContain("Foreign Currency (EUR)");
+      expect(result.reasons).toContain("Transit / Transport");
+    });
     it("scores foreign currency transactions with +40", () => {
       const tx: ExternalProviderTransaction = {
         id: "tx-1",

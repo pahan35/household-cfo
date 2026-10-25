@@ -8,6 +8,7 @@ import {
   convertCurrencyAmount,
   isAccountType,
 } from "./external-provider-data";
+import { resolveCategoryCurrency } from "./external-provider-money";
 import { getMacroData } from "./macro-data";
 
 export interface TaxTagBucket {
@@ -617,14 +618,27 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
     if (isSourceIncome && isDestAccount) {
       const sourceId = tx.sourceId ?? "unknown-income";
       const sourceName = tx.sourceName ?? sourceCat?.name ?? "Unknown Income";
-      const nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
       const currency = (
-        tx.destinationCurrencyId ??
         tx.sourceCurrencyId ??
-        sourceCat?.currencyId ??
+        (sourceCat ? resolveCategoryCurrency(sourceCat, defaultCurrency) : undefined) ??
         defaultCurrency
       ).toUpperCase();
-      const converted = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
+      const destCurrency = (
+        tx.destinationCurrencyId ??
+        (destCat ? resolveCategoryCurrency(destCat, defaultCurrency) : undefined) ??
+        defaultCurrency
+      ).toUpperCase();
+
+      const sourceAmount = tx.sourceAmount != null ? Math.abs(Number(tx.sourceAmount)) : undefined;
+      const destAmount = tx.destinationAmount != null ? Math.abs(Number(tx.destinationAmount)) : undefined;
+
+      const nativeAmount = (sourceAmount && sourceAmount > 0 ? sourceAmount : destAmount) ?? 0;
+      let converted = 0;
+      if (destCurrency === defaultCurrency.toUpperCase() && destAmount && destAmount > 0) {
+        converted = destAmount;
+      } else {
+        converted = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
+      }
 
       const isTaxRebate =
         isPfronCashbackCategory(sourceName) || (sourceCat ? isPfronCashbackCategory(sourceCat.name) : false);

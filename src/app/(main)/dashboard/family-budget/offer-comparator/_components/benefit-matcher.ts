@@ -150,7 +150,7 @@ export function computeBenefitSpendCeilings(input: {
     const rawName = cat?.name ?? "";
     const unified = normalizeUnifiedCategory(rawName);
 
-    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies);
+    const { convertedAmount } = getConvertedTransactionAmount(tx, defaultCurrency, currencies, categoryMap);
 
     const rawTags = Array.isArray(tx.tags) ? tx.tags.filter((t): t is string => typeof t === "string") : [];
     const cleanTags = rawTags.map(normalizeLifestyleTag);

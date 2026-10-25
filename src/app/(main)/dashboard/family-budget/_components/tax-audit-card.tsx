@@ -12,16 +12,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { updateTransactionTags } from "./external-provider-client";
 import {
   type ExternalProviderCategory,
+  type ExternalProviderCurrency,
   type ExternalProviderTransaction,
-  formatMoney,
   formatTransactionDate,
 } from "./external-provider-data";
+import { resolveTransactionMoney } from "./external-provider-money";
+import { MoneyValue } from "./money-value";
 import { SectionShell } from "./section-shell";
 import { KNOWN_TAX_BUCKETS } from "./tax-transforms";
 
 export interface TaxAuditCardProps {
   untaggedTransactions: ExternalProviderTransaction[];
   categories?: ExternalProviderCategory[];
+  currencies?: ExternalProviderCurrency[];
   currency?: string;
   onTagAssigned?: (transaction: ExternalProviderTransaction, tag: string) => Promise<void>;
   isLoading?: boolean;
@@ -30,6 +33,7 @@ export interface TaxAuditCardProps {
 export function TaxAuditCard({
   untaggedTransactions,
   categories = [],
+  currencies = [],
   currency = "PLN",
   onTagAssigned,
   isLoading = false,
@@ -100,8 +104,7 @@ export function TaxAuditCard({
         {untaggedTransactions.map((tx) => {
           const isSaving = savingId === tx.id;
           const chosenTag = selectedTags[tx.id] || "";
-          const amount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
-          const txCurrency = tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? currency;
+          const txMoney = resolveTransactionMoney(tx, categoryMap, undefined, currency);
           const sourceName = tx.sourceName ?? (tx.sourceId ? categoryMap.get(tx.sourceId)?.name : "Account");
           const formattedDate = tx.dateTimestampISO
             ? formatTransactionDate(tx.dateTimestampISO)
@@ -140,9 +143,16 @@ export function TaxAuditCard({
 
               {/* Right Side: Amount, Inline Select, and Save Button */}
               <div className="flex shrink-0 items-center gap-2 self-end sm:self-center">
-                <span className="font-semibold tabular-nums text-rose-600 dark:text-rose-400">
-                  -{formatMoney(amount, txCurrency)}
-                </span>
+                <MoneyValue
+                  mode="ledger"
+                  amount={txMoney.primary.amount}
+                  currency={txMoney.primary.currency}
+                  reportingCurrency={currency}
+                  currencies={currencies}
+                  size="sm"
+                  prefix="-"
+                  primaryClassName="font-semibold tabular-nums text-rose-600 dark:text-rose-400"
+                />
 
                 <Select value={chosenTag} onValueChange={(val) => handleSelectTag(tx.id, val)}>
                   <SelectTrigger size="sm" className="h-7 w-32 text-xs">

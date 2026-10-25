@@ -312,11 +312,11 @@ export function OfferComparisonMatrix({
                       3-Year Horizon (ZUS Inflation &amp; Stages):
                     </span>
                     <div className="flex items-center justify-between font-mono text-[11px]">
-                      <span>Yr 1: {Math.round(summary.multiYearTax.year1.monthlyNetCashflowPln).toLocaleString()}</span>
+                      <span>Yr 1: {formatMoney(summary.multiYearTax.year1.monthlyNetCashflowPln, "PLN")}</span>
                       <ChevronRight className="size-3 text-muted-foreground" />
-                      <span>Yr 2: {Math.round(summary.multiYearTax.year2.monthlyNetCashflowPln).toLocaleString()}</span>
+                      <span>Yr 2: {formatMoney(summary.multiYearTax.year2.monthlyNetCashflowPln, "PLN")}</span>
                       <ChevronRight className="size-3 text-muted-foreground" />
-                      <span>Yr 3: {Math.round(summary.multiYearTax.year3.monthlyNetCashflowPln).toLocaleString()}</span>
+                      <span>Yr 3: {formatMoney(summary.multiYearTax.year3.monthlyNetCashflowPln, "PLN")}</span>
                     </div>
                   </div>
 

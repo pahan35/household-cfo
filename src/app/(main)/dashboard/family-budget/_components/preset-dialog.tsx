@@ -36,6 +36,7 @@ import {
   isArchivedCategoryName,
   type StatCategoryPoint,
 } from "./external-provider-data";
+import { resolveCategoryCurrency } from "./external-provider-money";
 import type { ExclusionPreset } from "./expense-transforms";
 import type { useExclusionPresets } from "./use-exclusion-presets";
 
@@ -509,7 +510,7 @@ export function PresetDialog({
                         </div>
                         {cat.limitAmount && cat.limitAmount > 0 ? (
                           <span className="text-muted-foreground text-[10px]">
-                            Limit: {formatMoney(cat.limitAmount, defaultCurrency)}
+                            Limit: {formatMoney(cat.limitAmount, resolveCategoryCurrency(cat, defaultCurrency))}
                           </span>
                         ) : null}
                       </div>

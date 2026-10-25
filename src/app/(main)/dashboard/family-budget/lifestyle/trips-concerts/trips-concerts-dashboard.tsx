@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 
 import { formatMoney } from "../../_components/external-provider-data";
+import { resolveTransactionMoney } from "../../_components/external-provider-money";
 import {
   type ConcertEvent,
   detectConcertEvents,
@@ -30,6 +31,7 @@ import {
   type TravelEpisode,
   type UntaggedCandidateTransaction,
 } from "../../_components/lifestyle-transforms";
+import { MoneyValue } from "../../_components/money-value";
 import { SectionShell } from "../../_components/section-shell";
 import { useLifestyleData } from "../use-lifestyle-data";
 import { TravelBookendAssistant } from "./travel-bookend-assistant";
@@ -330,9 +332,25 @@ export function TripsConcertsDashboard() {
                                   </div>
 
                                   <div className="flex items-center gap-2 font-mono">
-                                    <span className="font-semibold text-foreground">
-                                      {formatMoney(candidate.convertedAmount, defaultCurrency)}
-                                    </span>
+                                    {(() => {
+                                      const txMoney = resolveTransactionMoney(
+                                        candidate.transaction,
+                                        categoryMap,
+                                        undefined,
+                                        defaultCurrency,
+                                      );
+                                      return (
+                                        <MoneyValue
+                                          amount={txMoney.primary.amount}
+                                          currency={txMoney.primary.currency}
+                                          convertedAmount={candidate.convertedAmount}
+                                          reportingCurrency={defaultCurrency}
+                                          currencies={currencies}
+                                          mode="rollup"
+                                          size="sm"
+                                        />
+                                      );
+                                    })()}
                                     <Badge variant="outline" className="text-[10px]">
                                       {candidate.confidenceScore}% match
                                     </Badge>
@@ -366,9 +384,24 @@ export function TripsConcertsDashboard() {
                                       {tx.comment && ` • ${tx.comment}`}
                                     </span>
                                   </div>
-                                  <span className="font-semibold font-mono text-foreground">
-                                    {formatMoney(Number(tx.destinationAmount) || 0, defaultCurrency)}
-                                  </span>
+                                  {(() => {
+                                    const txMoney = resolveTransactionMoney(
+                                      tx,
+                                      categoryMap,
+                                      undefined,
+                                      defaultCurrency,
+                                    );
+                                    return (
+                                      <MoneyValue
+                                        amount={txMoney.primary.amount}
+                                        currency={txMoney.primary.currency}
+                                        reportingCurrency={defaultCurrency}
+                                        currencies={currencies}
+                                        mode="rollup"
+                                        size="sm"
+                                      />
+                                    );
+                                  })()}
                                 </div>
                               ))}
                             </div>
@@ -395,9 +428,24 @@ export function TripsConcertsDashboard() {
                                       {tx.comment && ` • ${tx.comment}`}
                                     </span>
                                   </div>
-                                  <span className="font-semibold font-mono text-foreground">
-                                    {formatMoney(Number(tx.destinationAmount) || 0, defaultCurrency)}
-                                  </span>
+                                  {(() => {
+                                    const txMoney = resolveTransactionMoney(
+                                      tx,
+                                      categoryMap,
+                                      undefined,
+                                      defaultCurrency,
+                                    );
+                                    return (
+                                      <MoneyValue
+                                        amount={txMoney.primary.amount}
+                                        currency={txMoney.primary.currency}
+                                        reportingCurrency={defaultCurrency}
+                                        currencies={currencies}
+                                        mode="rollup"
+                                        size="sm"
+                                      />
+                                    );
+                                  })()}
                                 </div>
                               ))}
                             </div>

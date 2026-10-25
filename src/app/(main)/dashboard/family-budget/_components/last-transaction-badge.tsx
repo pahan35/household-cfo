@@ -6,7 +6,9 @@ import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Calendar, Clock, MessageSq
 import { Badge } from "@/components/ui/badge";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 
-import { formatMoney, type LastTransactionSummary } from "./external-provider-data";
+import type { LastTransactionSummary } from "./external-provider-data";
+import { resolveCategoryCurrency } from "./external-provider-money";
+import { MoneyValue } from "./money-value";
 
 interface LastTransactionBadgeProps {
   summary?: LastTransactionSummary | null;
@@ -92,24 +94,23 @@ export function LastTransactionBadge({
             <div className="text-right">
               {(() => {
                 const nativeAmt = summary.originalAmount ?? summary.amount;
-                const nativeCurr = summary.originalCurrency ?? summary.currency;
-                const isForeign =
-                  Boolean(nativeCurr && nativeCurr.toUpperCase() !== defaultCurrency.toUpperCase()) ||
-                  Boolean(summary.currency && summary.currency.toUpperCase() !== defaultCurrency.toUpperCase());
+                const nativeCurr = resolveCategoryCurrency(
+                  summary.originalCurrency ?? summary.currency,
+                  defaultCurrency,
+                );
                 const displayAmount = summary.normalizedAmount;
 
                 return (
-                  <>
-                    <span className={cn("text-xs font-semibold tabular-nums", directionColor)}>
-                      {sign}
-                      {formatMoney(displayAmount, defaultCurrency)}
-                    </span>
-                    {isForeign && (
-                      <span className="text-muted-foreground block text-[10px] tabular-nums">
-                        orig. {formatMoney(nativeAmt, nativeCurr)}
-                      </span>
-                    )}
-                  </>
+                  <MoneyValue
+                    mode="ledger"
+                    amount={nativeAmt}
+                    currency={nativeCurr}
+                    convertedAmount={displayAmount}
+                    reportingCurrency={defaultCurrency}
+                    size="sm"
+                    prefix={sign}
+                    primaryClassName={cn("font-semibold tabular-nums", directionColor)}
+                  />
                 );
               })()}
             </div>

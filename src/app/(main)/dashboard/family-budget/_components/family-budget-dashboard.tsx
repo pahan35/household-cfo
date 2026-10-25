@@ -132,8 +132,8 @@ export function FamilyBudgetDashboard() {
   );
 
   const lastTransactionByCategoryId = useMemo(
-    () => buildLastTransactionMap(recentTransactions, categories),
-    [recentTransactions, categories],
+    () => buildLastTransactionMap(recentTransactions, categories, defaultCurrency, currencies),
+    [recentTransactions, categories, defaultCurrency, currencies],
   );
 
   const handleReorderCategories = useCallback(

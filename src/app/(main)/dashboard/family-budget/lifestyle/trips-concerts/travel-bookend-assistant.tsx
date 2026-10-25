@@ -12,9 +12,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-import { type ExternalProviderCategory, type ExternalProviderTransaction, formatMoney } from "../../_components/external-provider-data";
+import type { ExternalProviderCategory, ExternalProviderTransaction } from "../../_components/external-provider-data";
 import { ExternalProviderIcon } from "../../_components/external-provider-icons";
+import { resolveCategoryCurrency, resolveTransactionMoney } from "../../_components/external-provider-money";
 import { getTransactionDate } from "../../_components/lifestyle-transforms";
+import { MoneyValue } from "../../_components/money-value";
 import { useLifestyleData } from "../use-lifestyle-data";
 
 export interface CandidateScore {
@@ -82,23 +84,31 @@ export function scoreBoundaryCandidate(
   let score = 0;
   const reasons: string[] = [];
 
-  // 1. Foreign currency check
-  const txCurrency = (
-    tx.destinationCurrencyId ??
-    tx.sourceCurrencyId ??
-    categoryMap.get(tx.destinationId ?? "")?.currencyId ??
-    categoryMap.get(tx.sourceId ?? "")?.currencyId ??
-    ""
-  ).toUpperCase();
+  // 1. Foreign currency check (inspect both destination category and source account)
+  const normDefault = defaultCurrency.trim().toUpperCase() || "PLN";
+  const destCat = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
+  const sourceCat = tx.sourceId ? categoryMap.get(tx.sourceId) : undefined;
 
-  if (txCurrency && defaultCurrency && txCurrency !== defaultCurrency.toUpperCase()) {
+  const destCurrency =
+    tx.destinationCurrencyId && tx.destinationCurrencyId.trim().length > 0
+      ? tx.destinationCurrencyId.trim().toUpperCase()
+      : resolveCategoryCurrency(destCat, normDefault);
+
+  const sourceCurrency =
+    tx.sourceCurrencyId && tx.sourceCurrencyId.trim().length > 0
+      ? tx.sourceCurrencyId.trim().toUpperCase()
+      : resolveCategoryCurrency(sourceCat, normDefault);
+
+  const isForeignDest = destCurrency !== normDefault;
+  const isForeignSource = sourceCurrency !== normDefault;
+
+  if (isForeignDest || isForeignSource) {
     score += 40;
-    reasons.push(`Foreign Currency (${txCurrency})`);
+    const foreignCode = isForeignDest ? destCurrency : sourceCurrency;
+    reasons.push(`Foreign Currency (${foreignCode})`);
   }
 
   // 2. Keyword check across category names and comments
-  const destCat = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
-  const sourceCat = tx.sourceId ? categoryMap.get(tx.sourceId) : undefined;
   const catNames = `${destCat?.name ?? ""} ${sourceCat?.name ?? ""}`.toLowerCase();
   const comment = (tx.comment ?? "").toLowerCase();
   const textToSearch = `${catNames} ${comment}`;
@@ -183,7 +193,7 @@ export interface TravelBookendAssistantProps {
 }
 
 export function TravelBookendAssistant({ className, defaultDestinationTag = "" }: TravelBookendAssistantProps) {
-  const { transactions, categoryMap, defaultCurrency, updateTxTags } = useLifestyleData();
+  const { transactions, categoryMap, currencies, defaultCurrency, updateTxTags } = useLifestyleData();
 
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [destinationTag, setDestinationTag] = useState(defaultDestinationTag);
@@ -385,12 +395,19 @@ export function TravelBookendAssistant({ className, defaultDestinationTag = "" }
 
                   <div className="flex items-center justify-between gap-3 sm:justify-end">
                     <div className="text-right">
-                      <span className="font-mono text-xs font-semibold text-foreground">
-                        {formatMoney(
-                          tx.destinationAmount ?? tx.sourceAmount ?? 0,
-                          tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? defaultCurrency,
-                        )}
-                      </span>
+                      {(() => {
+                        const txMoney = resolveTransactionMoney(tx, categoryMap, undefined, defaultCurrency);
+                        return (
+                          <MoneyValue
+                            amount={txMoney.primary.amount}
+                            currency={txMoney.primary.currency}
+                            reportingCurrency={defaultCurrency}
+                            currencies={currencies}
+                            mode="ledger"
+                            size="sm"
+                          />
+                        );
+                      })()}
                     </div>
 
                     <div className="flex items-center gap-1.5">

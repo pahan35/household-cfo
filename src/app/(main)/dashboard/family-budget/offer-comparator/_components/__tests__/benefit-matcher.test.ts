@@ -187,4 +187,36 @@ describe("Benefit Matcher & ExternalProvider Spend Ceilings Engine", () => {
     expect(benefits.some((b) => b.category === "health")).toBe(true);
     expect(benefits.some((b) => b.category === "sport")).toBe(true);
   });
+
+  it("converts foreign currency transactions (USD/EUR) into PLN using ExternalProvider cross-rates", () => {
+    const foreignCategories: ExternalProviderCategory[] = [
+      ...mockCategories,
+      { id: "cat-learn-usd", name: "Learning [USD]", categoryType: CategoryType.Expense, currencyId: "USD" },
+    ];
+
+    // USD rate: 1.0, PLN rate: 4.0 -> 100 USD = 400 PLN
+    const transactions: ExternalProviderTransaction[] = [
+      {
+        id: "tx-learn-usd",
+        destinationId: "cat-learn-usd",
+        destinationAmount: 100,
+        destinationCurrencyId: "USD",
+        destinationType: CategoryType.Expense,
+        tags: ["course"],
+        dateTimestamp: now - 15 * dayMs,
+      },
+    ];
+
+    const ceilings = computeBenefitSpendCeilings({
+      transactions,
+      categories: foreignCategories,
+      currencies: mockCurrencies,
+      defaultCurrency: "PLN",
+      monthsWindow: 3,
+    });
+
+    const learning = ceilings.breakdowns.learning;
+    expect(learning).toBeDefined();
+    expect(learning.totalSpendPln).toBeCloseTo(400, 1);
+  });
 });

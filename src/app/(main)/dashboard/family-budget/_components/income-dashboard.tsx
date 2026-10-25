@@ -153,17 +153,20 @@ export function IncomeDashboard() {
 
   // Inflow by source ID map
   const incomeBySourceId = useMemo(() => {
-    const map = new Map<string, number>();
+    const map = new Map<string, { nativeAmount: number; totalConverted: number }>();
     for (const item of incomeMetrics.incomeSources) {
-      map.set(item.sourceId, item.totalConverted);
+      map.set(item.sourceId, {
+        nativeAmount: item.nativeAmount,
+        totalConverted: item.totalConverted,
+      });
     }
     return map;
   }, [incomeMetrics.incomeSources]);
 
   // Direction-aware last transaction summaries
   const lastTransactionByCategoryId = useMemo(
-    () => buildLastTransactionMap(transactions, categories),
-    [transactions, categories],
+    () => buildLastTransactionMap(transactions, categories, defaultCurrency, currencies),
+    [transactions, categories, defaultCurrency, currencies],
   );
 
   // Filtered transactions for the ledger
@@ -300,6 +303,7 @@ export function IncomeDashboard() {
             error={error}
             onRetry={() => void loadData(undefined, true)}
             lastTransactionByCategoryId={lastTransactionByCategoryId}
+            currencies={currencies}
             selectedSourceId={selectedSourceId}
             onSelectSource={handleSelectSource}
             incomeBySourceId={incomeBySourceId}
@@ -329,6 +333,7 @@ export function IncomeDashboard() {
           <TaxAuditCard
             untaggedTransactions={untaggedTaxTransactions}
             categories={categories}
+            currencies={currencies}
             currency={defaultCurrency}
             onTagAssigned={handleTagRemediated}
             isLoading={isLoading}

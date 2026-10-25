@@ -37,6 +37,7 @@ import {
 } from "./external-provider-data";
 import { ExternalProviderIcon } from "./external-provider-icons";
 import type { ExpenseSlice } from "./expense-transforms";
+import { MoneyValue } from "./money-value";
 
 export interface CategoryExpenseTraceSheetProps {
   open: boolean;
@@ -574,33 +575,14 @@ export function CategoryExpenseTraceSheet({
                           </div>
                         </div>
 
-                        <div className="flex shrink-0 flex-col items-end">
-                          <span className="text-foreground text-sm font-semibold tabular-nums">
-                            -{formatMoney(resolvedSpend.convertedAmount, defaultCurrency)}
-                          </span>
-
-                          {resolvedSpend.isConverted && resolvedSpend.nativeCurrency !== defaultCurrency && (
-                            <TooltipProvider delayDuration={150}>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span className="text-muted-foreground hover:text-foreground cursor-help text-[11px] font-normal tabular-nums underline decoration-dotted underline-offset-2">
-                                    {formatMoney(resolvedSpend.nativeAmount, resolvedSpend.nativeCurrency)}
-                                  </span>
-                                </TooltipTrigger>
-                                <TooltipContent side="left" className="text-xs">
-                                  <div className="flex flex-col gap-0.5">
-                                    <span className="font-medium">Foreign Currency Conversion</span>
-                                    <span className="text-muted-foreground text-[11px]">
-                                      {formatMoney(resolvedSpend.nativeAmount, resolvedSpend.nativeCurrency)} @{" "}
-                                      {resolvedSpend.rate ? resolvedSpend.rate.toFixed(4) : "—"} ={" "}
-                                      {formatMoney(resolvedSpend.convertedAmount, defaultCurrency)}
-                                    </span>
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            </TooltipProvider>
-                          )}
-                        </div>
+                        <MoneyValue
+                          mode="rollup"
+                          amount={resolvedSpend.nativeAmount}
+                          currency={resolvedSpend.nativeCurrency}
+                          convertedAmount={resolvedSpend.convertedAmount}
+                          reportingCurrency={defaultCurrency}
+                          size="sm"
+                        />
                       </div>
                     );
                   })}

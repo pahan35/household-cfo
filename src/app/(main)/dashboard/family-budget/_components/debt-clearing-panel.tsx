@@ -47,6 +47,8 @@ import {
   isAccountType,
   isArchivedCategoryName,
 } from "./external-provider-data";
+import { resolveCategoryCurrency } from "./external-provider-money";
+import { MoneyValue } from "./money-value";
 
 interface DebtClearingPanelProps {
   debtAccount: ExternalProviderCategory;
@@ -83,7 +85,7 @@ export function DebtClearingPanel({
   const [reconcileDate, setReconcileDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
 
   const balance = Number(debtAccount.amount) || 0;
-  const debtCurrency = debtAccount.currencyId ?? defaultCurrency;
+  const debtCurrency = resolveCategoryCurrency(debtAccount, defaultCurrency);
   const isArchived = isArchivedCategoryName(debtAccount.name);
   const isZeroBalance = Math.abs(balance) < 0.005;
 
@@ -120,17 +122,28 @@ export function DebtClearingPanel({
     () => paymentAccounts.find((a) => a.id === outflowSourceId) ?? paymentAccounts[0],
     [paymentAccounts, outflowSourceId],
   );
+  const outflowSrcCurr = resolveCategoryCurrency(outflowSourceAccount, defaultCurrency);
 
-  function handleOutflowSourceAmountChange(val: string) {
-    setOutflowSourceAmount(val);
-    const num = parseFloat(val);
-    if (!Number.isNaN(num) && num > 0 && outflowSourceAccount) {
-      const srcCurr = outflowSourceAccount.currencyId ?? defaultCurrency;
+  function updateOutflowDestAmount(srcAmtStr: string, sourceAcc: ExternalProviderCategory | undefined) {
+    const num = parseFloat(srcAmtStr);
+    if (!Number.isNaN(num) && num > 0 && sourceAcc) {
+      const srcCurr = resolveCategoryCurrency(sourceAcc, defaultCurrency);
       const converted = convertCurrencyAmount(num, srcCurr, debtCurrency, currencies);
       if (converted !== null) {
         setOutflowDestAmount((Math.round(converted * 100) / 100).toString());
       }
     }
+  }
+
+  function handleOutflowSourceAmountChange(val: string) {
+    setOutflowSourceAmount(val);
+    updateOutflowDestAmount(val, outflowSourceAccount);
+  }
+
+  function handleSelectOutflowSource(id: string) {
+    setOutflowSourceId(id);
+    const acc = paymentAccounts.find((a) => a.id === id);
+    updateOutflowDestAmount(outflowSourceAmount, acc);
   }
 
   async function handleOutflowSubmit(e: React.FormEvent) {
@@ -184,17 +197,51 @@ export function DebtClearingPanel({
     () => paymentAccounts.find((a) => a.id === feeSourceId) ?? paymentAccounts[0],
     [paymentAccounts, feeSourceId],
   );
+  const feeSourceCurr = resolveCategoryCurrency(feeSourceAccount, defaultCurrency);
 
-  function handleFeeAmountChange(val: string) {
-    setFeeAmount(val);
+  const feeExpenseCategory = useMemo(
+    () => allCategories.find((c) => c.id === feeExpenseCatId),
+    [allCategories, feeExpenseCatId],
+  );
+  const feeExpenseCurr = resolveCategoryCurrency(feeExpenseCategory, defaultCurrency);
+
+  function updateFeeConvertedAmount(
+    val: string,
+    sourceAcc: ExternalProviderCategory | undefined,
+    absorbed: "debtor" | "me",
+    expenseCat: ExternalProviderCategory | undefined,
+  ) {
     const num = parseFloat(val);
-    if (!Number.isNaN(num) && num > 0 && feeSourceAccount) {
-      const srcCurr = feeSourceAccount.currencyId ?? defaultCurrency;
-      const converted = convertCurrencyAmount(num, srcCurr, debtCurrency, currencies);
+    if (!Number.isNaN(num) && num > 0 && sourceAcc) {
+      const srcCurr = resolveCategoryCurrency(sourceAcc, defaultCurrency);
+      const targetCurr = absorbed === "debtor" ? debtCurrency : resolveCategoryCurrency(expenseCat, defaultCurrency);
+      const converted = convertCurrencyAmount(num, srcCurr, targetCurr, currencies);
       if (converted !== null) {
         setFeeConvertedAmount((Math.round(converted * 100) / 100).toString());
       }
     }
+  }
+
+  function handleFeeAmountChange(val: string) {
+    setFeeAmount(val);
+    updateFeeConvertedAmount(val, feeSourceAccount, feeAbsorbedBy, feeExpenseCategory);
+  }
+
+  function handleSelectFeeSource(id: string) {
+    setFeeSourceId(id);
+    const acc = paymentAccounts.find((a) => a.id === id);
+    updateFeeConvertedAmount(feeAmount, acc, feeAbsorbedBy, feeExpenseCategory);
+  }
+
+  function handleSelectFeeExpenseCat(id: string) {
+    setFeeExpenseCatId(id);
+    const cat = allCategories.find((c) => c.id === id);
+    updateFeeConvertedAmount(feeAmount, feeSourceAccount, feeAbsorbedBy, cat);
+  }
+
+  function handleSelectFeeAbsorbedBy(absorbed: "debtor" | "me") {
+    setFeeAbsorbedBy(absorbed);
+    updateFeeConvertedAmount(feeAmount, feeSourceAccount, absorbed, feeExpenseCategory);
   }
 
   async function handleFeeSubmit(e: React.FormEvent) {
@@ -256,17 +303,28 @@ export function DebtClearingPanel({
   const settleTargetCategory = useMemo(() => {
     return allCategories.find((c) => c.id === settleTargetId);
   }, [allCategories, settleTargetId]);
+  const settleTargetCurr = resolveCategoryCurrency(settleTargetCategory, debtCurrency);
 
-  function handleSettleDebtAmountChange(val: string) {
-    setSettleDebtAmount(val);
-    const num = parseFloat(val);
-    if (!Number.isNaN(num) && num > 0 && settleTargetCategory) {
-      const targetCurr = settleTargetCategory.currencyId ?? defaultCurrency;
+  function updateSettleDestAmount(debtAmtStr: string, targetCat: ExternalProviderCategory | undefined) {
+    const num = parseFloat(debtAmtStr);
+    if (!Number.isNaN(num) && num > 0 && targetCat) {
+      const targetCurr = resolveCategoryCurrency(targetCat, debtCurrency);
       const converted = convertCurrencyAmount(num, debtCurrency, targetCurr, currencies);
       if (converted !== null) {
         setSettleDestAmount((Math.round(converted * 100) / 100).toString());
       }
     }
+  }
+
+  function handleSettleDebtAmountChange(val: string) {
+    setSettleDebtAmount(val);
+    updateSettleDestAmount(val, settleTargetCategory);
+  }
+
+  function handleSelectSettleTarget(val: string) {
+    setSettleTargetId(val);
+    const target = allCategories.find((c) => c.id === val);
+    updateSettleDestAmount(settleDebtAmount, target);
   }
 
   async function handleSettleSubmit(e: React.FormEvent) {
@@ -475,7 +533,7 @@ export function DebtClearingPanel({
                 <SelectContent>
                   {expenseCategories.map((cat) => (
                     <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                      {cat.name}
+                      {cat.name} ({resolveCategoryCurrency(cat, defaultCurrency)})
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -535,7 +593,7 @@ export function DebtClearingPanel({
               <SelectContent>
                 {incomeCategories.map((cat) => (
                   <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                    {cat.name}
+                    {cat.name} ({resolveCategoryCurrency(cat, defaultCurrency)})
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -647,14 +705,14 @@ export function DebtClearingPanel({
 
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs font-medium">Source Account (I paid from)</Label>
-                  <Select value={outflowSourceId} onValueChange={setOutflowSourceId} disabled={isSubmitting}>
+                  <Select value={outflowSourceId} onValueChange={handleSelectOutflowSource} disabled={isSubmitting}>
                     <SelectTrigger className="w-full text-xs">
                       <SelectValue placeholder="Select payment account" />
                     </SelectTrigger>
                     <SelectContent>
                       {paymentAccounts.map((acc) => (
                         <SelectItem key={acc.id} value={acc.id} className="text-xs">
-                          {acc.name} ({acc.currencyId ?? defaultCurrency})
+                          {acc.name} ({resolveCategoryCurrency(acc, defaultCurrency)})
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -662,9 +720,7 @@ export function DebtClearingPanel({
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs font-medium">
-                    Paid Amount ({outflowSourceAccount?.currencyId ?? defaultCurrency})
-                  </Label>
+                  <Label className="text-xs font-medium">Paid Amount ({outflowSrcCurr})</Label>
                   <Input
                     type="number"
                     step="0.01"
@@ -692,6 +748,20 @@ export function DebtClearingPanel({
                   <span className="text-muted-foreground text-[11px]">
                     Auto-converted using ExternalProvider exchange rate; editable.
                   </span>
+                  {outflowSourceAmount && outflowDestAmount && outflowSrcCurr !== debtCurrency && (
+                    <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span>Preview:</span>
+                      <MoneyValue
+                        mode="ledger"
+                        amount={parseFloat(outflowSourceAmount) || 0}
+                        currency={outflowSrcCurr}
+                        convertedAmount={parseFloat(outflowDestAmount) || 0}
+                        reportingCurrency={debtCurrency}
+                        currencies={currencies}
+                        size="sm"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -738,14 +808,14 @@ export function DebtClearingPanel({
 
                 <div className="flex flex-col gap-1.5">
                   <Label className="text-xs font-medium">Payment Account</Label>
-                  <Select value={feeSourceId} onValueChange={setFeeSourceId} disabled={isSubmitting}>
+                  <Select value={feeSourceId} onValueChange={handleSelectFeeSource} disabled={isSubmitting}>
                     <SelectTrigger className="w-full text-xs">
                       <SelectValue placeholder="Select payment account" />
                     </SelectTrigger>
                     <SelectContent>
                       {paymentAccounts.map((acc) => (
                         <SelectItem key={acc.id} value={acc.id} className="text-xs">
-                          {acc.name} ({acc.currencyId ?? defaultCurrency})
+                          {acc.name} ({resolveCategoryCurrency(acc, defaultCurrency)})
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -759,7 +829,7 @@ export function DebtClearingPanel({
                       type="button"
                       size="xs"
                       variant={feeAbsorbedBy === "debtor" ? "default" : "outline"}
-                      onClick={() => setFeeAbsorbedBy("debtor")}
+                      onClick={() => handleSelectFeeAbsorbedBy("debtor")}
                       className="flex-1 text-xs"
                     >
                       Debtor
@@ -768,7 +838,7 @@ export function DebtClearingPanel({
                       type="button"
                       size="xs"
                       variant={feeAbsorbedBy === "me" ? "default" : "outline"}
-                      onClick={() => setFeeAbsorbedBy("me")}
+                      onClick={() => handleSelectFeeAbsorbedBy("me")}
                       className="flex-1 text-xs"
                     >
                       I absorb
@@ -777,9 +847,7 @@ export function DebtClearingPanel({
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs font-medium">
-                    Fee Amount ({feeSourceAccount?.currencyId ?? defaultCurrency})
-                  </Label>
+                  <Label className="text-xs font-medium">Fee Amount ({feeSourceCurr})</Label>
                   <Input
                     type="number"
                     step="0.01"
@@ -808,6 +876,20 @@ export function DebtClearingPanel({
                     <span className="text-muted-foreground text-[11px]">
                       Increases receivable balance of {debtAccount.name}.
                     </span>
+                    {feeAmount && feeConvertedAmount && feeSourceCurr !== debtCurrency && (
+                      <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span>Preview:</span>
+                        <MoneyValue
+                          mode="ledger"
+                          amount={parseFloat(feeAmount) || 0}
+                          currency={feeSourceCurr}
+                          convertedAmount={parseFloat(feeConvertedAmount) || 0}
+                          reportingCurrency={debtCurrency}
+                          currencies={currencies}
+                          size="sm"
+                        />
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-col gap-1.5">
@@ -824,15 +906,15 @@ export function DebtClearingPanel({
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
-                    <Label className="text-xs font-medium">Fee Expense Category</Label>
-                    <Select value={feeExpenseCatId} onValueChange={setFeeExpenseCatId} disabled={isSubmitting}>
+                    <Label className="text-xs font-medium">Fee Expense Category ({feeExpenseCurr})</Label>
+                    <Select value={feeExpenseCatId} onValueChange={handleSelectFeeExpenseCat} disabled={isSubmitting}>
                       <SelectTrigger className="w-full text-xs">
                         <SelectValue placeholder="Select fee category" />
                       </SelectTrigger>
                       <SelectContent>
                         {expenseCategories.map((cat) => (
                           <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                            {cat.name}
+                            {cat.name} ({resolveCategoryCurrency(cat, defaultCurrency)})
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -840,6 +922,20 @@ export function DebtClearingPanel({
                     <span className="text-muted-foreground text-[11px]">
                       Recorded as your personal expense; debt balance unchanged.
                     </span>
+                    {feeAmount && feeConvertedAmount && feeSourceCurr !== feeExpenseCurr && (
+                      <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span>Preview:</span>
+                        <MoneyValue
+                          mode="ledger"
+                          amount={parseFloat(feeAmount) || 0}
+                          currency={feeSourceCurr}
+                          convertedAmount={parseFloat(feeConvertedAmount) || 0}
+                          reportingCurrency={feeExpenseCurr}
+                          currencies={currencies}
+                          size="sm"
+                        />
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-col gap-1.5">
@@ -947,7 +1043,7 @@ export function DebtClearingPanel({
                   <Label className="text-xs font-medium">
                     {settlementCase === "transfer" ? "Recipient Account or Family Category" : "Expense Category"}
                   </Label>
-                  <Select value={settleTargetId} onValueChange={setSettleTargetId} disabled={isSubmitting}>
+                  <Select value={settleTargetId} onValueChange={handleSelectSettleTarget} disabled={isSubmitting}>
                     <SelectTrigger className="w-full text-xs">
                       <SelectValue placeholder="Select target" />
                     </SelectTrigger>
@@ -958,7 +1054,7 @@ export function DebtClearingPanel({
                             <SelectLabel className="text-xs">Tracked Accounts</SelectLabel>
                             {paymentAccounts.map((acc) => (
                               <SelectItem key={acc.id} value={acc.id} className="text-xs">
-                                {acc.name} ({acc.currencyId ?? defaultCurrency})
+                                {acc.name} ({resolveCategoryCurrency(acc, defaultCurrency)})
                               </SelectItem>
                             ))}
                           </SelectGroup>
@@ -966,7 +1062,7 @@ export function DebtClearingPanel({
                             <SelectLabel className="text-xs">Expense Categories (External recipient)</SelectLabel>
                             {expenseCategories.map((cat) => (
                               <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                                {cat.name}
+                                {cat.name} ({resolveCategoryCurrency(cat, defaultCurrency)})
                               </SelectItem>
                             ))}
                           </SelectGroup>
@@ -974,7 +1070,7 @@ export function DebtClearingPanel({
                       ) : (
                         expenseCategories.map((cat) => (
                           <SelectItem key={cat.id} value={cat.id} className="text-xs">
-                            {cat.name}
+                            {cat.name} ({resolveCategoryCurrency(cat, defaultCurrency)})
                           </SelectItem>
                         ))
                       )}
@@ -985,9 +1081,7 @@ export function DebtClearingPanel({
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="flex flex-col gap-1.5">
-                  <Label className="text-xs font-medium">
-                    Settled / Recorded Amount ({settleTargetCategory?.currencyId ?? debtCurrency})
-                  </Label>
+                  <Label className="text-xs font-medium">Settled / Recorded Amount ({settleTargetCurr})</Label>
                   <Input
                     type="number"
                     step="0.01"
@@ -998,6 +1092,20 @@ export function DebtClearingPanel({
                     className="h-8 text-xs"
                   />
                   <span className="text-muted-foreground text-[11px]">Pre-filled with exchange rate; editable.</span>
+                  {settleDebtAmount && settleDestAmount && debtCurrency !== settleTargetCurr && (
+                    <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span>Preview:</span>
+                      <MoneyValue
+                        mode="ledger"
+                        amount={parseFloat(settleDebtAmount) || 0}
+                        currency={debtCurrency}
+                        convertedAmount={parseFloat(settleDestAmount) || 0}
+                        reportingCurrency={settleTargetCurr}
+                        currencies={currencies}
+                        size="sm"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-1.5">

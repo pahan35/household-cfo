@@ -27,6 +27,7 @@ import {
   type LearningFacetMetric,
   normalizeLifestyleTag,
 } from "../../_components/lifestyle-transforms";
+import { MoneyValue } from "../../_components/money-value";
 import { SectionShell } from "../../_components/section-shell";
 import { useLifestyleData } from "../use-lifestyle-data";
 
@@ -272,16 +273,14 @@ export function LearningDashboard() {
                     </div>
                   </div>
 
-                  <div className="flex shrink-0 flex-col items-end">
-                    <span className="font-bold font-mono text-foreground">
-                      {formatMoney(convertedAmount, defaultCurrency)}
-                    </span>
-                    {currency !== defaultCurrency && (
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {formatMoney(nativeAmount, currency)}
-                      </span>
-                    )}
-                  </div>
+                  <MoneyValue
+                    mode="rollup"
+                    amount={nativeAmount}
+                    currency={currency}
+                    convertedAmount={convertedAmount}
+                    reportingCurrency={defaultCurrency}
+                    size="sm"
+                  />
                 </div>
               );
             })

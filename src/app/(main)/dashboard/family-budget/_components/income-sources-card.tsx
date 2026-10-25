@@ -59,10 +59,14 @@ import {
   moveIncomeSourcesAboveArchived,
 } from "./external-provider-data";
 import { ExternalProviderIcon } from "./external-provider-icons";
+import { resolveCategoryCurrency, toFxRateToTarget } from "./external-provider-money";
 import { LastTransactionBadge } from "./last-transaction-badge";
+import { MoneyValue } from "./money-value";
 import { RenameCategoryDialog } from "./rename-category-dialog";
 import { SectionShell } from "./section-shell";
 import { isPfronCashbackCategory } from "./tax-transforms";
+
+export type IncomeSourceAmount = number | { nativeAmount: number; totalConverted: number };
 
 export interface IncomeSourcesCardProps {
   categories?: ExternalProviderCategory[];
@@ -78,7 +82,7 @@ export interface IncomeSourcesCardProps {
   currencies?: ExternalProviderCurrency[];
   selectedSourceId?: string | null;
   onSelectSource?: (sourceId: string | null) => void;
-  incomeBySourceId?: Map<string, number>;
+  incomeBySourceId?: Map<string, IncomeSourceAmount>;
   onOpenNormalizeCategories?: () => void;
   onCategoriesUpdated?: (updatedCategories: ExternalProviderCategory[]) => void;
 }
@@ -95,6 +99,7 @@ export function IncomeSourcesCard({
   onMoveSourcesAboveArchived,
   onCategoriesUpdated,
   lastTransactionByCategoryId,
+  currencies = [],
   selectedSourceId = null,
   onSelectSource,
   incomeBySourceId,
@@ -161,7 +166,7 @@ export function IncomeSourcesCard({
     if (!incomeBySourceId) return 0;
     let sum = 0;
     for (const val of incomeBySourceId.values()) {
-      sum += val;
+      sum += typeof val === "number" ? val : val.totalConverted;
     }
     return sum;
   }, [incomeBySourceId]);
@@ -369,7 +374,8 @@ export function IncomeSourcesCard({
                   index={index}
                   category={category}
                   periodAmount={periodAmount}
-                  currency={category.currencyId || currency}
+                  reportingCurrency={currency}
+                  currencies={currencies}
                   isArchived={isArchived}
                   isBelowArchived={isBelowArchived}
                   lastTx={lastTx}
@@ -433,8 +439,9 @@ interface SortableIncomeRowProps {
   id: string;
   index: number;
   category: ExternalProviderCategory;
-  periodAmount?: number;
-  currency: string;
+  periodAmount?: IncomeSourceAmount;
+  reportingCurrency: string;
+  currencies?: ExternalProviderCurrency[];
   isArchived: boolean;
   isBelowArchived: boolean;
   lastTx?: LastTransactionSummary | null;
@@ -453,7 +460,8 @@ function SortableIncomeRow({
   index,
   category,
   periodAmount,
-  currency,
+  reportingCurrency,
+  currencies,
   isArchived,
   isBelowArchived,
   lastTx,
@@ -479,6 +487,23 @@ function SortableIncomeRow({
   const displayName = isArchived ? category.name.replace(/^_+/, "").trim() : category.name;
   const limitAmount = Number(category.limitAmount) || 0;
   const isPfron = isPfronCashbackCategory(category.name);
+  const sourceCurrency = resolveCategoryCurrency(category, reportingCurrency);
+
+  let nativeReceived = 0;
+  let convertedPln = 0;
+  if (typeof periodAmount === "number") {
+    if (sourceCurrency === reportingCurrency) {
+      nativeReceived = periodAmount;
+      convertedPln = periodAmount;
+    } else {
+      convertedPln = periodAmount;
+      const rate = toFxRateToTarget(sourceCurrency, reportingCurrency, currencies ?? []);
+      nativeReceived = rate > 0 ? periodAmount / rate : periodAmount;
+    }
+  } else if (periodAmount) {
+    nativeReceived = periodAmount.nativeAmount;
+    convertedPln = periodAmount.totalConverted;
+  }
 
   return (
     <div
@@ -571,7 +596,7 @@ function SortableIncomeRow({
               <span className="text-purple-600 dark:text-purple-400">Credited against ZUS contributions</span>
             ) : limitAmount > 0 ? (
               <span className="flex items-center gap-1">
-                <Target className="size-3" /> Target: {formatMoney(limitAmount, currency)}
+                <Target className="size-3" /> Target: {formatMoney(limitAmount, sourceCurrency)}
               </span>
             ) : (
               <span>No target set</span>
@@ -585,12 +610,20 @@ function SortableIncomeRow({
         {lastTx && <LastTransactionBadge summary={lastTx} />}
 
         <div className="flex flex-col items-end">
-          <span className="font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
-            {periodAmount !== undefined ? `+${formatMoney(periodAmount, currency)}` : formatMoney(0, currency)}
-          </span>
+          <MoneyValue
+            mode="ledger"
+            amount={nativeReceived}
+            currency={sourceCurrency}
+            convertedAmount={convertedPln}
+            reportingCurrency={reportingCurrency}
+            currencies={currencies}
+            size="sm"
+            prefix="+"
+            primaryClassName="text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums"
+          />
           {limitAmount > 0 && periodAmount !== undefined && (
             <span className="text-muted-foreground text-[10px] tabular-nums">
-              {Math.round((periodAmount / limitAmount) * 100)}% of target
+              {Math.round((nativeReceived / limitAmount) * 100)}% of target
             </span>
           )}
         </div>

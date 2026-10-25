@@ -8,6 +8,7 @@ import {
   convertCurrencyAmount,
   parseExternalProviderTimestamp,
 } from "./external-provider-data";
+import { resolveCategoryCurrency } from "./external-provider-money";
 
 // ---------------------------------------------------------------------------
 // 1. Currency-Suffix-Tolerant Category Normalizers & Unified Categories
@@ -39,7 +40,7 @@ export const KNOWN_CURRENCY_CODES = [
   "AUD",
 ] as const;
 
-export const CURRENCY_SUFFIX_REGEX = /\s+([A-Za-z]{3})$/;
+export const CURRENCY_SUFFIX_REGEX = /(?:[\s_\-–—([{]+)([A-Za-z]{3})(?:[)\]}]?)$/;
 
 /**
  * Strips trailing 3-letter currency codes (e.g. "Sport PLN" -> "Sport", "Medicine UAH" -> "Medicine").
@@ -128,21 +129,13 @@ export function getTransactionDate(tx: ExternalProviderTransaction): Date {
 }
 
 /**
- * Resolves currency code from category either via currencyId or trailing 3-letter currency code in the name.
+ * Resolves currency code from category either via currencyId, trailing 3-letter currency code in the name,
+ * or legacy heuristics.
  */
 export function extractCategoryCurrency(cat?: ExternalProviderCategory): string | undefined {
   if (!cat) return undefined;
-  if (typeof cat.currencyId === "string" && cat.currencyId.trim().length > 0) {
-    return cat.currencyId.trim().toUpperCase();
-  }
-  const match = cat.name.trim().match(CURRENCY_SUFFIX_REGEX);
-  if (match) {
-    const code = match[1].toUpperCase();
-    if (KNOWN_CURRENCY_CODES.includes(code as (typeof KNOWN_CURRENCY_CODES)[number])) {
-      return code;
-    }
-  }
-  return undefined;
+  const res = resolveCategoryCurrency(cat, "");
+  return res.length > 0 ? res : undefined;
 }
 
 /**

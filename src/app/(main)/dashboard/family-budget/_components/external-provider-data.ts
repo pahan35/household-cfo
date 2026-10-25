@@ -774,7 +774,9 @@ export function buildFeeTransaction(params: FeeTransactionParams): ExternalProvi
     destinationId: targetCategory?.id,
     destinationType: targetCategory?.categoryType ?? CategoryType.Expense,
     destinationAmount: convertedAmount,
-    destinationCurrencyId: targetCategory?.currencyId ?? params.sourceAccount.currencyId,
+    destinationCurrencyId: targetCategory
+      ? resolveCategoryCurrency(targetCategory, { defaultCurrency: params.sourceAccount.currencyId })
+      : params.sourceAccount.currencyId,
     destinationName: targetCategory?.name ?? "Fees / Commissions",
     comment: params.comment?.trim() || null,
     tags: params.tags ?? [],
@@ -816,12 +818,15 @@ export function buildSettlementTransaction(params: SettlementTransactionParams):
     sourceId: params.debtAccount.id,
     sourceType: params.debtAccount.categoryType,
     sourceAmount: deductedAmount,
-    sourceCurrencyId: params.debtAccount.currencyId,
+    sourceCurrencyId:
+      params.debtAccount.currencyId ?? resolveCategoryCurrency(params.debtAccount, { defaultCurrency: "PLN" }),
     sourceName: params.debtAccount.name,
     destinationId: params.destinationCategory.id,
     destinationType: params.destinationCategory.categoryType,
     destinationAmount: settledAmount,
-    destinationCurrencyId: params.destinationCategory.currencyId ?? params.debtAccount.currencyId,
+    destinationCurrencyId:
+      params.destinationCategory.currencyId ??
+      resolveCategoryCurrency(params.destinationCategory, { defaultCurrency: params.debtAccount.currencyId }),
     destinationName: params.destinationCategory.name,
     comment: params.comment?.trim() || null,
     tags: params.tags ?? [],
@@ -1263,8 +1268,12 @@ export function getLastTransactionSummaryForCategory(
       destType === CategoryType.BankAccount ||
       destType === CategoryType.DebtAccount;
 
-    const sourceCurrency = tx.sourceCurrencyId ?? sourceCategory?.currencyId;
-    const destCurrency = tx.destinationCurrencyId ?? destCategory?.currencyId;
+    const sourceCurrency =
+      tx.sourceCurrencyId ??
+      (sourceCategory ? resolveCategoryCurrency(sourceCategory, { defaultCurrency }) : undefined);
+    const destCurrency =
+      tx.destinationCurrencyId ??
+      (destCategory ? resolveCategoryCurrency(destCategory, { defaultCurrency }) : undefined);
 
     let currency = defaultCurrency;
     let amount = 0;
@@ -1328,8 +1337,11 @@ export function getLastTransactionSummaryForCategory(
     direction = "income";
   }
 
-  const sourceCurrency = tx.sourceCurrencyId ?? counterpartCategory?.currencyId;
-  const destCurrency = tx.destinationCurrencyId ?? destCategory?.currencyId;
+  const sourceCurrency =
+    tx.sourceCurrencyId ??
+    (counterpartCategory ? resolveCategoryCurrency(counterpartCategory, { defaultCurrency }) : undefined);
+  const destCurrency =
+    tx.destinationCurrencyId ?? (destCategory ? resolveCategoryCurrency(destCategory, { defaultCurrency }) : undefined);
 
   let currency = defaultCurrency;
   let amount = 0;
@@ -1550,9 +1562,18 @@ export function resolveTransactionEndpoints(
     destinationName: firstNonEmpty(tx.destinationName, destCategory?.name) ?? "Unknown Target",
     sourceType: sourceType === undefined ? undefined : Number(sourceType),
     destinationType: destinationType === undefined ? undefined : Number(destinationType),
-    sourceCurrency: firstNonEmpty(tx.sourceCurrencyId, sourceCategory?.currencyId, defaultCurrency) ?? defaultCurrency,
+    sourceCurrency:
+      firstNonEmpty(
+        tx.sourceCurrencyId,
+        sourceCategory ? resolveCategoryCurrency(sourceCategory, { defaultCurrency }) : undefined,
+        defaultCurrency,
+      ) ?? defaultCurrency,
     destinationCurrency:
-      firstNonEmpty(tx.destinationCurrencyId, destCategory?.currencyId, defaultCurrency) ?? defaultCurrency,
+      firstNonEmpty(
+        tx.destinationCurrencyId,
+        destCategory ? resolveCategoryCurrency(destCategory, { defaultCurrency }) : undefined,
+        defaultCurrency,
+      ) ?? defaultCurrency,
     isSourceAccount: isAccountType(sourceType),
     isDestinationAccount: isAccountType(destinationType),
   };
