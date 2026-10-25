@@ -11,11 +11,13 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  ArrowDownToLine,
   ArrowUpToLine,
   GripVertical,
   MoreHorizontal,
   PiggyBank,
   Receipt,
+  Trash2,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -32,8 +34,8 @@ import { getBudgetSelection } from "./external-provider-client";
 import {
   CategoryType,
   type ExternalProviderCategory,
+  detectExpenseCategoryDisplacement,
   filterAndClassifyCategories,
-  findExpenseCategoriesBelowArchived,
   formatMoney,
   getCategoryCurrencyTier,
   isArchivedCategoryName,
@@ -62,25 +64,33 @@ export interface BudgetSummaryItem {
   isOverrun: boolean;
 }
 
+export interface ComputeBudgetSummaryItemsOptions {
+  includeAll?: boolean;
+  includeDeleted?: boolean;
+  includeArchivedInactive?: boolean;
+  categoryTypeMap?: Map<string, number>;
+  categoryDeletedMap?: Map<string, boolean>;
+  deletedCategoryIds?: Set<string>;
+}
+
 export function computeBudgetSummaryItems(
   statData: StatPingData | null | undefined,
   fromDate: string,
   categoryNameMap: Map<string, string>,
-  categoryTypeMapOrOptions?: Map<string, number> | { includeAll?: boolean; categoryTypeMap?: Map<string, number> },
-  options?: { includeAll?: boolean },
+  categoryTypeMapOrOptions?: Map<string, number> | ComputeBudgetSummaryItemsOptions,
+  options?: ComputeBudgetSummaryItemsOptions,
 ): BudgetSummaryItem[] {
-  let categoryTypeMap: Map<string, number> | undefined;
-  let includeAll = false;
+  const mergedOpts: ComputeBudgetSummaryItemsOptions =
+    categoryTypeMapOrOptions instanceof Map
+      ? { ...options, categoryTypeMap: categoryTypeMapOrOptions }
+      : { ...categoryTypeMapOrOptions, ...options };
 
-  if (categoryTypeMapOrOptions instanceof Map) {
-    categoryTypeMap = categoryTypeMapOrOptions;
-    includeAll = options?.includeAll ?? false;
-  } else if (categoryTypeMapOrOptions && typeof categoryTypeMapOrOptions === "object") {
-    categoryTypeMap = categoryTypeMapOrOptions.categoryTypeMap;
-    includeAll = categoryTypeMapOrOptions.includeAll ?? false;
-  } else {
-    includeAll = options?.includeAll ?? false;
-  }
+  const categoryTypeMap = mergedOpts.categoryTypeMap;
+  const categoryDeletedMap = mergedOpts.categoryDeletedMap;
+  const deletedCategoryIds = mergedOpts.deletedCategoryIds;
+  const includeAll = mergedOpts.includeAll ?? false;
+  const includeDeleted = mergedOpts.includeDeleted ?? false;
+  const includeArchivedInactive = mergedOpts.includeArchivedInactive ?? false;
 
   const points = statData?.selection?.points ?? [];
   if (points.length === 0) return [];
@@ -92,17 +102,36 @@ export function computeBudgetSummaryItems(
 
   return activePoint.categories
     .filter((cat: StatCategoryPoint) => {
+      if (!includeDeleted) {
+        if ((cat as { deleted?: boolean }).deleted === true) return false;
+        if (deletedCategoryIds?.has(cat.id)) return false;
+        if (categoryDeletedMap?.get(cat.id) === true) return false;
+      }
+
       if (categoryTypeMap) {
         const type = categoryTypeMap.get(cat.id);
         if (type !== undefined && type !== CategoryType.Expense) {
           return false;
         }
       }
+
+      const rawTitle = typeof cat.title === "string" ? cat.title.trim() : "";
+      const rawName = typeof cat.name === "string" ? cat.name.trim() : "";
+      const name = rawTitle || rawName || categoryNameMap.get(cat.id) || "Category";
+
       if (includeAll) return true;
+
       const limit = Number(cat.limitAmount) || 0;
       const rawSpend = cat.value ?? cat.amount ?? cat.currentAmount;
       const current = Math.max(0, Number(rawSpend) || 0);
-      return limit > 0 || current > 0;
+
+      if (limit > 0 || current > 0) return true;
+
+      if (includeArchivedInactive && isArchivedCategoryName(name)) {
+        return true;
+      }
+
+      return false;
     })
     .map((cat: StatCategoryPoint) => {
       const limit = Number(cat.limitAmount) || 0;
@@ -148,6 +177,7 @@ interface BudgetSummaryCardProps {
   onArchiveCategory?: (categoryId: string) => Promise<void> | void;
   onUnarchiveCategory?: (categoryId: string) => Promise<void> | void;
   onMoveCategoriesAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
+  onMoveCategoriesToBottom?: (categoryIds?: string[]) => Promise<void> | void;
   onOrganizeByCurrencyTier?: () => Promise<void> | void;
 }
 
@@ -168,11 +198,13 @@ export function BudgetSummaryCard({
   onArchiveCategory,
   onUnarchiveCategory,
   onMoveCategoriesAboveArchived,
+  onMoveCategoriesToBottom,
   onOrganizeByCurrencyTier,
 }: BudgetSummaryCardProps) {
   const [sortMode, setSortMode] = useState<BudgetSortMode>("custom");
   const [viewMode, setViewMode] = useState<BudgetViewMode>("active");
   const [showArchived, setShowArchived] = useState(false);
+  const [showRemoved, setShowRemoved] = useState(false);
 
   const [internalStatData, setInternalStatData] = useState<StatPingData | null>(null);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -259,22 +291,54 @@ export function BudgetSummaryCard({
     return map;
   }, [categories]);
 
+  const deletedCategoryIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of categories) {
+      if (c.deleted) set.add(c.id);
+    }
+    return set;
+  }, [categories]);
+
   const currency = statData?.selection?.params?.currency ?? defaultCurrency;
 
-  // Raw budget items computed from stats
+  // Raw budget items computed from stats: strictly active items + inactive archived when toggled, never unarchived zero-spend, never soft-deleted
   const allBudgetItems = useMemo(
-    () => computeBudgetSummaryItems(statData, fromDate, categoryNameMap, categoryTypeMap, { includeAll: showArchived }),
-    [statData, fromDate, categoryNameMap, categoryTypeMap, showArchived],
+    () =>
+      computeBudgetSummaryItems(statData, fromDate, categoryNameMap, {
+        categoryTypeMap,
+        deletedCategoryIds,
+        includeArchivedInactive: showArchived,
+      }),
+    [statData, fromDate, categoryNameMap, categoryTypeMap, deletedCategoryIds, showArchived],
   );
 
-  // Every expense category (including zero-spend / zero-limit ones) for the full directory view
-  const expenseCategories = useMemo(() => categories.filter((c) => !c.deleted && isExpenseCategory(c)), [categories]);
+  // Active/non-deleted expense categories for full directory view
+  const activeExpenseCategories = useMemo(
+    () => categories.filter((c) => !c.deleted && isExpenseCategory(c)),
+    [categories],
+  );
+  const removedExpenseCategories = useMemo(
+    () => (showRemoved ? categories.filter((c) => c.deleted && isExpenseCategory(c)) : []),
+    [categories, showRemoved],
+  );
+  const removedCategoriesCount = useMemo(
+    () => categories.filter((c) => c.deleted && isExpenseCategory(c)).length,
+    [categories],
+  );
+
+  // Three-tier placement: active -> archived -> removed
+  const expenseCategories = useMemo(
+    () => [...activeExpenseCategories, ...removedExpenseCategories],
+    [activeExpenseCategories, removedExpenseCategories],
+  );
 
   const allCategoryItems = useMemo(() => {
     const statItems = new Map(
-      computeBudgetSummaryItems(statData, fromDate, categoryNameMap, categoryTypeMap, { includeAll: true }).map(
-        (it) => [it.id, it],
-      ),
+      computeBudgetSummaryItems(statData, fromDate, categoryNameMap, {
+        categoryTypeMap,
+        includeDeleted: true,
+        includeAll: true,
+      }).map((it) => [it.id, it]),
     );
     return expenseCategories.map<BudgetSummaryItem>(
       (c) =>
@@ -290,8 +354,11 @@ export function BudgetSummaryCard({
     );
   }, [statData, fromDate, categoryNameMap, categoryTypeMap, expenseCategories]);
 
-  const categoriesBelowArchived = useMemo(() => findExpenseCategoriesBelowArchived(categories), [categories]);
+  const displacement = useMemo(() => detectExpenseCategoryDisplacement(categories), [categories]);
+  const categoriesBelowArchived = displacement.activeBelow;
+  const categoriesArchivedAbove = displacement.archivedAbove;
   const belowArchivedIds = useMemo(() => new Set(categoriesBelowArchived.map((c) => c.id)), [categoriesBelowArchived]);
+  const archivedAboveIds = useMemo(() => new Set(categoriesArchivedAbove.map((c) => c.id)), [categoriesArchivedAbove]);
 
   const canOrganizeByTier = useMemo(
     () => organizeExpenseCategoriesByCurrencyTier(categories, defaultCurrency).modifiedCategories.length > 0,
@@ -301,28 +368,83 @@ export function BudgetSummaryCard({
   // Filter archived items
   const classifiedItems = useMemo(() => {
     if (viewMode === "all") {
-      return allCategoryItems.map((item) => ({ item, isArchived: isArchivedCategoryName(item.name), isActive: true }));
+      return allCategoryItems.map((item) => ({
+        item,
+        isArchived: isArchivedCategoryName(item.name),
+        isRemoved: deletedCategoryIds.has(item.id),
+        isActive: true,
+      }));
     }
-    return filterAndClassifyCategories(allBudgetItems, { showArchived });
-  }, [allBudgetItems, showArchived, viewMode, allCategoryItems]);
+    const classified = filterAndClassifyCategories(allBudgetItems, { showArchived });
+    const result = classified.map((c) => ({
+      ...c,
+      isRemoved: deletedCategoryIds.has(c.item.id),
+    }));
+    if (showRemoved && removedExpenseCategories.length > 0) {
+      const removedMap = new Map(
+        computeBudgetSummaryItems(statData, fromDate, categoryNameMap, {
+          categoryTypeMap,
+          includeDeleted: true,
+          includeAll: true,
+        }).map((it) => [it.id, it]),
+      );
+      for (const r of removedExpenseCategories) {
+        const item = removedMap.get(r.id) ?? {
+          id: r.id,
+          name: r.name,
+          limit: 0,
+          current: 0,
+          percent: 0,
+          rawPercent: 0,
+          isOverrun: false,
+        };
+        result.push({
+          item,
+          isArchived: isArchivedCategoryName(r.name),
+          isRemoved: true,
+          isActive: false,
+        });
+      }
+    }
+    return result;
+  }, [
+    viewMode,
+    allCategoryItems,
+    deletedCategoryIds,
+    allBudgetItems,
+    showArchived,
+    showRemoved,
+    removedExpenseCategories,
+    statData,
+    fromDate,
+    categoryNameMap,
+    categoryTypeMap,
+  ]);
 
   // Count hidden inactive archived items
   const hiddenArchivedCount = useMemo(() => {
-    const all = computeBudgetSummaryItems(statData, fromDate, categoryNameMap, categoryTypeMap, { includeAll: true });
+    const all = computeBudgetSummaryItems(statData, fromDate, categoryNameMap, {
+      categoryTypeMap,
+      deletedCategoryIds,
+      includeAll: true,
+    });
     return all.filter((it) => {
-      const isArchived = typeof it.name === "string" && it.name.trim().startsWith("_");
+      const isArchived = typeof it.name === "string" && isArchivedCategoryName(it.name);
       const isInactive = it.current === 0 && it.limit === 0;
       return isArchived && isInactive;
     }).length;
-  }, [statData, fromDate, categoryNameMap, categoryTypeMap]);
+  }, [statData, fromDate, categoryNameMap, categoryTypeMap, deletedCategoryIds]);
 
-  // Sorted items based on sortMode ("custom" vs "percent")
+  // Sorted items based on sortMode ("custom" vs "percent") with strict hierarchy: active/archived -> removed
   const sortedItems = useMemo(() => {
-    if (viewMode !== "all" && sortMode === "percent") {
-      return [...classifiedItems].sort((a, b) => b.item.rawPercent - a.item.rawPercent);
-    }
-    // "custom" mode sorts by ExternalProvider order ascending, tie-breaking by id
     return [...classifiedItems].sort((a, b) => {
+      if (Boolean(a.isRemoved) !== Boolean(b.isRemoved)) {
+        return a.isRemoved ? 1 : -1;
+      }
+      if (viewMode !== "all" && sortMode === "percent") {
+        return b.item.rawPercent - a.item.rawPercent;
+      }
+      // "custom" mode sorts by ExternalProvider order ascending, tie-breaking by id
       const orderA = categoryOrderMap.get(a.item.id) ?? 0;
       const orderB = categoryOrderMap.get(b.item.id) ?? 0;
       if (orderA !== orderB) {
@@ -450,6 +572,20 @@ export function BudgetSummaryCard({
               <span>{showArchived ? "Hide archived" : `Show archived (${hiddenArchivedCount})`}</span>
             </Button>
           )}
+
+          {/* Removed Toggle */}
+          {(removedCategoriesCount > 0 || showRemoved) && (
+            <Button
+              type="button"
+              variant={showRemoved ? "secondary" : "ghost"}
+              size="xs"
+              onClick={() => setShowRemoved((prev) => !prev)}
+              className="h-7 gap-1 px-2 text-[11px]"
+            >
+              <Trash2 className="text-muted-foreground size-3" />
+              <span>{showRemoved ? "Hide removed" : `Show removed (${removedCategoriesCount})`}</span>
+            </Button>
+          )}
         </div>
       }
       isLoading={isLoading}
@@ -462,7 +598,30 @@ export function BudgetSummaryCard({
       skeletonCount={4}
       skeletonHeight="h-14"
     >
-      {categoriesBelowArchived.length > 0 && onMoveCategoriesAboveArchived && (
+      {displacement.direction === "move-archived-to-bottom" && onMoveCategoriesToBottom && (
+        <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+            <span className="text-foreground font-medium">
+              {categoriesArchivedAbove.length === 1
+                ? "1 archived expense category is positioned above active categories"
+                : `${categoriesArchivedAbove.length} archived expense categories are positioned above active categories`}
+            </span>
+          </div>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            onClick={() => void onMoveCategoriesToBottom()}
+            className="h-7 gap-1.5 border-amber-500/30 text-xs font-medium hover:bg-amber-500/15"
+          >
+            <ArrowDownToLine className="size-3.5" />
+            <span>Move archived to bottom</span>
+          </Button>
+        </div>
+      )}
+
+      {displacement.direction === "move-active-above-archived" && onMoveCategoriesAboveArchived && (
         <div className="mb-3 flex items-center justify-between rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs">
           <div className="flex items-center gap-2">
             <AlertTriangle className="size-4 shrink-0 text-amber-500" />
@@ -487,7 +646,7 @@ export function BudgetSummaryCard({
 
       <DragDropProvider onDragEnd={handleDragEnd}>
         <div className="flex flex-col gap-4">
-          {sortedItems.map(({ item, isArchived }, index) => {
+          {sortedItems.map(({ item, isArchived, isRemoved }, index) => {
             const lastTx = lastTransactionByCategoryId?.get(item.id);
             const delta = categoryDeltaMap?.get(item.id);
 
@@ -499,16 +658,19 @@ export function BudgetSummaryCard({
                 item={item}
                 currency={currency}
                 isArchived={isArchived}
+                isRemoved={isRemoved}
                 lastTx={lastTx}
                 canReorder={canReorder}
                 delta={delta}
                 order={categoryOrderMap.get(item.id)}
                 isForeign={getCategoryCurrencyTier(item.name, defaultCurrency) === "foreign"}
                 isBelowArchived={belowArchivedIds.has(item.id)}
+                isArchivedAbove={archivedAboveIds.has(item.id)}
                 onSelect={onSelectCategory ? () => handleSelect(item) : undefined}
                 onArchive={onArchiveCategory}
                 onUnarchive={onUnarchiveCategory}
                 onMoveAboveArchived={onMoveCategoriesAboveArchived}
+                onMoveToBottom={onMoveCategoriesToBottom}
               />
             );
           })}
@@ -537,16 +699,19 @@ interface SortableBudgetCategoryRowProps {
   item: BudgetSummaryItem;
   currency: string;
   isArchived: boolean;
+  isRemoved?: boolean;
   lastTx?: LastTransactionSummary | null;
   canReorder: boolean;
   delta?: CategoryComparisonDelta;
   order?: number;
   isForeign?: boolean;
   isBelowArchived?: boolean;
+  isArchivedAbove?: boolean;
   onSelect?: () => void;
   onArchive?: (categoryId: string) => Promise<void> | void;
   onUnarchive?: (categoryId: string) => Promise<void> | void;
   onMoveAboveArchived?: (categoryIds?: string[]) => Promise<void> | void;
+  onMoveToBottom?: (categoryIds?: string[]) => Promise<void> | void;
 }
 
 function SortableBudgetCategoryRow({
@@ -555,16 +720,19 @@ function SortableBudgetCategoryRow({
   item,
   currency,
   isArchived,
+  isRemoved,
   lastTx,
   canReorder,
   delta,
   order,
   isForeign,
   isBelowArchived,
+  isArchivedAbove,
   onSelect,
   onArchive,
   onUnarchive,
   onMoveAboveArchived,
+  onMoveToBottom,
 }: SortableBudgetCategoryRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -583,6 +751,7 @@ function SortableBudgetCategoryRow({
         "group/row flex flex-col gap-1.5 transition-opacity",
         isDragging && "bg-muted/40 relative z-10 rounded-lg p-2 opacity-50",
         isArchived && "opacity-60",
+        isRemoved && "bg-muted/20 rounded-md p-1 opacity-60",
       )}
     >
       <div className="flex items-center justify-between text-xs">
@@ -619,13 +788,13 @@ function SortableBudgetCategoryRow({
             <span className="truncate">{item.name}</span>
           )}
 
-          {isForeign && !isArchived && (
+          {isForeign && !isArchived && !isRemoved && (
             <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
               Foreign
             </Badge>
           )}
 
-          {isBelowArchived && !isArchived && onMoveAboveArchived && (
+          {isBelowArchived && !isArchived && !isRemoved && onMoveAboveArchived && (
             <Button
               type="button"
               variant="ghost"
@@ -639,6 +808,20 @@ function SortableBudgetCategoryRow({
             </Button>
           )}
 
+          {isArchivedAbove && !isRemoved && onMoveToBottom && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => void onMoveToBottom([id])}
+              className="size-4 text-amber-500 hover:text-amber-600"
+              aria-label={`Move ${item.name} to bottom`}
+              title="Positioned above active categories. Click to move to bottom."
+            >
+              <AlertTriangle className="size-3.5" />
+            </Button>
+          )}
+
           {item.isOverrun && (
             <Badge variant="destructive" className="h-4 gap-1 px-1 text-[10px] font-normal">
               <AlertTriangle className="size-2.5" />
@@ -646,9 +829,18 @@ function SortableBudgetCategoryRow({
             </Badge>
           )}
 
-          {isArchived && (
+          {isArchived && !isRemoved && (
             <Badge variant="secondary" className="text-muted-foreground px-1.5 py-0 text-[10px] font-normal">
               Archived
+            </Badge>
+          )}
+
+          {isRemoved && (
+            <Badge
+              variant="outline"
+              className="text-muted-foreground/80 border-dashed px-1.5 py-0 text-[10px] font-normal"
+            >
+              Removed
             </Badge>
           )}
 
@@ -673,7 +865,7 @@ function SortableBudgetCategoryRow({
           <span>{formatMoney(item.limit, currency)}</span>
           <span className="ml-1 text-[11px]">({item.rawPercent}%)</span>
 
-          {Boolean(onSelect ?? onArchive ?? onUnarchive) && (
+          {Boolean(onSelect ?? onArchive ?? onUnarchive ?? onMoveAboveArchived ?? onMoveToBottom) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -693,25 +885,32 @@ function SortableBudgetCategoryRow({
                     <span>Inspect Transactions</span>
                   </DropdownMenuItem>
                 )}
-                {isBelowArchived && !isArchived && onMoveAboveArchived && (
+                {isBelowArchived && !isArchived && !isRemoved && onMoveAboveArchived && (
                   <DropdownMenuItem onClick={() => void onMoveAboveArchived([id])}>
                     <ArrowUpToLine className="mr-2 size-4" />
                     <span>Move above archived</span>
                   </DropdownMenuItem>
                 )}
-                {isArchived
-                  ? onUnarchive && (
-                      <DropdownMenuItem onClick={() => void onUnarchive(id)}>
-                        <ArchiveRestore className="mr-2 size-4" />
-                        <span>Unarchive</span>
-                      </DropdownMenuItem>
-                    )
-                  : onArchive && (
-                      <DropdownMenuItem onClick={() => void onArchive(id)}>
-                        <Archive className="mr-2 size-4" />
-                        <span>Archive</span>
-                      </DropdownMenuItem>
-                    )}
+                {onMoveToBottom && (isArchived || isRemoved === true || isArchivedAbove === true) && (
+                  <DropdownMenuItem onClick={() => void onMoveToBottom([id])}>
+                    <ArrowDownToLine className="mr-2 size-4" />
+                    <span>Move to bottom</span>
+                  </DropdownMenuItem>
+                )}
+                {!isRemoved &&
+                  (isArchived
+                    ? onUnarchive && (
+                        <DropdownMenuItem onClick={() => void onUnarchive(id)}>
+                          <ArchiveRestore className="mr-2 size-4" />
+                          <span>Unarchive</span>
+                        </DropdownMenuItem>
+                      )
+                    : onArchive && (
+                        <DropdownMenuItem onClick={() => void onArchive(id)}>
+                          <Archive className="mr-2 size-4" />
+                          <span>Archive</span>
+                        </DropdownMenuItem>
+                      ))}
               </DropdownMenuContent>
             </DropdownMenu>
           )}

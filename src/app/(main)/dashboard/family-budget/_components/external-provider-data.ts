@@ -340,7 +340,9 @@ export function reorderCategoriesSubset(
   const activeFilter = groupFilter ?? (() => true);
 
   // 1. Group categories sorted by current order
-  const groupCategories = sortCategoriesByOrder(allCategories.filter((c) => !c.deleted && activeFilter(c)));
+  const groupCategories = sortCategoriesByOrder(
+    allCategories.filter((c) => (!c.deleted || visibleIdSet.has(c.id)) && activeFilter(c)),
+  );
 
   const categoryMap = new Map(allCategories.map((c) => [c.id, c]));
   const reorderedVisibleItems: ExternalProviderCategory[] = [];
@@ -383,7 +385,7 @@ export function reorderCategoriesSubset(
   // 5. Replace group items in allCategories in their new relative order
   const allCategoryIndicesForGroup: number[] = [];
   for (let i = 0; i < allCategories.length; i++) {
-    if (!allCategories[i].deleted && activeFilter(allCategories[i])) {
+    if ((!allCategories[i].deleted || visibleIdSet.has(allCategories[i].id)) && activeFilter(allCategories[i])) {
       allCategoryIndicesForGroup.push(i);
     }
   }
@@ -405,11 +407,13 @@ export function applyCategoryGroupUpdates(
   allCategories: ExternalProviderCategory[],
   newGroup: ExternalProviderCategory[],
   groupPredicate: (c: ExternalProviderCategory) => boolean,
+  options?: { includeDeleted?: boolean },
 ): ReorderCategoriesResult {
+  const includeDeleted = options?.includeDeleted ?? false;
   const groupIndices: number[] = [];
   for (let i = 0; i < allCategories.length; i++) {
     const c = allCategories[i];
-    if (!c.deleted && groupPredicate(c)) {
+    if ((includeDeleted || !c.deleted) && groupPredicate(c)) {
       groupIndices.push(i);
     }
   }
@@ -1675,8 +1679,12 @@ export function isIncomeCategory(c: ExternalProviderCategory): boolean {
   return Number(c.categoryType) === CategoryType.Income;
 }
 
-function isInNormalizationScope(c: ExternalProviderCategory, scope: CategoryNormalizationScope): boolean {
-  if (c.deleted) return false;
+export function isInNormalizationScope(
+  c: ExternalProviderCategory,
+  scope: CategoryNormalizationScope,
+  options?: { includeDeleted?: boolean },
+): boolean {
+  if (c.deleted && !options?.includeDeleted) return false;
   return scope === "income" ? isIncomeCategory(c) : isExpenseCategory(c);
 }
 
@@ -1702,6 +1710,7 @@ export interface GenerateProposedRenamesOptions {
   defaultCurrency?: string;
   transactions?: ExternalProviderTransaction[];
   scope?: CategoryNormalizationScope;
+  includeDeleted?: boolean;
 }
 
 function splitArchivePrefix(name: string): { prefix: string; stem: string } {
@@ -1725,9 +1734,10 @@ export function generateProposedCategoryRenames(
 ): ProposedCategoryRename[] {
   const defaultCurrency = (options?.defaultCurrency ?? "PLN").toUpperCase();
   const scope = options?.scope ?? "expense";
+  const includeDeleted = options?.includeDeleted ?? false;
   const stripTag = defaultCurrency === "PLN" ? RENAME_TAGS.STRIP_PLN : getStripCurrencyTag(defaultCurrency);
 
-  const scopeCategories = categories.filter((c) => isInNormalizationScope(c, scope));
+  const scopeCategories = categories.filter((c) => isInNormalizationScope(c, scope, { includeDeleted }));
   const candidateCategories = scopeCategories;
 
   const defaultSuffixRegex = new RegExp(`(?:\\s+|\\s*\\()${defaultCurrency}\\)?$`, "i");
@@ -1900,7 +1910,7 @@ export function buildCategoryNormalizationPlan(
   const renameById = new Map(renames.map((r) => [r.id, r]));
 
   const rows: CategoryImpactRow[] = sortCategoriesByOrder(
-    categories.filter((c) => isInNormalizationScope(c, scope)),
+    categories.filter((c) => isInNormalizationScope(c, scope, { includeDeleted: options?.includeDeleted })),
   ).map((c, idx) => ({
     id: c.id,
     category: c,
@@ -2055,11 +2065,50 @@ export function unarchiveExpenseCategory(
   ]);
 }
 
-export function findExpenseCategoriesBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+export interface ExpenseArchivedDisplacement {
+  direction: "move-archived-to-bottom" | "move-active-above-archived" | "none";
+  archivedAbove: ExternalProviderCategory[];
+  activeBelow: ExternalProviderCategory[];
+}
+
+export function detectExpenseCategoryDisplacement(allCategories: ExternalProviderCategory[]): ExpenseArchivedDisplacement {
   const list = sortedActiveExpenseCategories(allCategories);
   const firstArchivedIdx = list.findIndex((c) => isArchivedCategoryName(c.name));
-  if (firstArchivedIdx === -1) return [];
-  return list.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+  if (firstArchivedIdx === -1) {
+    return { direction: "none", archivedAbove: [], activeBelow: [] };
+  }
+
+  let lastActiveIdx = -1;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!isArchivedCategoryName(list[i].name)) {
+      lastActiveIdx = i;
+      break;
+    }
+  }
+
+  if (lastActiveIdx === -1 || firstArchivedIdx > lastActiveIdx) {
+    return { direction: "none", archivedAbove: [], activeBelow: [] };
+  }
+
+  const activeBelow = list.slice(firstArchivedIdx + 1).filter((c) => !isArchivedCategoryName(c.name));
+  const archivedAbove = list.slice(0, lastActiveIdx).filter((c) => isArchivedCategoryName(c.name));
+
+  if (activeBelow.length === 0 || archivedAbove.length === 0) {
+    return { direction: "none", archivedAbove: [], activeBelow: [] };
+  }
+
+  const direction =
+    archivedAbove.length < activeBelow.length ? "move-archived-to-bottom" : "move-active-above-archived";
+
+  return {
+    direction,
+    archivedAbove,
+    activeBelow,
+  };
+}
+
+export function findExpenseCategoriesBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+  return detectExpenseCategoryDisplacement(allCategories).activeBelow;
 }
 
 export function moveExpenseCategoriesAboveArchived(
@@ -2081,20 +2130,108 @@ export function moveExpenseCategoriesAboveArchived(
 }
 
 /**
+ * Moves archived categories positioned above active categories (or specified categories)
+ * to after the last active category, assigning sequential orders starting after the maximum active category order,
+ * mutating ONLY the moved categories while strictly preserving all active category orders.
+ */
+export function moveExpenseCategoriesToBottom(
+  allCategories: ExternalProviderCategory[],
+  categoryIds?: string[],
+): ReorderCategoriesResult {
+  const list = sortedActiveExpenseCategories(allCategories);
+  const displacement = detectExpenseCategoryDisplacement(allCategories);
+  const idSet = categoryIds && categoryIds.length > 0 ? new Set(categoryIds) : null;
+  const toMove = idSet ? list.filter((c) => idSet.has(c.id)) : displacement.archivedAbove;
+
+  if (toMove.length === 0) {
+    return { updatedCategories: [...allCategories], modifiedCategories: [] };
+  }
+
+  const moveIdSet = new Set(toMove.map((c) => c.id));
+  const remaining = list.filter((c) => !moveIdSet.has(c.id));
+
+  // Determine starting order: after max order of remaining categories
+  let maxOrder = -1;
+  for (const c of remaining) {
+    if (typeof c.order === "number" && c.order > maxOrder) {
+      maxOrder = c.order;
+    }
+  }
+  const startOrder = Math.max(0, maxOrder + 1);
+
+  let nextOrder = startOrder;
+  const modifiedCategories: ExternalProviderCategory[] = [];
+  const updatedMap = new Map<string, ExternalProviderCategory>();
+
+  for (const cat of toMove) {
+    const updated: ExternalProviderCategory = { ...cat, order: nextOrder++ };
+    updatedMap.set(cat.id, updated);
+    if (cat.order !== updated.order) {
+      modifiedCategories.push(updated);
+    }
+  }
+
+  const updatedCategories = allCategories.map((c) => updatedMap.get(c.id) ?? c);
+
+  return {
+    updatedCategories,
+    modifiedCategories,
+  };
+}
+
+export function getExpenseCategoryHierarchyRank(category: ExternalProviderCategory, defaultCurrency = "PLN"): number {
+  if (category.deleted) return 4;
+  const tier = getCategoryCurrencyTier(category.name, defaultCurrency);
+  if (tier === "archived") return 3;
+  if (tier === "foreign") return 2;
+  return 1;
+}
+
+export function sortExpenseCategoriesByHierarchy(
+  categories: ExternalProviderCategory[],
+  defaultCurrency = "PLN",
+): ExternalProviderCategory[] {
+  return [...categories].sort((a, b) => {
+    const rankA = getExpenseCategoryHierarchyRank(a, defaultCurrency);
+    const rankB = getExpenseCategoryHierarchyRank(b, defaultCurrency);
+    if (rankA !== rankB) return rankA - rankB;
+    const orderA = typeof a.order === "number" ? a.order : 0;
+    const orderB = typeof b.order === "number" ? b.order : 0;
+    if (orderA !== orderB) return orderA - orderB;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+}
+
+/**
  * Orders expense categories: primary (default currency) active categories, then foreign/legacy-currency
- * suffixed active categories, then `_` archived categories. Relative order is preserved within each tier.
+ * suffixed active categories, then `_` archived categories, and finally soft-deleted categories at the bottom.
+ * Relative order is preserved within each tier.
  */
 export function organizeExpenseCategoriesByCurrencyTier(
   allCategories: ExternalProviderCategory[],
   defaultCurrency = "PLN",
 ): ReorderCategoriesResult {
-  const list = sortedActiveExpenseCategories(allCategories);
+  const expenseCategories = sortCategoriesByOrder(allCategories.filter((c) => isExpenseCategory(c)));
   const primary: ExternalProviderCategory[] = [];
   const foreign: ExternalProviderCategory[] = [];
   const archived: ExternalProviderCategory[] = [];
-  for (const c of list) {
+  const removed: ExternalProviderCategory[] = [];
+
+  for (const c of expenseCategories) {
+    if (c.deleted) {
+      removed.push(c);
+      continue;
+    }
     const tier = getCategoryCurrencyTier(c.name, defaultCurrency);
-    (tier === "archived" ? archived : tier === "foreign" ? foreign : primary).push(c);
+    if (tier === "archived") {
+      archived.push(c);
+    } else if (tier === "foreign") {
+      foreign.push(c);
+    } else {
+      primary.push(c);
+    }
   }
-  return applyExpenseGroupUpdates(allCategories, [...primary, ...foreign, ...archived]);
+
+  const newGroup = [...primary, ...foreign, ...archived, ...removed];
+  return applyCategoryGroupUpdates(allCategories, newGroup, isExpenseCategory, { includeDeleted: true });
 }

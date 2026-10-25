@@ -35,7 +35,9 @@ import {
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
+  isExpenseCategory,
   moveExpenseCategoriesAboveArchived,
+  moveExpenseCategoriesToBottom,
   organizeExpenseCategoriesByCurrencyTier,
   type ReorderCategoriesResult,
   reorderCategoriesSubset,
@@ -54,6 +56,8 @@ export function BudgetOverviewDashboard() {
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
   const [recentTransactions, setRecentTransactions] = useState<ExternalProviderTransaction[]>([]);
+  const [targetedTransactions, setTargetedTransactions] = useState<ExternalProviderTransaction[]>([]);
+  const queriedMissingCategoryIdsRef = useRef<Set<string>>(new Set());
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
   const [baseDataError, setBaseDataError] = useState<Error | null>(null);
 
@@ -271,8 +275,53 @@ export function BudgetOverviewDashboard() {
   }, [transformed, baselineTransformed]);
 
   const lastTransactionByCategoryId = useMemo(() => {
-    return buildLastTransactionMap([...recentTransactions, ...periodTransactions], categories);
-  }, [recentTransactions, periodTransactions, categories]);
+    return buildLastTransactionMap([...recentTransactions, ...periodTransactions, ...targetedTransactions], categories);
+  }, [recentTransactions, periodTransactions, targetedTransactions, categories]);
+
+  // Identify visible expense categories missing last transaction date and fetch targeted transactions
+  useEffect(() => {
+    if (isLoadingBaseData || categories.length === 0) return;
+
+    const missingIds = categories
+      .filter((c) => isExpenseCategory(c) && !lastTransactionByCategoryId.has(c.id))
+      .map((c) => c.id)
+      .filter((id) => !queriedMissingCategoryIdsRef.current.has(id));
+
+    if (missingIds.length === 0) return;
+
+    for (const id of missingIds) {
+      queriedMissingCategoryIdsRef.current.add(id);
+    }
+
+    const controller = new AbortController();
+
+    async function fetchMissingTransactions() {
+      const chunkSize = 25;
+      for (let i = 0; i < missingIds.length; i += chunkSize) {
+        if (controller.signal.aborted) break;
+        const chunk = missingIds.slice(i, i + chunkSize);
+        try {
+          const res = await getTransactionPage({
+            categoryIds: chunk,
+            take: Math.min(100, Math.max(20, chunk.length * 2)),
+            signal: controller.signal,
+          });
+          const txs = res.transactions ?? [];
+          if (txs.length > 0) {
+            setTargetedTransactions((prev) => [...prev, ...txs]);
+          }
+        } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") break;
+        }
+      }
+    }
+
+    void fetchMissingTransactions();
+
+    return () => {
+      controller.abort();
+    };
+  }, [categories, lastTransactionByCategoryId, isLoadingBaseData]);
 
   const handleReorderCategories = useCallback(
     async (reorderedVisibleIds: string[], isSameGroup?: (cat: ExternalProviderCategory) => boolean) => {
@@ -327,6 +376,10 @@ export function BudgetOverviewDashboard() {
   );
   const handleMoveCategoriesAboveArchived = useCallback(
     (ids?: string[]) => applyCategoryMutation(moveExpenseCategoriesAboveArchived(categories, ids)),
+    [applyCategoryMutation, categories],
+  );
+  const handleMoveCategoriesToBottom = useCallback(
+    (ids?: string[]) => applyCategoryMutation(moveExpenseCategoriesToBottom(categories, ids)),
     [applyCategoryMutation, categories],
   );
   const handleOrganizeByCurrencyTier = useCallback(
@@ -437,6 +490,8 @@ export function BudgetOverviewDashboard() {
   const isRefreshing = isLoadingBaseData || isLoadingStatData || isLoadingPeriodTx;
 
   function handleRefreshAll() {
+    queriedMissingCategoryIdsRef.current.clear();
+    setTargetedTransactions([]);
     void loadBaseData(undefined, true);
     void loadStatData(undefined, true);
     void loadPeriodTransactions(undefined, true);
@@ -473,7 +528,7 @@ export function BudgetOverviewDashboard() {
           </Button>
 
           <Button size="sm" variant="outline" onClick={() => setIsRenamingDialogOpen(true)} className="gap-1.5 text-xs">
-            <Sparkles className="size-3.5 text-primary" />
+            <Sparkles className="text-primary size-3.5" />
             <span>Normalize Categories</span>
           </Button>
         </div>
@@ -551,6 +606,7 @@ export function BudgetOverviewDashboard() {
             onArchiveCategory={handleArchiveCategory}
             onUnarchiveCategory={handleUnarchiveCategory}
             onMoveCategoriesAboveArchived={handleMoveCategoriesAboveArchived}
+            onMoveCategoriesToBottom={handleMoveCategoriesToBottom}
             onOrganizeByCurrencyTier={handleOrganizeByCurrencyTier}
           />
         </div>
@@ -577,7 +633,7 @@ export function BudgetOverviewDashboard() {
         onOpenChange={setIsRenamingDialogOpen}
         categories={categories}
         defaultCurrency={defaultCurrency}
-        transactions={recentTransactions}
+        transactions={[...recentTransactions, ...periodTransactions, ...targetedTransactions]}
         defaultScope="expense"
         onRenamed={(updatedCategories) => {
           setCategories(updatedCategories);

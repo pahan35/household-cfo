@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 
 import { cn } from "cn";
-import { AlertTriangle, ArrowRight, CheckCheck, Link2, Loader2, Search, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCheck, Link2, Loader2, Search, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,7 @@ import {
   type ExternalProviderTransaction,
   evaluateCategoryRenameState,
   formatMoney,
+  isInNormalizationScope,
   type ProposedCategoryRename,
   sortRenamesTopologically,
 } from "./external-provider-data";
@@ -72,15 +73,26 @@ export function CategoryRenamingDialog({
   const [view, setView] = useState<ViewMode>("changes");
   const [search, setSearch] = useState("");
   const [items, setItems] = useState<PendingRenameItem[]>([]);
+  const [showRemoved, setShowRemoved] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const plans = useMemo(() => {
     const result = {} as Record<CategoryNormalizationScope, CategoryNormalizationPlan>;
     for (const s of SCOPES) {
-      result[s] = buildCategoryNormalizationPlan(categories, { defaultCurrency, transactions, scope: s });
+      result[s] = buildCategoryNormalizationPlan(categories, {
+        defaultCurrency,
+        transactions,
+        scope: s,
+        includeDeleted: showRemoved,
+      });
     }
     return result;
-  }, [categories, defaultCurrency, transactions]);
+  }, [categories, defaultCurrency, transactions, showRemoved]);
+
+  const removedCount = useMemo(
+    () => categories.filter((c) => c.deleted && isInNormalizationScope(c, scope, { includeDeleted: true })).length,
+    [categories, scope],
+  );
 
   const lastTransactionMap = useMemo(
     () => buildLastTransactionMap(transactions ?? [], categories),
@@ -93,6 +105,7 @@ export function CategoryRenamingDialog({
     setScope(defaultScope);
     setView("changes");
     setSearch("");
+    setShowRemoved(false);
   }, [open, defaultScope]);
 
   // Re-generate proposed renames whenever dialog opens or input categories change
@@ -196,9 +209,18 @@ export function CategoryRenamingDialog({
         <Badge variant="outline" className="h-4 px-1.5 font-mono text-[9px] leading-none">
           #{row.order}
         </Badge>
-        <Badge variant="secondary" className="h-4 px-1.5 text-[9px] leading-none">
-          {TIER_LABEL[row.tier]}
-        </Badge>
+        {row.category.deleted ? (
+          <Badge
+            variant="outline"
+            className="text-muted-foreground/80 h-4 border-dashed px-1.5 font-mono text-[9px] leading-none"
+          >
+            Removed
+          </Badge>
+        ) : (
+          <Badge variant="secondary" className="h-4 px-1.5 text-[9px] leading-none">
+            {TIER_LABEL[row.tier]}
+          </Badge>
+        )}
         <span>
           {last ? `Last: ${last.formattedDate} · ${formatMoney(last.amount, last.currency)}` : "No recent transactions"}
         </span>
@@ -215,7 +237,10 @@ export function CategoryRenamingDialog({
       return (
         <div
           key={row.id}
-          className="bg-card border-border/70 flex flex-col gap-1 rounded-md border p-2.5 text-xs sm:flex-row sm:items-center sm:justify-between"
+          className={cn(
+            "bg-card border-border/70 flex flex-col gap-1 rounded-md border p-2.5 text-xs sm:flex-row sm:items-center sm:justify-between",
+            row.category.deleted && "bg-muted/20 opacity-75",
+          )}
         >
           <div className="flex min-w-0 flex-col gap-1">
             <span className="text-foreground font-semibold break-words">{row.name}</span>
@@ -235,6 +260,7 @@ export function CategoryRenamingDialog({
           "flex flex-col justify-between gap-2 rounded-md border p-2.5 text-xs transition-colors sm:flex-row sm:items-center",
           item.selected ? "bg-card border-primary/40 shadow-xs" : "bg-muted/25 border-border/70 text-foreground",
           hasProblem && "border-amber-500/60 bg-amber-500/5",
+          row.category.deleted && "bg-muted/20 opacity-75",
         )}
       >
         <div className="flex min-w-0 items-start gap-2.5">
@@ -370,15 +396,29 @@ export function CategoryRenamingDialog({
           </Tabs>
         </div>
 
-        <div className="relative">
-          <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search categories..."
-            aria-label="Search categories"
-            className="h-8 pl-8 text-xs"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search categories..."
+              aria-label="Search categories"
+              className="h-8 pl-8 text-xs"
+            />
+          </div>
+          {(removedCount > 0 || showRemoved) && (
+            <Button
+              type="button"
+              variant={showRemoved ? "secondary" : "outline"}
+              size="sm"
+              onClick={() => setShowRemoved((prev) => !prev)}
+              className="h-8 shrink-0 gap-1.5 px-2.5 text-xs"
+            >
+              <Trash2 className="text-muted-foreground size-3.5" />
+              <span>{showRemoved ? "Hide removed" : `Show removed (${removedCount})`}</span>
+            </Button>
+          )}
         </div>
 
         {scopeItems.length === 0 && view !== "all" ? (

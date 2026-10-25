@@ -17,24 +17,30 @@ import {
   computeAccountLiquiditySummary,
   computeTransactionsWithRunningBalance,
   convertCurrencyAmount,
+  detectExpenseCategoryDisplacement,
   evaluateCategoryRenameState,
   extractCanonicalBaseName,
   filterAndClassifyAccounts,
   filterAndClassifyCategories,
   filterAndClassifyIncomeSources,
   findAccountsBelowArchived,
+  findExpenseCategoriesBelowArchived,
   findIncomeSourcesBelowArchived,
   formatThrowawayDebtAccountName,
   generateProposedCategoryRenames,
   getAccountBalance,
+  getCategoryCurrencyTier,
+  getExpenseCategoryHierarchyRank,
   getLastTransactionSummaryForCategory,
   isArchivedCategoryName,
   isCyrillic,
+  isInNormalizationScope,
   isPre2022Timestamp,
   isThrowawayDebtAccount,
   KNOWN_FOREIGN_CURRENCY_CODES,
   moveAccountsAboveArchived,
   moveExpenseCategoriesAboveArchived,
+  moveExpenseCategoriesToBottom,
   moveIncomeSourcesAboveArchived,
   organizeExpenseCategoriesByCurrencyTier,
   parseExternalProviderTimestamp,
@@ -42,6 +48,7 @@ import {
   reorderCategoriesSubset,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
+  sortExpenseCategoriesByHierarchy,
   sortRenamesTopologically,
   toDotNetTicks,
   LOCALIZED_CATEGORY_DICTIONARY,
@@ -1436,5 +1443,121 @@ describe("expense category lifecycle", () => {
     expect(sortCategoriesByOrder(moved.updatedCategories).map((c) => c.id)).toEqual(["a", "h", "b", "x"]);
     const tiers = organizeExpenseCategoriesByCurrencyTier(moved.updatedCategories);
     expect(sortCategoriesByOrder(tiers.updatedCategories).map((c) => c.id)).toEqual(["a", "b", "h", "x"]);
+  });
+
+  describe("adaptive displacement analysis & minimal-mutation reordering", () => {
+    it("detects no displacement when active categories precede archived", () => {
+      const cats = [cat("a", "A", 0), cat("b", "B", 1), cat("x", "_X", 2)];
+      const res = detectExpenseCategoryDisplacement(cats);
+      expect(res.direction).toBe("none");
+      expect(res.archivedAbove).toEqual([]);
+      expect(res.activeBelow).toEqual([]);
+    });
+
+    it("detects move-archived-to-bottom when archived count is less than active below count", () => {
+      // 2 archived above, 4 active below
+      const cats = [
+        cat("x1", "_X1", 0),
+        cat("x2", "_X2", 1),
+        cat("a1", "A1", 2),
+        cat("a2", "A2", 3),
+        cat("a3", "A3", 4),
+        cat("a4", "A4", 5),
+      ];
+      const res = detectExpenseCategoryDisplacement(cats);
+      expect(res.direction).toBe("move-archived-to-bottom");
+      expect(res.archivedAbove.map((c) => c.id)).toEqual(["x1", "x2"]);
+      expect(res.activeBelow.map((c) => c.id)).toEqual(["a1", "a2", "a3", "a4"]);
+    });
+
+    it("detects move-active-above-archived when active below count is <= archived above count", () => {
+      // 3 archived above, 2 active below
+      const cats = [
+        cat("x1", "_X1", 0),
+        cat("x2", "_X2", 1),
+        cat("x3", "_X3", 2),
+        cat("a1", "A1", 3),
+        cat("a2", "A2", 4),
+      ];
+      const res = detectExpenseCategoryDisplacement(cats);
+      expect(res.direction).toBe("move-active-above-archived");
+      expect(res.archivedAbove.map((c) => c.id)).toEqual(["x1", "x2", "x3"]);
+      expect(res.activeBelow.map((c) => c.id)).toEqual(["a1", "a2"]);
+    });
+
+    it("moves archived categories to bottom while strictly preserving active category orders", () => {
+      const cats = [
+        cat("x1", "_X1", 0),
+        cat("x2", "_X2", 1),
+        cat("a1", "A1", 10),
+        cat("a2", "A2", 20),
+        cat("a3", "A3", 30),
+      ];
+      const result = moveExpenseCategoriesToBottom(cats);
+      // Only x1 and x2 should be mutated
+      expect(result.modifiedCategories.map((c) => c.id)).toEqual(["x1", "x2"]);
+      // Orders of active categories should remain intact
+      const updatedMap = new Map(result.updatedCategories.map((c) => [c.id, c.order]));
+      expect(updatedMap.get("a1")).toBe(10);
+      expect(updatedMap.get("a2")).toBe(20);
+      expect(updatedMap.get("a3")).toBe(30);
+      // x1 and x2 should be assigned sequential orders after max(remaining) which is 30
+      expect(updatedMap.get("x1")).toBe(31);
+      expect(updatedMap.get("x2")).toBe(32);
+    });
+
+    it("moves a single category to bottom when categoryIds is provided", () => {
+      const cats = [cat("x1", "_X1", 0), cat("a1", "A1", 10), cat("x2", "_X2", 20)];
+      const result = moveExpenseCategoriesToBottom(cats, ["x1"]);
+      expect(result.modifiedCategories.map((c) => c.id)).toEqual(["x1"]);
+      const updatedMap = new Map(result.updatedCategories.map((c) => [c.id, c.order]));
+      expect(updatedMap.get("x1")).toBe(21);
+      expect(updatedMap.get("a1")).toBe(10);
+      expect(updatedMap.get("x2")).toBe(20);
+    });
+  });
+
+  describe("category hierarchy and currency tier sorting", () => {
+    it("ranks categories: primary (1) -> foreign (2) -> archived (3) -> removed (4)", () => {
+      expect(getExpenseCategoryHierarchyRank(cat("p", "Groceries", 0))).toBe(1);
+      expect(getExpenseCategoryHierarchyRank(cat("f", "Hotels CHF", 1))).toBe(2);
+      expect(getExpenseCategoryHierarchyRank(cat("a", "_Old Groceries", 2))).toBe(3);
+      expect(getExpenseCategoryHierarchyRank({ ...cat("r", "Old Taxi", 3), deleted: true })).toBe(4);
+    });
+
+    it("sorts categories by hierarchy strictly placing removed at bottom", () => {
+      const cats = [
+        { ...cat("r", "Removed Taxi", 0), deleted: true },
+        cat("a", "_Archived", 1),
+        cat("f", "Hotels CHF", 2),
+        cat("p", "Groceries", 3),
+      ];
+      const sorted = sortExpenseCategoriesByHierarchy(cats);
+      expect(sorted.map((c) => c.id)).toEqual(["p", "f", "a", "r"]);
+    });
+
+    it("organizes expense categories by currency tier including removed categories at the bottom", () => {
+      const cats = [
+        cat("f", "Hotels CHF", 0),
+        { ...cat("r", "Deleted Category", 1), deleted: true },
+        cat("p", "Groceries", 2),
+        cat("a", "_Archived", 3),
+      ];
+      const result = organizeExpenseCategoriesByCurrencyTier(cats);
+      expect(sortCategoriesByOrder(result.updatedCategories).map((c) => c.id)).toEqual(["p", "f", "a", "r"]);
+      const updatedMap = new Map(result.updatedCategories.map((c) => [c.id, c.order]));
+      expect(updatedMap.get("p")).toBe(0);
+      expect(updatedMap.get("f")).toBe(1);
+      expect(updatedMap.get("a")).toBe(2);
+      expect(updatedMap.get("r")).toBe(3);
+    });
+
+    it("respects includeDeleted in isInNormalizationScope", () => {
+      const activeCat = cat("1", "Food", 0);
+      const deletedCat = { ...cat("2", "Old Food", 1), deleted: true };
+      expect(isInNormalizationScope(activeCat, "expense")).toBe(true);
+      expect(isInNormalizationScope(deletedCat, "expense")).toBe(false);
+      expect(isInNormalizationScope(deletedCat, "expense", { includeDeleted: true })).toBe(true);
+    });
   });
 });

@@ -577,6 +577,89 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
     expect(filtered).toHaveLength(1);
     expect(filtered[0].id).toBe("cat-dining");
   });
+
+  it("strictly filters out deleted categories by default", () => {
+    const statDataWithDeleted: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [
+              { id: "cat-active", amount: 100, value: 100, limitAmount: 500 },
+              { id: "cat-deleted", amount: 200, value: 200, limitAmount: 500, deleted: true },
+            ],
+          },
+        ],
+      },
+    };
+    const testNameMap = new Map([
+      ["cat-active", "Groceries"],
+      ["cat-deleted", "Old Gym"],
+    ]);
+    const items = computeBudgetSummaryItems(statDataWithDeleted, "2026-10-01", testNameMap);
+    expect(items.map((i) => i.id)).toEqual(["cat-active"]);
+
+    const withDeleted = computeBudgetSummaryItems(statDataWithDeleted, "2026-10-01", testNameMap, {
+      includeDeleted: true,
+    });
+    expect(withDeleted.map((i) => i.id)).toEqual(["cat-deleted", "cat-active"]);
+  });
+
+  it("filters out deleted categories via deletedCategoryIds set", () => {
+    const statData: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [
+              { id: "cat-1", amount: 100, value: 100, limitAmount: 500 },
+              { id: "cat-2", amount: 200, value: 200, limitAmount: 500 },
+            ],
+          },
+        ],
+      },
+    };
+    const testNameMap = new Map([
+      ["cat-1", "Cat 1"],
+      ["cat-2", "Cat 2"],
+    ]);
+    const items = computeBudgetSummaryItems(statData, "2026-10-01", testNameMap, {
+      deletedCategoryIds: new Set(["cat-2"]),
+    });
+    expect(items.map((i) => i.id)).toEqual(["cat-1"]);
+  });
+
+  it("does not leak unarchived zero-spend categories when includeArchivedInactive is enabled", () => {
+    const statData: StatPingData = {
+      selection: {
+        points: [
+          {
+            id: "2026-10-01",
+            categories: [
+              { id: "cat-active", amount: 50, value: 50, limitAmount: 100 },
+              { id: "cat-archived-inactive", amount: 0, value: 0, limitAmount: 0 },
+              { id: "cat-unarchived-inactive", amount: 0, value: 0, limitAmount: 0 },
+              { id: "cat-deleted", amount: 0, value: 0, limitAmount: 0, deleted: true },
+            ],
+          },
+        ],
+      },
+    };
+    const testNameMap = new Map([
+      ["cat-active", "Active Spent"],
+      ["cat-archived-inactive", "_Archived Inactive"],
+      ["cat-unarchived-inactive", "Zero Spend Unarchived"],
+      ["cat-deleted", "_Deleted Inactive"],
+    ]);
+    const items = computeBudgetSummaryItems(statData, "2026-10-01", testNameMap, {
+      includeArchivedInactive: true,
+    });
+    const ids = items.map((i) => i.id);
+    expect(ids).toContain("cat-active");
+    expect(ids).toContain("cat-archived-inactive");
+    expect(ids).not.toContain("cat-unarchived-inactive");
+    expect(ids).not.toContain("cat-deleted");
+  });
 });
 
 describe("parsePointDate & transformYoYPoints", () => {
