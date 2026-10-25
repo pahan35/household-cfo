@@ -1663,6 +1663,9 @@ export const LOCALIZED_CATEGORY_DICTIONARY: Record<string, string> = {
   їжа: "Food",
   дім: "Home",
   побут: "Household",
+  навчання: "Learning",
+  освіта: "Education",
+  зарплата: "Salary",
 };
 
 export const RENAME_TAGS = {
@@ -1673,6 +1676,10 @@ export const RENAME_TAGS = {
 
 export function getStripCurrencyTag(currency = "PLN"): string {
   return `[Strip ${currency.toUpperCase()}]`;
+}
+
+export function getAddCurrencyTag(currency = "UAH"): string {
+  return `[Add ${currency.toUpperCase()}]`;
 }
 
 export function isCyrillic(text: string): boolean {
@@ -1700,6 +1707,70 @@ export function isPre2022Timestamp(timestamp?: number | null): boolean {
   const date = parseExternalProviderTimestamp(timestamp);
   if (!date || Number.isNaN(date.getTime())) return false;
   return date.getUTCFullYear() < 2022;
+}
+
+export function splitArchivePrefix(name: string): { prefix: string; stem: string } {
+  const trimmed = name.trim();
+  const match = /^_+/.exec(trimmed);
+  const prefix = match ? match[0] : "";
+  return { prefix, stem: trimmed.slice(prefix.length).trim() };
+}
+
+export interface ResolveCategoryCurrencyOptions {
+  defaultCurrency?: string;
+  transactions?: ExternalProviderTransaction[];
+  hasModernDefaultCounterpart?: boolean;
+}
+
+/**
+ * Resolves a category's effective currency denomination hierarchically:
+ * 1. cat.currencyId (trimmed and uppercased) if present and non-empty.
+ * 2. Trailing currency suffix in cat.name matching known default or foreign currency regex.
+ * 3. Transaction currency history for this category or pre-2022 timestamp ("UAH").
+ * 4. Fallback to defaultCurrency ("PLN").
+ */
+export function resolveCategoryCurrency(cat: ExternalProviderCategory, options?: ResolveCategoryCurrencyOptions): string {
+  const defaultUpper = (options?.defaultCurrency ?? "PLN").trim().toUpperCase();
+
+  // 1. cat.currencyId (trimmed and uppercased) if present and non-empty.
+  if (typeof cat.currencyId === "string" && cat.currencyId.trim().length > 0) {
+    return cat.currencyId.trim().toUpperCase();
+  }
+
+  // 2. Trailing currency suffix in cat.name matching known default or foreign currency regex.
+  const { stem } = splitArchivePrefix(cat.name);
+  const suffixCodes = [defaultUpper, ...KNOWN_FOREIGN_CURRENCY_CODES];
+  const suffixRegex = new RegExp(`(?:\\s+|\\s*\\()(${suffixCodes.join("|")})\\)?$`, "i");
+  const match = suffixRegex.exec(stem.trim());
+  if (match) {
+    return match[1].toUpperCase();
+  }
+
+  // 3. Transaction currency history for this category, pre-2022 timestamp, or Ukrainian Cyrillic ("UAH").
+  if (isCyrillic(stem) || isPre2022Timestamp(cat.createdTimestamp) || options?.hasModernDefaultCounterpart) {
+    return "UAH";
+  }
+
+  if (options?.transactions) {
+    for (const tx of options.transactions) {
+      if (tx.deleted) continue;
+      if (tx.destinationId === cat.id || tx.sourceId === cat.id) {
+        const date = parseExternalProviderTimestamp(tx.dateTimestamp);
+        const rawCurr =
+          typeof tx.currency === "string" ? tx.currency : (tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? "");
+        const curr = String(rawCurr).trim().toUpperCase();
+        if (curr === "UAH" || (date && date.getUTCFullYear() < 2022)) {
+          return "UAH";
+        }
+        if (curr && curr.length === 3) {
+          return curr;
+        }
+      }
+    }
+  }
+
+  // 4. Fallback to defaultCurrency ("PLN").
+  return defaultUpper;
 }
 
 /**
@@ -1771,13 +1842,6 @@ export interface GenerateProposedRenamesOptions {
   includeDeleted?: boolean;
 }
 
-function splitArchivePrefix(name: string): { prefix: string; stem: string } {
-  const trimmed = name.trim();
-  const match = /^_+/.exec(trimmed);
-  const prefix = match ? match[0] : "";
-  return { prefix, stem: trimmed.slice(prefix.length).trim() };
-}
-
 /**
  * Scans categories and generates proposed standardized renames following the Clean Default convention:
  * 1. Default currency suffix (e.g. " PLN") stripped.
@@ -1845,21 +1909,42 @@ export function generateProposedCategoryRenames(
     const isPre2022 = isPre2022Timestamp(cat.createdTimestamp) || uahCategoryIds.has(cat.id);
     const hasModernDefaultCounterpart = baseNamesWithDefaultSuffix.has(stem.toLowerCase());
 
+    const catCurrency = resolveCategoryCurrency(cat, {
+      defaultCurrency,
+      transactions: options?.transactions,
+      hasModernDefaultCounterpart,
+    });
+
     if (endsWithDefault) {
       proposedStem = stem.replace(defaultSuffixRegex, "").trim();
       tags.push(stripTag);
       reasons.push(`Strip default ${defaultCurrency} suffix`);
     } else if (hasCyrillic) {
-      const cleaned = stem.replace(foreignSuffixRegex, "").trim();
+      const cleaned = stem.replace(foreignSuffixRegex, "").replace(defaultSuffixRegex, "").trim();
       const translated = LOCALIZED_CATEGORY_DICTIONARY[cleaned.toLowerCase()] ?? cleaned;
       tags.push(RENAME_TAGS.TRANSLATE_UA);
-      tags.push(RENAME_TAGS.ADD_UAH);
-      proposedStem = `${translated} UAH`;
-      reasons.push("Translate Ukrainian category and add UAH suffix");
-    } else if (!endsWithForeign && (isPre2022 || hasModernDefaultCounterpart)) {
-      proposedStem = `${stem} UAH`;
-      tags.push(RENAME_TAGS.ADD_UAH);
-      reasons.push("Add UAH suffix to legacy pre-2022 category");
+
+      if (catCurrency === defaultCurrency) {
+        proposedStem = translated;
+        reasons.push("Translate Ukrainian category");
+      } else {
+        const endsWithCatCurrency = new RegExp(`(?:\\s+|\\s*\\()${catCurrency}\\)?$`, "i").test(stem);
+        proposedStem = `${translated} ${catCurrency}`;
+        if (endsWithCatCurrency) {
+          reasons.push(`Translate Ukrainian category and preserve ${catCurrency} suffix`);
+        } else {
+          tags.push(getAddCurrencyTag(catCurrency));
+          reasons.push(`Translate Ukrainian category and add ${catCurrency} suffix`);
+        }
+      }
+    } else if (!endsWithForeign && catCurrency !== defaultCurrency) {
+      proposedStem = `${stem} ${catCurrency}`;
+      tags.push(getAddCurrencyTag(catCurrency));
+      if (catCurrency === "UAH" && (isPre2022 || hasModernDefaultCounterpart)) {
+        reasons.push("Add UAH suffix to legacy pre-2022 category");
+      } else {
+        reasons.push(`Add ${catCurrency} suffix to non-default currency category`);
+      }
     }
 
     if (proposedStem !== stem && tags.length > 0) {

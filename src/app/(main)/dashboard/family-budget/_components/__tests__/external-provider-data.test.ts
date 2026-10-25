@@ -34,6 +34,7 @@ import {
   formatThrowawayDebtAccountName,
   generateProposedCategoryRenames,
   getAccountBalance,
+  getAddCurrencyTag,
   getCategoryCurrencyTier,
   getExpenseCategoryHierarchyRank,
   getLastTransactionSummaryForCategory,
@@ -52,6 +53,7 @@ import {
   parseExternalProviderTimestamp,
   RENAME_TAGS,
   reorderCategoriesSubset,
+  resolveCategoryCurrency,
   resolveTransactionEndpoints,
   sortCategoriesByOrder,
   sortExpenseCategoriesByHierarchy,
@@ -1426,6 +1428,157 @@ describe("Clearing Transaction Builders", () => {
         // Since cat-2 has counterpart with PLN suffix, cat-2 becomes "Transport UAH"
         expect(renames.some((r) => r.proposedName === "Transport")).toBe(true);
         expect(renames.some((r) => r.proposedName === "Transport UAH")).toBe(true);
+      });
+
+      it("translates Ukrainian category with existing foreign currency suffix preserving suffix without add tag", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-learn-eur",
+            name: "Навчання EUR",
+            currencyId: "EUR",
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        expect(renames).toHaveLength(1);
+        expect(renames[0]).toMatchObject({
+          id: "cat-learn-eur",
+          currentName: "Навчання EUR",
+          proposedName: "Learning EUR",
+          tags: [RENAME_TAGS.TRANSLATE_UA],
+        });
+      });
+
+      it("translates Ukrainian category without suffix and appends non-default resolved currency tag", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-learn-eur-untagged",
+            name: "Навчання",
+            currencyId: "EUR",
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        expect(renames).toHaveLength(1);
+        expect(renames[0]).toMatchObject({
+          id: "cat-learn-eur-untagged",
+          currentName: "Навчання",
+          proposedName: "Learning EUR",
+          tags: [RENAME_TAGS.TRANSLATE_UA, getAddCurrencyTag("EUR")],
+        });
+      });
+
+      it("proposes appending non-default currency suffix to untagged expense categories", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "cat-hotel-eur",
+            name: "Hotels",
+            currencyId: "EUR",
+            categoryType: CategoryType.Expense,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, { defaultCurrency: "PLN" });
+        expect(renames).toHaveLength(1);
+        expect(renames[0]).toMatchObject({
+          id: "cat-hotel-eur",
+          currentName: "Hotels",
+          proposedName: "Hotels EUR",
+          tags: [getAddCurrencyTag("EUR")],
+        });
+      });
+
+      it("normalizes income categories with non-default currencies or Ukrainian translations", () => {
+        const categories: ExternalProviderCategory[] = [
+          {
+            id: "inc-b2b",
+            name: "B2B Client",
+            currencyId: "USD",
+            categoryType: CategoryType.Income,
+          },
+          {
+            id: "inc-salary-usd",
+            name: "Зарплата USD",
+            currencyId: "USD",
+            categoryType: CategoryType.Income,
+          },
+          {
+            id: "inc-salary-pln",
+            name: "Зарплата",
+            currencyId: "PLN",
+            categoryType: CategoryType.Income,
+          },
+        ];
+
+        const renames = generateProposedCategoryRenames(categories, {
+          defaultCurrency: "PLN",
+          scope: "income",
+        });
+
+        expect(renames).toHaveLength(3);
+
+        const b2bRename = renames.find((r) => r.id === "inc-b2b");
+        expect(b2bRename).toMatchObject({
+          currentName: "B2B Client",
+          proposedName: "B2B Client USD",
+          tags: [getAddCurrencyTag("USD")],
+        });
+
+        const salaryUsdRename = renames.find((r) => r.id === "inc-salary-usd");
+        expect(salaryUsdRename).toMatchObject({
+          currentName: "Зарплата USD",
+          proposedName: "Salary USD",
+          tags: [RENAME_TAGS.TRANSLATE_UA],
+        });
+
+        const salaryPlnRename = renames.find((r) => r.id === "inc-salary-pln");
+        expect(salaryPlnRename).toMatchObject({
+          currentName: "Зарплата",
+          proposedName: "Salary",
+          tags: [RENAME_TAGS.TRANSLATE_UA],
+        });
+      });
+    });
+
+    describe("resolveCategoryCurrency", () => {
+      it("resolves category.currencyId first", () => {
+        const cat: ExternalProviderCategory = {
+          id: "c1",
+          name: "Groceries USD",
+          currencyId: "EUR",
+          categoryType: CategoryType.Expense,
+        };
+        expect(resolveCategoryCurrency(cat)).toBe("EUR");
+      });
+
+      it("resolves trailing currency suffix in name second", () => {
+        const cat: ExternalProviderCategory = {
+          id: "c2",
+          name: "_Hotels EUR",
+          categoryType: CategoryType.Expense,
+        };
+        expect(resolveCategoryCurrency(cat)).toBe("EUR");
+      });
+
+      it("resolves pre-2022 timestamp or transaction history third to UAH", () => {
+        const cat: ExternalProviderCategory = {
+          id: "c3",
+          name: "Taxi",
+          createdTimestamp: toDotNetTicks(new Date("2021-05-01")),
+          categoryType: CategoryType.Expense,
+        };
+        expect(resolveCategoryCurrency(cat)).toBe("UAH");
+      });
+
+      it("falls back to defaultCurrency fourth", () => {
+        const cat: ExternalProviderCategory = {
+          id: "c4",
+          name: "Sport",
+          categoryType: CategoryType.Expense,
+        };
+        expect(resolveCategoryCurrency(cat, { defaultCurrency: "PLN" })).toBe("PLN");
       });
     });
   });
