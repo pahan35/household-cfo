@@ -11,6 +11,7 @@ import {
   Gauge,
   GraduationCap,
   HeartPulse,
+  Hourglass,
   Kanban,
   LayoutDashboard,
   ListTodo,
@@ -98,6 +99,12 @@ export const sidebarItems: NavGroup[] = [
         title: "Offer Comparator",
         url: "/dashboard/family-budget/offer-comparator",
         icon: Scale,
+      },
+      {
+        id: "family-budget-runway",
+        title: "Runway Simulator",
+        url: "/dashboard/family-budget/runway",
+        icon: Hourglass,
       },
       {
         id: "family-budget-fx-inflation",
