@@ -1,15 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+import Link from "next/link";
 
 import {
   AlertTriangle,
   CheckCircle2,
   Clock,
+  ExternalLink,
   History,
   Link as LinkIcon,
   PiggyBank,
   RefreshCw,
+  Sparkles,
   Target,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -26,12 +30,15 @@ import {
   resolveCategoryCurrency,
   toFxRateToTarget,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-money";
+import { computeComprehensiveTimeValueSummary } from "@/app/(main)/dashboard/family-budget/lifestyle/time-value/_components/time-value-engine";
+import { TimeValueRepository } from "@/app/(main)/dashboard/family-budget/lifestyle/time-value/_components/time-value-repository";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { auditSavingsPace, computeHistoricalNetCashflowMargin } from "./mortgage-engine";
@@ -92,6 +99,32 @@ export function HomeGoalTrackerCard({
     currencies,
     historicalNetCashflowMarginPln: historicalNetMarginPln,
   });
+
+  const timeValueRepo = useMemo(() => new TimeValueRepository(), []);
+  const [timeValueConfig, setTimeValueConfig] = useState(() => timeValueRepo.loadConfig());
+  const [isAcceleratorActive, setIsAcceleratorActive] = useState(false);
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === timeValueRepo["storageKey"]) {
+        setTimeValueConfig(timeValueRepo.loadConfig());
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [timeValueRepo]);
+
+  const timeValueSummary = useMemo(() => {
+    return computeComprehensiveTimeValueSummary({
+      config: timeValueConfig,
+      baselineMonthlySavingsPln: historicalNetMarginPln,
+      milestone1GapPln: audit.milestone1GapPln,
+      totalMortgageGapPln: audit.totalGapPln,
+      pricePerSqmPln: 15000,
+      categories: allCategories,
+      currencies,
+    });
+  }, [timeValueConfig, historicalNetMarginPln, audit.milestone1GapPln, audit.totalGapPln, allCategories, currencies]);
 
   const updateConfig = (patch: Partial<HomeGoalTrackingConfig>) => {
     onChange({ ...config, ...patch });
@@ -240,6 +273,66 @@ export function HomeGoalTrackerCard({
                   </label>
                 );
               })}
+            </div>
+          )}
+        </div>
+
+        {/* Side-Hustle & Reclaimed Time Accelerator Banner */}
+        <div className="rounded-lg border border-primary/25 bg-primary/5 p-3.5 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="size-4 text-primary shrink-0" />
+              <div>
+                <span className="text-xs font-semibold text-foreground block">
+                  Side-Hustle &amp; Reclaimed Time Accelerator
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  +{formatMoney(timeValueSummary.household.totalMonthlyCashflowBoostPln, "PLN")}/mo extra cashflow from
+                  reclaimed drift
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/dashboard/family-budget/lifestyle/time-value"
+                className="text-[11px] text-primary hover:underline flex items-center gap-1 font-medium"
+              >
+                <span>Time &amp; Opportunity</span>
+                <ExternalLink className="size-3" />
+              </Link>
+              <div className="flex items-center gap-1.5">
+                <Switch
+                  id="accelerator-toggle"
+                  checked={isAcceleratorActive}
+                  onCheckedChange={setIsAcceleratorActive}
+                />
+                <Label htmlFor="accelerator-toggle" className="text-xs font-medium cursor-pointer">
+                  {isAcceleratorActive ? "Enabled" : "Preview"}
+                </Label>
+              </div>
+            </div>
+          </div>
+
+          {isAcceleratorActive && (
+            <div className="rounded-md border border-primary/20 bg-background/80 p-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="space-y-0.5">
+                <span className="text-muted-foreground text-[11px]">Milestone 1 Accelerated:</span>
+                <div className="font-semibold text-emerald-600 dark:text-emerald-400">
+                  {timeValueSummary.mortgageAcceleration.acceleratedMonthsMilestone1} mos{" "}
+                  <span className="text-xs text-muted-foreground font-normal">
+                    (-{timeValueSummary.mortgageAcceleration.monthsSavedMilestone1} mos saved)
+                  </span>
+                </div>
+              </div>
+              <div className="space-y-0.5">
+                <span className="text-muted-foreground text-[11px]">Milestone 2 Accelerated:</span>
+                <div className="font-semibold text-blue-600 dark:text-blue-400">
+                  {timeValueSummary.mortgageAcceleration.acceleratedMonthsMilestone2} mos{" "}
+                  <span className="text-xs text-muted-foreground font-normal">
+                    (-{timeValueSummary.mortgageAcceleration.monthsSavedMilestone2} mos saved)
+                  </span>
+                </div>
+              </div>
             </div>
           )}
         </div>

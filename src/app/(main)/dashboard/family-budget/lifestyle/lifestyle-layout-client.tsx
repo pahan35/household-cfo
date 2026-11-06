@@ -7,7 +7,7 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "cn";
 import { format } from "date-fns";
-import { GraduationCap, HeartPulse, Palmtree, RotateCw, Tags } from "lucide-react";
+import { GraduationCap, HeartPulse, Palmtree, RotateCw, Tags, Timer } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -40,6 +40,13 @@ const LIFESTYLE_NAV_ITEMS = [
     title: "Learning",
     href: "/dashboard/family-budget/lifestyle/learning",
     icon: GraduationCap,
+    exact: false,
+  },
+  {
+    id: "time-value",
+    title: "Time & Opportunity",
+    href: "/dashboard/family-budget/lifestyle/time-value",
+    icon: Timer,
     exact: false,
   },
 ] as const;
