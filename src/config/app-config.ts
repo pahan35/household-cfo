@@ -6,7 +6,7 @@ const focused = isFocusedMode();
 
 export const APP_CONFIG = {
   name: focused ? "Family Budget" : "Studio Admin",
-  url: "https://studio-admin.arhamkhnz.com",
+  url: "https://family-budget.example.com",
   repository: "https://github.com/arhamkhnz/next-shadcn-admin-dashboard",
   version: packageJson.version,
   copyright: `© ${currentYear}, ${focused ? "Family Budget" : "Studio Admin"}.`,
