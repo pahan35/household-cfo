@@ -13,6 +13,7 @@ import {
   Gauge,
   GraduationCap,
   HeartPulse,
+  Home,
   Hotel,
   Hourglass,
   Kanban,
@@ -111,6 +112,12 @@ export const sidebarItems: NavGroup[] = [
         title: "Runway Simulator",
         url: "/dashboard/family-budget/runway",
         icon: Hourglass,
+      },
+      {
+        id: "family-budget-mortgage",
+        title: "Mortgage & Home Goal",
+        url: "/dashboard/family-budget/mortgage",
+        icon: Home,
       },
       {
         id: "family-budget-fx-inflation",
