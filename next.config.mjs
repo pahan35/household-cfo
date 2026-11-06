@@ -1,3 +1,17 @@
+/**
+ * Build-time security validation:
+ * Ensures AUTH_BYPASS_LOCAL cannot be enabled when deploying or building on Vercel.
+ * @param {Record<string, string | undefined>} [env=process.env]
+ */
+export function validateNextConfigAuth(env = process.env) {
+  const isVercel = env.VERCEL === "1" || Boolean(env.VERCEL_ENV);
+  if (isVercel && env.AUTH_BYPASS_LOCAL?.toLowerCase() === "true") {
+    throw new Error("FATAL BUILD ERROR: AUTH_BYPASS_LOCAL cannot be set to 'true' in a Vercel environment.");
+  }
+}
+
+validateNextConfigAuth();
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactCompiler: true,
@@ -12,6 +26,16 @@ const nextConfig = {
       {
         source: "/dashboard",
         destination: "/dashboard/default",
+        permanent: false,
+      },
+      {
+        source: "/auth/v1/:path*",
+        destination: "/auth/login",
+        permanent: false,
+      },
+      {
+        source: "/auth/v2/:path*",
+        destination: "/auth/login",
         permanent: false,
       },
     ];

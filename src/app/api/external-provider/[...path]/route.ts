@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { isAuthBypassActive } from "@/server/auth/config";
+import { getSessionFromRequest } from "@/server/auth/session";
 import { buildProxyCacheKey, fetchWithProxyCache, invalidateProxyCacheByPathPrefix } from "@/server/external-provider/cache";
 import {
   ALLOWED_METHODS,
@@ -39,6 +41,14 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
 
   if (!isAllowedPath(upstreamPath)) {
     return jsonError(`Path ${upstreamPath} is not in the proxy allowlist.`, 403);
+  }
+
+  // Defense-in-depth: require authenticated session or local dev bypass before secret resolution
+  if (!isAuthBypassActive()) {
+    const session = await getSessionFromRequest(request);
+    if (!session) {
+      return jsonError("Unauthorized", 401);
+    }
   }
 
   // Prefer the user's keychain-stored web session cookie (Track B); fall back

@@ -24,6 +24,18 @@ Credentials are stored in the macOS keychain and are read at runtime by `src/ser
 | `external-api-web-user` | Logged-in user id (`window.USER.id`), injected into `/api/transaction/get` bodies | 30 s |
 | `external-api-token` | Bearer token of unknown provenance (fallback only; web backend is cookie-authenticated) | 1 h |
 
+## Application Authentication & Access Control Secrets
+
+In production on Vercel, the following environment variables configure Google OAuth access control and session signing:
+
+- `GOOGLE_CLIENT_ID`: Google OAuth 2.0 Web Client ID
+- `GOOGLE_CLIENT_SECRET`: Google OAuth 2.0 Client Secret (Vercel encrypted secret)
+- `AUTH_SECRET`: Secret key (32+ bytes) used for stateless HMAC-SHA256 session cookie signing
+- `ALLOWED_USER_EMAILS`: Comma-separated list of authorized family member Google email addresses
+- `AUTH_BYPASS_LOCAL`: Local development flag. Defaults to `"true"` in local development; must NEVER be enabled on Vercel or in production (hard fail-closed guard).
+
+Never log or expose `GOOGLE_CLIENT_SECRET`, `AUTH_SECRET`, or `ALLOWED_USER_EMAILS`. Never expose these variables with a `NEXT_PUBLIC_` prefix.
+
 ## How to work with the upstream API
 
 - Call the local proxy at `/api/external-provider/...` from client code. It runs server-side and attaches the credential for you.

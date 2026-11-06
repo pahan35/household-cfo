@@ -5,6 +5,8 @@ vi.mock("server-only", () => ({}));
 import { NextRequest } from "next/server";
 
 import { POST } from "@/app/api/external-provider/[...path]/route";
+import * as authConfig from "@/server/auth/config";
+import { AUTH_COOKIE_NAME, createSessionToken } from "@/server/auth/session";
 
 import { clearProxyCache, getProxyCachedResponse, setProxyCachedResponse } from "../cache";
 import { injectUserId } from "../http";
@@ -172,5 +174,51 @@ describe("Proxy Route write logging and request body isolation", () => {
     expect(getProxyCachedResponse("POST:/Exchange/Ping::h1")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/stat/ping:?data=xyz:h2")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/settings::h3")).toBeDefined();
+  });
+
+  describe("defense-in-depth auth enforcement", () => {
+    it("rejects unauthenticated request with 401 when bypass is inactive without resolving credentials", async () => {
+      vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(false);
+      const getWebCredsSpy = vi.spyOn(tokenModule, "getWebCredentials");
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(401);
+      const data = await response.json();
+      expect(data.error.message).toBe("Unauthorized");
+      expect(getWebCredsSpy).not.toHaveBeenCalled();
+    });
+
+    it("allows request when valid session cookie is present and bypass is inactive", async () => {
+      vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(false);
+      process.env.AUTH_SECRET = "test-secret-at-least-32-chars-long-abc";
+      process.env.ALLOWED_USER_EMAILS = "family@example.com";
+
+      const token = await createSessionToken({ email: "family@example.com" }, { secret: process.env.AUTH_SECRET });
+
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        return new Response(JSON.stringify({ isSuccess: true, data: {} }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+        headers: {
+          cookie: `${AUTH_COOKIE_NAME}=${token}`,
+        },
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(200);
+    });
   });
 });

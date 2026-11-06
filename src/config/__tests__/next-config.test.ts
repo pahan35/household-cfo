@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import nextConfig from "../../../next.config.mjs";
+import nextConfig, { validateNextConfigAuth } from "../../../next.config.mjs";
 
 describe("next.config headers", () => {
   it("defines global X-Robots-Tag header for all routes", async () => {
@@ -15,5 +15,51 @@ describe("next.config headers", () => {
       key: "X-Robots-Tag",
       value: "noindex, nofollow, noarchive, nosnippet, noimageindex",
     });
+  });
+
+  it("defines redirects for dashboard and legacy auth paths", async () => {
+    expect(nextConfig.redirects).toBeDefined();
+    if (!nextConfig.redirects) {
+      throw new Error("redirects() is not defined on nextConfig");
+    }
+    const redirects = await nextConfig.redirects();
+    expect(redirects).toContainEqual({
+      source: "/dashboard",
+      destination: "/dashboard/default",
+      permanent: false,
+    });
+    expect(redirects).toContainEqual({
+      source: "/auth/v1/:path*",
+      destination: "/auth/login",
+      permanent: false,
+    });
+    expect(redirects).toContainEqual({
+      source: "/auth/v2/:path*",
+      destination: "/auth/login",
+      permanent: false,
+    });
+  });
+});
+
+describe("next.config auth validation", () => {
+  it("allows normal local development configurations", () => {
+    expect(() => validateNextConfigAuth({})).not.toThrow();
+    expect(() => validateNextConfigAuth({ AUTH_BYPASS_LOCAL: "true" })).not.toThrow();
+    expect(() => validateNextConfigAuth({ AUTH_BYPASS_LOCAL: "false" })).not.toThrow();
+  });
+
+  it("allows Vercel deployment when bypass is unset or false", () => {
+    expect(() => validateNextConfigAuth({ VERCEL: "1" })).not.toThrow();
+    expect(() => validateNextConfigAuth({ VERCEL: "1", AUTH_BYPASS_LOCAL: "false" })).not.toThrow();
+    expect(() => validateNextConfigAuth({ VERCEL_ENV: "production" })).not.toThrow();
+  });
+
+  it("throws fatal build error when AUTH_BYPASS_LOCAL is true on Vercel", () => {
+    expect(() => validateNextConfigAuth({ VERCEL: "1", AUTH_BYPASS_LOCAL: "true" })).toThrow(
+      "FATAL BUILD ERROR: AUTH_BYPASS_LOCAL cannot be set to 'true' in a Vercel environment.",
+    );
+    expect(() => validateNextConfigAuth({ VERCEL_ENV: "preview", AUTH_BYPASS_LOCAL: "true" })).toThrow(
+      "FATAL BUILD ERROR: AUTH_BYPASS_LOCAL cannot be set to 'true' in a Vercel environment.",
+    );
   });
 });
