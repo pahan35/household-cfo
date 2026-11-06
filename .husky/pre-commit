@@ -1,3 +1,5 @@
-npm run generate:presets
-git add src/lib/preferences/theme.ts
+if git diff --cached --name-only | grep -qE '^(src/styles/presets/|src/scripts/generate-theme-presets\.ts)'; then
+  npm run generate:presets
+  git add src/lib/preferences/theme.ts
+fi
 npm exec -- lint-staged

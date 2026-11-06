@@ -58,10 +58,11 @@ npm run format
 npm run check
 npm run check:fix
 npm run verify
+npm test
 npm run generate:presets
 ```
 
-There is currently no automated test command. Run build, lint, check, or other validation commands only when the user explicitly requests that validation. For fast change validation, prefer `npm run verify` (`biome check && tsc --noEmit`), which verifies linting, formatting, and full TypeScript strict types in ~5 seconds without the multi-minute overhead of a full production `npm run build`.
+Run build, lint, check, test (`npm test` runs `vitest run`), or other validation commands when verifying relevant code changes or when explicitly requested. For fast static validation, prefer `npm run verify` (`biome check && tsc --noEmit`), which verifies linting, formatting, and full TypeScript strict types in ~5 seconds without the multi-minute overhead of a full production `npm run build`.
 
 ## Co-location-based structure
 
@@ -112,6 +113,7 @@ Keep a component inside its route until it is reused by another feature. Do not 
 
 2. **Spec-Driven Planning (OpenSpec)**: For non-trivial features, refactors, or multi-step capabilities:
    - **Propose & Specify**: Use `/opsx-propose <feature-name>` (or `openspec new change <feature-name>`). OpenSpec scaffolds `proposal.md`, `specs/`, `design.md`, and `tasks.md`.
+   - **Multi-Change Batching**: When scaffolding multiple OpenSpec changes using the same schema in one turn, run `openspec instructions <artifact-id> --change <first-change> --json` once per artifact type (`proposal`, `specs`, `design`, `tasks`) rather than repeating identical instruction lookups for every change.
    - **Validate**: Check spec validity with `openspec validate <feature-name>`.
    - **Immediate Proposal Commit**: Commit change artifacts right after proposal and planning artifacts (`proposal.md`, `specs/`, `design.md`, `tasks.md`) are drafted and validated (e.g., `docs(spec): propose <feature-name>`). Commit artifacts carefully with strict scope isolation: stage ONLY explicit files in `openspec/changes/<feature-name>/`, because other agentic sessions may be working in parallel on other non-conflicting changes in the working tree.
    - **Implement**: Implement according to the checklist in `tasks.md` (or `/opsx-apply`). Update `tasks.md` as items complete and commit milestones progressively.
@@ -131,9 +133,14 @@ Every agentic harness (Antigravity, OpenCode, Junie, etc.) must adhere to these 
 
 ## Sandbox & Execution Environment
 
-In sandboxed agent environments (such as Antigravity), **always execute all `bd` commands outside the sandbox (`BypassSandbox: true`)**.
-- `bd` requires access to Dolt configuration (`~/.dolt/config_global.json`) and external planning paths (such as `~/.beads-planning`), which reside outside the workspace sandbox.
-- Never attempt to run `bd` in sandboxed mode; always bypass sandbox isolation for any `bd` invocation.
+In sandboxed agent environments (such as Antigravity):
+1. **Always execute all `bd` commands outside the sandbox (`BypassSandbox: true`)**:
+   - `bd` requires access to Dolt configuration (`~/.dolt/config_global.json`) and external planning paths (such as `~/.beads-planning`), which reside outside the workspace sandbox.
+   - Never attempt to run `bd` in sandboxed mode; always bypass sandbox isolation for any `bd` invocation.
+2. **Execute mutating `git` commands outside the sandbox (`BypassSandbox: true`)**:
+   - The sandbox blocks creating `.git/index.lock` and writing to `.git/` (failing with exit code `128: Operation not permitted`).
+   - Run mutating `git` commands (`git add`, `git commit`, `git stash`, `git rm`, `git mv`) directly with `BypassSandbox: true` as standalone, prefix-matchable commands (never chained with `&&`).
+   - Keep read-only `git` commands (`git status`, `git diff`, `git log`, `git show`) inside the sandbox (`BypassSandbox: false`).
 
 ## Session Start & Context Recovery
 
