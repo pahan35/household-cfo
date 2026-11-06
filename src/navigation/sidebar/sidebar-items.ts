@@ -307,7 +307,7 @@ export const templateSidebarItems: NavGroup[] = [
   },
 ];
 
-export function getSidebarItems(env: NodeJS.ProcessEnv = process.env): NavGroup[] {
+export function getSidebarItems(env?: NodeJS.ProcessEnv): NavGroup[] {
   return isFocusedMode(env) ? [familyBudgetNavGroup] : [familyBudgetNavGroup, ...templateSidebarItems];
 }
 

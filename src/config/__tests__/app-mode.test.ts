@@ -66,6 +66,23 @@ describe("app-mode", () => {
       } as NodeJS.ProcessEnv;
       expect(getAppMode(envDev)).toBe("full");
     });
+
+    it("honors global process.env.NEXT_PUBLIC_APP_MODE when called without arguments", () => {
+      const originalMode = process.env.NEXT_PUBLIC_APP_MODE;
+      try {
+        process.env.NEXT_PUBLIC_APP_MODE = "focused";
+        expect(getAppMode()).toBe("focused");
+        expect(isFocusedMode()).toBe(true);
+        expect(getHomeUrl()).toBe("/dashboard/family-budget");
+
+        process.env.NEXT_PUBLIC_APP_MODE = "full";
+        expect(getAppMode()).toBe("full");
+        expect(isFocusedMode()).toBe(false);
+        expect(getHomeUrl()).toBe("/dashboard/default");
+      } finally {
+        process.env.NEXT_PUBLIC_APP_MODE = originalMode;
+      }
+    });
   });
 
   describe("isAllowedFocusedPath", () => {

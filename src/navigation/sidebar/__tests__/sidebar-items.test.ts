@@ -61,6 +61,23 @@ describe("sidebar-items", () => {
     expect(forcedFull[0]).toBe(familyBudgetNavGroup);
   });
 
+  it("honors global process.env.NEXT_PUBLIC_APP_MODE when called without arguments", () => {
+    const originalMode = process.env.NEXT_PUBLIC_APP_MODE;
+    try {
+      process.env.NEXT_PUBLIC_APP_MODE = "focused";
+      const focusedItems = getSidebarItems();
+      expect(focusedItems).toHaveLength(1);
+      expect(focusedItems[0]).toBe(familyBudgetNavGroup);
+
+      process.env.NEXT_PUBLIC_APP_MODE = "full";
+      const fullItems = getSidebarItems();
+      expect(fullItems.length).toBeGreaterThan(1);
+      expect(fullItems[0]).toBe(familyBudgetNavGroup);
+    } finally {
+      process.env.NEXT_PUBLIC_APP_MODE = originalMode;
+    }
+  });
+
   it("exports sidebarItems as an array of NavGroup", () => {
     expect(Array.isArray(sidebarItems)).toBe(true);
     expect(sidebarItems.length).toBeGreaterThanOrEqual(1);

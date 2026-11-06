@@ -17,7 +17,7 @@ import {
 import { APP_CONFIG } from "@/config/app-config";
 import { getHomeUrl, isFocusedMode } from "@/config/app-mode";
 import { rootUser } from "@/data/users";
-import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
+import { familyBudgetNavGroup, sidebarItems } from "@/navigation/sidebar/sidebar-items";
 import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 
 import { NavMain } from "./nav-main";
@@ -36,6 +36,7 @@ export function AppSidebar({
 }) {
   const isFocused = isFocusedMode();
   const homeUrl = getHomeUrl();
+  const items = isFocused ? [familyBudgetNavGroup] : sidebarItems;
 
   const { sidebarVariant, sidebarCollapsible, isSynced } = usePreferencesStore(
     useShallow((s) => ({
@@ -63,7 +64,7 @@ export function AppSidebar({
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={sidebarItems} />
+        <NavMain items={items} />
       </SidebarContent>
       <SidebarFooter>
         {!isFocused && <SupportCard />}
