@@ -15,6 +15,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { APP_CONFIG } from "@/config/app-config";
+import { getHomeUrl, isFocusedMode } from "@/config/app-mode";
 import { rootUser } from "@/data/users";
 import { sidebarItems } from "@/navigation/sidebar/sidebar-items";
 import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
@@ -23,7 +24,19 @@ import { NavMain } from "./nav-main";
 import { NavUser } from "./nav-user";
 import { SupportCard } from "./support-card";
 
-export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+export function AppSidebar({
+  user = rootUser,
+  ...props
+}: React.ComponentProps<typeof Sidebar> & {
+  readonly user?: {
+    readonly name: string;
+    readonly email: string;
+    readonly avatar: string;
+  };
+}) {
+  const isFocused = isFocusedMode();
+  const homeUrl = getHomeUrl();
+
   const { sidebarVariant, sidebarCollapsible, isSynced } = usePreferencesStore(
     useShallow((s) => ({
       sidebarVariant: s.values.sidebar_variant,
@@ -41,7 +54,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild>
-              <Link prefetch={false} href="/dashboard/default">
+              <Link prefetch={false} href={homeUrl}>
                 <AppLogo viewBox="72 96 356 308" />
                 <span className="text-base font-semibold">{APP_CONFIG.name}</span>
               </Link>
@@ -53,8 +66,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <NavMain items={sidebarItems} />
       </SidebarContent>
       <SidebarFooter>
-        <SupportCard />
-        <NavUser user={rootUser} />
+        {!isFocused && <SupportCard />}
+        <NavUser user={user} />
       </SidebarFooter>
     </Sidebar>
   );

@@ -49,15 +49,17 @@ Classify each change:
 - **Bulk-adopt** (`git checkout upstream/main -- <paths>`): `src/components/ui/*`,
   template dashboard screens, generic utilities, `src/lib/preferences/*`, theme presets.
 - **Hand-merge** (we diverge by design):
-  - `package.json` (keep family budget deps; adopt template version bumps)
-  - `src/navigation/sidebar/sidebar-items.ts` (keep Budget navigation items)
+  - `package.json` (keep family budget deps and dev:focused script; adopt template version bumps)
+  - `src/navigation/sidebar/sidebar-items.ts` (keep 2-line focused-mode hook importing `familyBudgetNavGroup` from `./family-budget-items`)
   - `next.config.mjs` (keep `turbopack.root: path.resolve(__dirname)` and any custom config)
   - `biome.json` and `tsconfig.json`
   - `src/app/layout.tsx`
 - **NEVER overwrite**:
+  - `src/config/app-mode.ts`
+  - `src/navigation/sidebar/family-budget-items.ts`
   - `src/server/external-provider/*`
   - `src/app/api/external-provider/*`
-  - `src/app/(main)/dashboard/budget/*`
+  - `src/app/(main)/dashboard/family-budget/*`
   - `openspec/*`
   - `.agents/rules/secrets.md`
 - **NEVER adopt**: `vercel.json` (demo redirects), demo README links.

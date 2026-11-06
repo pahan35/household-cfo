@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { isAllowedFocusedPath, isFocusedMode } from "@/config/app-mode";
 import { isAuthBypassActive } from "@/server/auth/config";
 import { getSessionFromRequest } from "@/server/auth/session";
 
@@ -37,29 +38,33 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
-  // Allow local development bypass when active
-  if (isAuthBypassActive()) {
-    return NextResponse.next();
+  // Check authorization (either local bypass or valid session token)
+  const isAuthorized = isAuthBypassActive() || Boolean(await getSessionFromRequest(request));
+
+  if (!isAuthorized) {
+    // Unauthenticated API request
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: { message: "Unauthorized" } }, { status: 401 });
+    }
+
+    // Unauthenticated page request -> redirect to login
+    const loginUrl = new URL("/auth/login", request.nextUrl.origin);
+    const isDefaultHome = pathname === "/" || pathname === "/dashboard" || pathname === "/dashboard/default";
+    const isDisallowedFocused = isFocusedMode() && !isAllowedFocusedPath(pathname);
+    if (!isDefaultHome && !isDisallowedFocused) {
+      loginUrl.searchParams.set("returnTo", `${pathname}${request.nextUrl.search}`);
+    }
+
+    return NextResponse.redirect(loginUrl, 302);
   }
 
-  // Verify session cookie
-  const session = await getSessionFromRequest(request);
-  if (session) {
-    return NextResponse.next();
+  // Enforce focused deployment mode boundary for authorized page requests
+  if (isFocusedMode() && !pathname.startsWith("/api/") && !isAllowedFocusedPath(pathname)) {
+    const targetUrl = new URL("/dashboard/family-budget", request.nextUrl.origin);
+    return NextResponse.redirect(targetUrl, 307);
   }
 
-  // Unauthenticated API request
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: { message: "Unauthorized" } }, { status: 401 });
-  }
-
-  // Unauthenticated page request -> redirect to login
-  const loginUrl = new URL("/auth/login", request.nextUrl.origin);
-  if (pathname !== "/" && pathname !== "/dashboard" && pathname !== "/dashboard/default") {
-    loginUrl.searchParams.set("returnTo", `${pathname}${request.nextUrl.search}`);
-  }
-
-  return NextResponse.redirect(loginUrl, 302);
+  return NextResponse.next();
 }
 
 export const config = {

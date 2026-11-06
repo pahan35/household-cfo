@@ -91,5 +91,68 @@ describe("Next.js proxy", () => {
       const res = await proxy(req);
       expect(res.status).toBe(200);
     });
+
+    describe("focused mode enforcement", () => {
+      beforeEach(() => {
+        process.env.NEXT_PUBLIC_APP_MODE = "focused";
+      });
+
+      it("redirects authorized requests for template or default routes to /dashboard/family-budget", async () => {
+        vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(true);
+
+        const paths = ["/", "/dashboard", "/dashboard/default", "/dashboard/crm", "/dashboard/finance"];
+        for (const path of paths) {
+          const req = new NextRequest(`http://localhost:3000${path}`);
+          const res = await proxy(req);
+          expect(res.status).toBe(307);
+          expect(res.headers.get("location")).toBe("http://localhost:3000/dashboard/family-budget");
+        }
+      });
+
+      it("allows authorized requests to /dashboard/family-budget and nested subpaths in focused mode", async () => {
+        vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(true);
+
+        const paths = [
+          "/dashboard/family-budget",
+          "/dashboard/family-budget/",
+          "/dashboard/family-budget/overview",
+          "/dashboard/family-budget/lifestyle/trips-concerts",
+        ];
+        for (const path of paths) {
+          const req = new NextRequest(`http://localhost:3000${path}`);
+          const res = await proxy(req);
+          expect(res.status).toBe(200);
+        }
+      });
+
+      it("allows authorized API requests in focused mode", async () => {
+        vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(true);
+        const req = new NextRequest("http://localhost:3000/api/external-provider/stat/ping");
+        const res = await proxy(req);
+        expect(res.status).toBe(200);
+      });
+
+      it("omits returnTo when unauthenticated user requests a disallowed route in focused mode", async () => {
+        vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(false);
+        const req = new NextRequest("http://localhost:3000/dashboard/crm");
+        const res = await proxy(req);
+
+        expect(res.status).toBe(302);
+        expect(res.headers.get("location")).toBe("http://localhost:3000/auth/login");
+      });
+    });
+
+    describe("full mode enforcement", () => {
+      beforeEach(() => {
+        process.env.NEXT_PUBLIC_APP_MODE = "full";
+      });
+
+      it("allows authorized requests to template routes in full mode", async () => {
+        vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(true);
+        const req = new NextRequest("http://localhost:3000/dashboard/crm");
+        const res = await proxy(req);
+        expect(res.status).toBe(200);
+      });
+    });
   });
 });

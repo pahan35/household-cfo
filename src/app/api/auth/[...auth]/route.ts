@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import { getHomeUrl } from "@/config/app-mode";
 import { getAllowedUserEmails, getAuthConfig, isEmailAllowed } from "@/server/auth/config";
 import {
   attachSessionCookie,
@@ -70,11 +71,12 @@ function handleLogin(request: NextRequest): NextResponse {
     return NextResponse.json({ error: { message: "Google OAuth client ID is not configured." } }, { status: 500 });
   }
 
+  const defaultHome = getHomeUrl();
   const searchParams = request.nextUrl.searchParams;
-  const returnTo = searchParams.get("returnTo") || "/dashboard/default";
+  const returnTo = searchParams.get("returnTo") || defaultHome;
 
   // Prevent open-redirects: returnTo must start with "/" and not "//"
-  const safeReturnTo = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : "/dashboard/default";
+  const safeReturnTo = returnTo.startsWith("/") && !returnTo.startsWith("//") ? returnTo : defaultHome;
 
   const state = generateRandomString(32);
   const redirectUri = getRedirectUri(request);
@@ -115,7 +117,7 @@ async function handleCallback(request: NextRequest): Promise<NextResponse> {
   const state = searchParams.get("state");
 
   const stateCookie = request.cookies.get(OAUTH_STATE_COOKIE)?.value;
-  let returnTo = "/dashboard/default";
+  let returnTo = getHomeUrl();
 
   if (!state || !stateCookie) {
     const loginUrl = new URL("/auth/login", request.nextUrl.origin);

@@ -8,6 +8,7 @@ import {
   attachSessionCookie,
   clearSessionCookie,
   createSessionToken,
+  getDashboardUserFromCookies,
   getSessionFromRequest,
   getSessionSecret,
   type SessionUser,
@@ -148,6 +149,58 @@ describe("session management", () => {
       expect(cookie).toBeDefined();
       expect(cookie?.value).toBe("");
       expect(cookie?.maxAge).toBe(0);
+    });
+  });
+
+  describe("getDashboardUserFromCookies", () => {
+    it("resolves authenticated user from valid session cookie", async () => {
+      const token = await createSessionToken(sampleUser, { secret });
+      const cookieStore = {
+        get: (name: string) => (name === AUTH_COOKIE_NAME ? { value: token } : undefined),
+      };
+
+      const user = await getDashboardUserFromCookies(cookieStore, env);
+      expect(user).toEqual({
+        id: "alice@family.org",
+        name: "Alice Example",
+        email: "alice@family.org",
+        avatar: "https://example.com/avatar.jpg",
+        role: "Family Member",
+      });
+    });
+
+    it("falls back to local dev user when cookie is absent and mode is focused", async () => {
+      const cookieStore = {
+        get: () => undefined,
+      };
+      const focusedEnv = {
+        ...env,
+        NEXT_PUBLIC_APP_MODE: "focused",
+      };
+
+      const user = await getDashboardUserFromCookies(cookieStore, focusedEnv);
+      expect(user).toEqual({
+        id: "local-dev",
+        name: "Local Dev",
+        email: "dev@localhost",
+        avatar: "",
+        role: "Developer",
+      });
+    });
+
+    it("falls back to rootUser when cookie is absent and mode is full", async () => {
+      const cookieStore = {
+        get: () => undefined,
+      };
+      const fullEnv = {
+        ...env,
+        NODE_ENV: "development",
+        NEXT_PUBLIC_APP_MODE: "full",
+      };
+
+      const user = await getDashboardUserFromCookies(cookieStore, fullEnv);
+      expect(user.name).toBe("Arham Khan");
+      expect(user.email).toBe("hello@arhamkhnz.com");
     });
   });
 });

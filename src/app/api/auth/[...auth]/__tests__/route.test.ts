@@ -42,6 +42,28 @@ describe("OAuth route handler", () => {
       expect(parsedState.state).toBeDefined();
     });
 
+    it("defaults returnTo to /dashboard/family-budget in focused mode", async () => {
+      process.env.NEXT_PUBLIC_APP_MODE = "focused";
+      const req = new NextRequest("http://localhost:3000/api/auth/login");
+      const res = await GET(req, { params: Promise.resolve({ auth: ["login"] }) });
+
+      const stateCookie = res.cookies.get("family_budget_oauth_state");
+      expect(stateCookie).toBeDefined();
+      const parsedState = JSON.parse(stateCookie?.value || "{}");
+      expect(parsedState.returnTo).toBe("/dashboard/family-budget");
+    });
+
+    it("defaults returnTo to /dashboard/default in full mode", async () => {
+      process.env.NEXT_PUBLIC_APP_MODE = "full";
+      const req = new NextRequest("http://localhost:3000/api/auth/login");
+      const res = await GET(req, { params: Promise.resolve({ auth: ["login"] }) });
+
+      const stateCookie = res.cookies.get("family_budget_oauth_state");
+      expect(stateCookie).toBeDefined();
+      const parsedState = JSON.parse(stateCookie?.value || "{}");
+      expect(parsedState.returnTo).toBe("/dashboard/default");
+    });
+
     it("returns 500 when GOOGLE_CLIENT_ID is not configured", async () => {
       delete process.env.GOOGLE_CLIENT_ID;
       const req = new NextRequest("http://localhost:3000/api/auth/login");
@@ -113,6 +135,42 @@ describe("OAuth route handler", () => {
       const sessionCookie = res.cookies.get(AUTH_COOKIE_NAME);
       expect(sessionCookie).toBeDefined();
       expect(sessionCookie?.value).toBeTruthy();
+    });
+
+    it("falls back to getHomeUrl() when state cookie does not specify returnTo", async () => {
+      process.env.NEXT_PUBLIC_APP_MODE = "focused";
+      const statePayload = JSON.stringify({ state: "xyz123" });
+      const req = new NextRequest("http://localhost:3000/api/auth/callback?code=good-code&state=xyz123", {
+        headers: {
+          cookie: `family_budget_oauth_state=${encodeURIComponent(statePayload)}`,
+        },
+      });
+
+      globalThis.fetch = vi.fn().mockImplementation((url: string | Request) => {
+        const urlStr = typeof url === "string" ? url : url.url;
+        if (urlStr.includes("oauth2.googleapis.com/token")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ access_token: "google-access-token" }), { status: 200 }),
+          );
+        }
+        if (urlStr.includes("openidconnect.googleapis.com/v1/userinfo")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                email: "allowed@family.org",
+                email_verified: true,
+                name: "Allowed User",
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        return Promise.reject(new Error(`Unexpected fetch to ${urlStr}`));
+      });
+
+      const res = await GET(req, { params: Promise.resolve({ auth: ["callback"] }) });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("http://localhost:3000/dashboard/family-budget");
     });
 
     it("redirects unverified email to /unauthorized?reason=unverified_email", async () => {

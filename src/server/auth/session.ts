@@ -1,5 +1,8 @@
 import type { NextRequest, NextResponse } from "next/server";
 
+import { isFocusedMode } from "@/config/app-mode";
+import { rootUser } from "@/data/users";
+
 import { FatalAuthConfigError, isEmailAllowed, isVercelOrProd } from "./config";
 
 export const AUTH_COOKIE_NAME = "family_budget_session";
@@ -228,4 +231,54 @@ export function clearSessionCookie(response: NextResponse): void {
     path: "/",
     maxAge: 0,
   });
+}
+
+export interface DashboardUser {
+  id: string;
+  name: string;
+  email: string;
+  avatar: string;
+  role: string;
+}
+
+/**
+ * Resolves the authenticated user for the dashboard shell from cookies.
+ * Falls back cleanly in local development when auth bypass is active.
+ */
+export async function getDashboardUserFromCookies(
+  cookieStore: { get(name: string): { value: string } | undefined },
+  env: Record<string, string | undefined> = process.env,
+): Promise<DashboardUser> {
+  const token = cookieStore.get(AUTH_COOKIE_NAME)?.value;
+  if (token) {
+    const session = await verifySessionToken(token, { env });
+    if (session) {
+      return {
+        id: session.email,
+        name: session.name ?? session.email.split("@")[0] ?? "Family Member",
+        email: session.email,
+        avatar: session.picture ?? "",
+        role: "Family Member",
+      };
+    }
+  }
+
+  // Fallback when no valid session cookie (e.g. local development)
+  if (isFocusedMode(env as NodeJS.ProcessEnv)) {
+    return {
+      id: "local-dev",
+      name: "Local Dev",
+      email: "dev@localhost",
+      avatar: "",
+      role: "Developer",
+    };
+  }
+
+  return {
+    id: rootUser.id,
+    name: rootUser.name,
+    email: rootUser.email,
+    avatar: rootUser.avatar,
+    role: rootUser.role,
+  };
 }

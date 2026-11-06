@@ -7,7 +7,9 @@ import { cn } from "cn";
 import { AppSidebar } from "@/app/(main)/dashboard/_components/sidebar/app-sidebar";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { isFocusedMode } from "@/config/app-mode";
 import { users } from "@/data/users";
+import { getDashboardUserFromCookies } from "@/server/auth/session";
 import { getPreference } from "@/server/server-actions";
 
 import { AccountSwitcher } from "./_components/header/account-switcher";
@@ -17,12 +19,18 @@ import { SearchDialog } from "./_components/header/search-dialog";
 import { ThemeSwitcher } from "./_components/header/theme-switcher";
 
 export default async function Layout({ children }: Readonly<{ children: ReactNode }>) {
+  const isFocused = isFocusedMode();
   const cookieStore = await cookies();
   const defaultOpen = cookieStore.get("sidebar_state")?.value !== "false";
-  const [variant, collapsible] = await Promise.all([
+  const [variant, collapsible, currentUser] = await Promise.all([
     getPreference("sidebar_variant"),
     getPreference("sidebar_collapsible"),
+    getDashboardUserFromCookies(cookieStore),
   ]);
+
+  const switcherUsers = isFocused
+    ? [currentUser]
+    : [currentUser, ...users.filter((u) => u.email !== currentUser.email)];
 
   return (
     <SidebarProvider
@@ -33,7 +41,7 @@ export default async function Layout({ children }: Readonly<{ children: ReactNod
         } as React.CSSProperties
       }
     >
-      <AppSidebar variant={variant} collapsible={collapsible} />
+      <AppSidebar user={currentUser} variant={variant} collapsible={collapsible} />
       <SidebarInset
         className={cn(
           "[html[data-content-layout=centered]_&>*]:mx-auto",
@@ -63,8 +71,8 @@ export default async function Layout({ children }: Readonly<{ children: ReactNod
             <div className="flex items-center gap-2">
               <LayoutControls />
               <ThemeSwitcher />
-              <GitHubRepositoriesMenu />
-              <AccountSwitcher users={users} />
+              {!isFocused && <GitHubRepositoriesMenu />}
+              <AccountSwitcher users={switcherUsers} />
             </div>
           </div>
         </header>

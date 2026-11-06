@@ -1,5 +1,7 @@
-import { permanentRedirect } from "next/navigation";
+import { redirect } from "next/navigation";
+
+import { getHomeUrl } from "@/config/app-mode";
 
 export default function Page() {
-  permanentRedirect("/dashboard/default");
+  redirect(getHomeUrl());
 }
