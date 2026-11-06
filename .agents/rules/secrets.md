@@ -16,13 +16,23 @@ This project proxies a third-party API. A live credential exists on this machine
 
 ## Where the credentials live
 
-Credentials are stored in the macOS keychain and are read at runtime by `src/server/external-provider/token.ts`. Those files contain no secret. If you need to confirm a credential is present, ask the user to run the lookup themselves, or check that the proxy responds without a `503`.
+Credentials are resolved server-side by `src/server/external-provider/token.ts` according to `EXTERNAL_API_SECRET_SOURCE`:
 
-| Service | Holds | Cache TTL |
-|---|---|---|
-| `external-api-web-cookie` | Full `Cookie:` request-header string for api.external-provider.example.com (primary upstream auth) | 30 s |
-| `external-api-web-user` | Logged-in user id (`window.USER.id`), injected into `/api/transaction/get` bodies | 30 s |
-| `external-api-token` | Bearer token of unknown provenance (fallback only; web backend is cookie-authenticated) | 1 h |
+1. **Keychain Mode (`EXTERNAL_API_SECRET_SOURCE="keychain"`, default)**:
+   Credentials are stored in the macOS keychain. Those files contain no secret. If you need to confirm a credential is present, ask the user to run the lookup themselves, or check that the proxy responds without a `503`.
+
+   | Service | Holds | Cache TTL |
+   |---|---|---|
+   | `external-api-web-cookie` | Full `Cookie:` request-header string for api.external-provider.example.com (primary upstream auth) | 30 s |
+   | `external-api-web-user` | Logged-in user id (`window.USER.id`), injected into `/api/transaction/get` bodies | 30 s |
+   | `external-api-token` | Bearer token of unknown provenance (fallback only; web backend is cookie-authenticated) | 1 h |
+
+2. **Environment Mode (`EXTERNAL_API_SECRET_SOURCE="env"`, used on Vercel)**:
+   Credentials are read from encrypted server-side environment variables without shelling out to the macOS `security` binary:
+
+   - `EXTERNAL_API_WEB_COOKIE`: Full `Cookie:` request-header string for api.external-provider.example.com
+   - `EXTERNAL_API_WEB_USER`: Logged-in user id (`window.USER.id`)
+   - `EXTERNAL_API_TOKEN`: Optional fallback Bearer token
 
 ## Application Authentication & Access Control Secrets
 

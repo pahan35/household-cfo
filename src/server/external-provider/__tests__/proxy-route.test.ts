@@ -9,6 +9,7 @@ import * as authConfig from "@/server/auth/config";
 import { AUTH_COOKIE_NAME, createSessionToken } from "@/server/auth/session";
 
 import { clearProxyCache, getProxyCachedResponse, setProxyCachedResponse } from "../cache";
+import { type CredentialIssue, onCredentialIssue, resetCredentialIssueHandlers } from "../credentials";
 import { injectUserId } from "../http";
 import * as tokenModule from "../token";
 
@@ -219,6 +220,153 @@ describe("Proxy Route write logging and request body isolation", () => {
       const response = await POST(req, context);
 
       expect(response.status).toBe(200);
+    });
+  });
+
+  describe("credential source handling and alert notifications", () => {
+    let issueSpy = vi.fn<(issue: CredentialIssue) => void>();
+    let unsubscribeIssue: () => void;
+
+    beforeEach(() => {
+      resetCredentialIssueHandlers();
+      issueSpy = vi.fn<(issue: CredentialIssue) => void>();
+      unsubscribeIssue = onCredentialIssue(issueSpy);
+    });
+
+    afterEach(() => {
+      unsubscribeIssue();
+      resetCredentialIssueHandlers();
+    });
+
+    it("returns 503 and triggers 'missing' notification when credentials cannot be resolved", async () => {
+      vi.spyOn(tokenModule, "getWebCredentials").mockResolvedValue(undefined);
+      vi.spyOn(tokenModule, "getUpstreamToken").mockRejectedValue(new tokenModule.MissingTokenError("env"));
+      vi.spyOn(tokenModule, "getExternalProviderSecretSource").mockReturnValue("env");
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(503);
+      expect(issueSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "missing",
+          source: "env",
+          status: 503,
+          upstreamPath: "/Exchange/Ping",
+        }),
+      );
+    });
+
+    it("returns 503 when EXTERNAL_API_SECRET_SOURCE is invalid", async () => {
+      vi.spyOn(tokenModule, "getExternalProviderSecretSource").mockImplementation(() => {
+        throw new tokenModule.InvalidSecretSourceError("unknown_source");
+      });
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(503);
+      const data = await response.json();
+      expect(data.error.message).toContain('Invalid EXTERNAL_API_SECRET_SOURCE "unknown_source"');
+    });
+
+    it("detects 401 stale credentials, notifies issue handler, invalidates cache, and scrubs secrets", async () => {
+      const invalidateSpy = vi.spyOn(tokenModule, "invalidateCredentialCache");
+      const secretEnvCookie = "super_secret_cookie_998877";
+      process.env.EXTERNAL_API_WEB_COOKIE = secretEnvCookie;
+
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        return new Response(JSON.stringify({ error: `Unauthorized with cookie ${secretEnvCookie}` }), {
+          status: 401,
+          statusText: "Unauthorized",
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(401);
+      const data = await response.json();
+      expect(data.error.code).toBe("stale_credentials");
+      expect(data.error.detail).toContain("[redacted]");
+      expect(data.error.detail).not.toContain(secretEnvCookie);
+      expect(invalidateSpy).toHaveBeenCalled();
+      expect(issueSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "stale",
+          status: 401,
+          upstreamPath: "/Exchange/Ping",
+        }),
+      );
+    });
+
+    it("detects HTML login page payload (200 text/html) as stale credentials", async () => {
+      const invalidateSpy = vi.spyOn(tokenModule, "invalidateCredentialCache");
+
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        return new Response("<!DOCTYPE html><html><body><form action='/login'>Login</form></body></html>", {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      });
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(401);
+      const data = await response.json();
+      expect(data.error.code).toBe("stale_credentials");
+      expect(invalidateSpy).toHaveBeenCalled();
+      expect(issueSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "stale",
+          status: 401,
+          upstreamPath: "/Exchange/Ping",
+        }),
+      );
+    });
+
+    it("detects unexpected redirect errors as stale credentials", async () => {
+      const invalidateSpy = vi.spyOn(tokenModule, "invalidateCredentialCache");
+
+      globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch: unexpected redirect"));
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+        method: "POST",
+        body: JSON.stringify({ items: [] }),
+      });
+      const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(401);
+      const data = await response.json();
+      expect(data.error.code).toBe("stale_credentials");
+      expect(invalidateSpy).toHaveBeenCalled();
+      expect(issueSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: "stale",
+          status: 401,
+          upstreamPath: "/Exchange/Ping",
+        }),
+      );
     });
   });
 });

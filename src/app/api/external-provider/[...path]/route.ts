@@ -10,8 +10,24 @@ import {
   RESPONSE_HEADER_ALLOWLIST,
   UPSTREAM_ORIGIN,
 } from "@/server/external-provider/config";
-import { buildUpstreamErrorBody, injectUserId, scrubSecrets } from "@/server/external-provider/http";
-import { getUpstreamToken, getWebCredentials, MissingTokenError } from "@/server/external-provider/token";
+import { isRedirectError, isStaleUpstreamResponse, notifyCredentialIssue } from "@/server/external-provider/credentials";
+import {
+  buildUpstreamErrorBody,
+  injectUserId,
+  MAX_UPSTREAM_ERROR_DETAIL_LENGTH,
+  scrubSecrets,
+} from "@/server/external-provider/http";
+import {
+  type ExternalProviderSecretSource,
+  getActiveSecrets,
+  getExternalProviderSecretSource,
+  getUpstreamToken,
+  getWebCredentials,
+  InvalidSecretSourceError,
+  invalidateCredentialCache,
+  MissingTokenError,
+  type WebCredentials,
+} from "@/server/external-provider/token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,11 +67,29 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
     }
   }
 
-  // Prefer the user's keychain-stored web session cookie (Track B); fall back
-  // to the legacy keychain Bearer token (Track A negative control).
-  const webCreds = await getWebCredentials();
+  let secretSource: ExternalProviderSecretSource;
+  try {
+    secretSource = getExternalProviderSecretSource();
+  } catch (error) {
+    if (error instanceof InvalidSecretSourceError) {
+      return jsonError(error.message, 503);
+    }
+    throw error;
+  }
+
+  // Prefer the web session cookie (Track B); fall back to the legacy Bearer token (Track A).
+  let webCreds: WebCredentials | undefined;
+  try {
+    webCreds = await getWebCredentials();
+  } catch (error) {
+    if (error instanceof InvalidSecretSourceError) {
+      return jsonError(error.message, 503);
+    }
+    throw error;
+  }
+
   const headers = new Headers({ accept: "application/json" });
-  let secrets: string[];
+  let resolvedSecrets: string[];
 
   if (webCreds === undefined) {
     let token: string;
@@ -63,16 +97,29 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
       token = await getUpstreamToken();
     } catch (error) {
       if (error instanceof MissingTokenError) {
+        await notifyCredentialIssue({
+          reason: "missing",
+          source: secretSource,
+          status: 503,
+          upstreamPath,
+          detail: error.message,
+        });
+        return jsonError(error.message, 503);
+      }
+      if (error instanceof InvalidSecretSourceError) {
         return jsonError(error.message, 503);
       }
       throw error;
     }
     headers.set("authorization", `Bearer ${token}`);
-    secrets = [token];
+    resolvedSecrets = [token];
   } else {
     headers.set("cookie", webCreds.cookie);
-    secrets = webCreds.userId !== undefined ? [webCreds.cookie, webCreds.userId] : [webCreds.cookie];
+    resolvedSecrets = webCreds.userId !== undefined ? [webCreds.cookie, webCreds.userId] : [webCreds.cookie];
   }
+
+  // Scrub all resolved and configured environment secrets across both Keychain and env modes
+  const secrets = [...new Set([...resolvedSecrets, ...getActiveSecrets()])].filter(Boolean);
 
   const target = new URL(upstreamPath, UPSTREAM_ORIGIN);
   target.search = request.nextUrl.search;
@@ -150,9 +197,45 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
         invalidateProxyCacheByPathPrefix("/stat/ping");
       }
 
-      if (!upstreamResponse.ok) {
+      const contentType = upstreamResponse.headers.get("content-type");
+      const isHtmlPayload = Boolean(contentType?.toLowerCase().includes("text/html"));
+
+      if (!upstreamResponse.ok || isHtmlPayload) {
         const upstreamBody = await upstreamResponse.text().catch(() => "");
         const scrubbedError = scrubSecrets(upstreamBody, ...secrets);
+
+        const isStale = isStaleUpstreamResponse({
+          status: upstreamResponse.status,
+          contentType,
+          bodyText: upstreamBody,
+        });
+
+        if (isStale) {
+          invalidateCredentialCache();
+          const effectiveStatus = upstreamResponse.ok ? 401 : upstreamResponse.status;
+          await notifyCredentialIssue({
+            reason: "stale",
+            source: secretSource,
+            status: effectiveStatus,
+            upstreamPath,
+            detail: scrubbedError.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH),
+          });
+          console.error(
+            `[External API Proxy] ${method} ${upstreamPath} -> ${effectiveStatus} (stale credentials: ${scrubbedError})`,
+          );
+          const body = JSON.stringify({
+            error: {
+              message: "Upstream authentication failed (stale or rejected credentials)",
+              code: "stale_credentials",
+              detail: scrubbedError.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH),
+            },
+          });
+          return new NextResponse(body, {
+            headers: { "content-type": "application/json" },
+            status: effectiveStatus,
+          });
+        }
+
         console.error(
           `[External API Proxy] ${method} ${upstreamPath} -> ${upstreamResponse.status} (upstream error: ${scrubbedError})`,
         );
@@ -200,9 +283,47 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
           redirect: "error",
         });
 
-        if (!upstreamResponse.ok) {
+        const contentType = upstreamResponse.headers.get("content-type");
+        const isHtmlPayload = Boolean(contentType?.toLowerCase().includes("text/html"));
+
+        if (!upstreamResponse.ok || isHtmlPayload) {
           const upstreamBody = await upstreamResponse.text().catch(() => "");
           const scrubbedError = scrubSecrets(upstreamBody, ...secrets);
+
+          const isStale = isStaleUpstreamResponse({
+            status: upstreamResponse.status,
+            contentType,
+            bodyText: upstreamBody,
+          });
+
+          if (isStale) {
+            invalidateCredentialCache();
+            const effectiveStatus = upstreamResponse.ok ? 401 : upstreamResponse.status;
+            await notifyCredentialIssue({
+              reason: "stale",
+              source: secretSource,
+              status: effectiveStatus,
+              upstreamPath,
+              detail: scrubbedError.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH),
+            });
+            console.error(
+              `[External API Proxy] ${method} ${upstreamPath} -> ${effectiveStatus} (stale credentials: ${scrubbedError})`,
+            );
+            const body = JSON.stringify({
+              error: {
+                message: "Upstream authentication failed (stale or rejected credentials)",
+                code: "stale_credentials",
+                detail: scrubbedError.slice(0, MAX_UPSTREAM_ERROR_DETAIL_LENGTH),
+              },
+            });
+            return {
+              status: effectiveStatus,
+              headers: [["content-type", "application/json"]],
+              body: new TextEncoder().encode(body),
+              expiresAt: 0,
+            };
+          }
+
           console.error(
             `[External API Proxy] ${method} ${upstreamPath} -> ${upstreamResponse.status} (upstream error: ${scrubbedError})`,
           );
@@ -248,6 +369,32 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     const scrubbed = scrubSecrets(message, ...secrets);
+
+    if (isRedirectError(error)) {
+      invalidateCredentialCache();
+      await notifyCredentialIssue({
+        reason: "stale",
+        source: secretSource,
+        status: 401,
+        upstreamPath,
+        detail: scrubbed,
+      });
+      console.error(`[External API Proxy] ${method} ${upstreamPath} -> 401 (redirect error: ${scrubbed})`);
+      return new NextResponse(
+        JSON.stringify({
+          error: {
+            message: "Upstream authentication failed (unexpected redirect to login)",
+            code: "stale_credentials",
+            detail: scrubbed,
+          },
+        }),
+        {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }
+
     console.error(`[External API Proxy] ${method} ${upstreamPath} -> Error: ${scrubbed}`);
     return jsonError(`Upstream request failed: ${scrubbed}`, 502);
   }
