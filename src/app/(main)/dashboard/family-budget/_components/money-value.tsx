@@ -51,9 +51,11 @@ export function MoneyValue({
   const normReporting = reportingCurrency?.trim().toUpperCase() || "PLN";
 
   const isCrossCurrency = normCurrency !== normReporting;
+  const isZeroAmount = Math.abs(amount) < 0.005;
+  const showSecondary = isCrossCurrency && !isZeroAmount;
 
   let effectiveConverted: number | undefined = convertedAmount;
-  if (effectiveConverted === undefined && isCrossCurrency && currencies && currencies.length > 0) {
+  if (effectiveConverted === undefined && showSecondary && currencies && currencies.length > 0) {
     const rate = toFxRateToTarget(normCurrency, normReporting, currencies);
     effectiveConverted = amount * rate;
   }
@@ -79,7 +81,7 @@ export function MoneyValue({
           {prefix}
           {formatMoney(rollupPrimaryAmount, rollupPrimaryCurrency)}
         </span>
-        {isCrossCurrency && (
+        {showSecondary && (
           <span className={cn("text-muted-foreground", secondarySizeClass, secondaryClassName)}>
             orig. {formatMoney(amount, normCurrency)}
           </span>
@@ -95,7 +97,7 @@ export function MoneyValue({
         {prefix}
         {formatMoney(amount, normCurrency)}
       </span>
-      {isCrossCurrency && effectiveConverted !== undefined && (
+      {showSecondary && effectiveConverted !== undefined && (
         <span className={cn("text-muted-foreground", secondarySizeClass, secondaryClassName)}>
           {showApproximationSign ? "≈ " : ""}
           {formatMoney(effectiveConverted, normReporting)}

@@ -706,4 +706,307 @@ describe("tax-transforms", () => {
       expect(febPt?.totalPersonalTaxes).toBe(0); // March taxes haven't been recorded yet
     });
   });
+
+  describe("Period Scoping & YoY Comparison (Task 2.1)", () => {
+    const periodCategories: ExternalProviderCategory[] = [
+      ...taxCategories,
+      { id: "inc-b2b", name: "Client ACME", categoryType: CategoryType.Income, currencyId: "PLN" },
+      { id: "inc-pfron", name: "Cashback taxes", categoryType: CategoryType.Income, currencyId: "PLN" },
+    ];
+
+    const multiPeriodTransactions: ExternalProviderTransaction[] = [
+      // 2025-10: Inflow 25,000 PLN, Tax (PIT) 2,500 PLN
+      {
+        id: "tx-2025-10-inc",
+        sourceId: "inc-b2b",
+        sourceType: CategoryType.Income,
+        destinationId: "acc-bank",
+        destinationType: CategoryType.BankAccount,
+        destinationAmount: 25000,
+        destinationCurrencyId: "PLN",
+        dateTimestampISO: "2025-10-10T10:00:00Z",
+      },
+      {
+        id: "tx-2025-10-tax",
+        sourceId: "acc-bank",
+        destinationId: "cat-tax-pln",
+        destinationAmount: 2500,
+        destinationCurrencyId: "PLN",
+        tags: ["#pit"],
+        dateTimestampISO: "2025-10-20T10:00:00Z",
+      },
+      // 2026-10: Inflow 30,000 PLN, Tax (PIT in Cash) 3,000 PLN
+      {
+        id: "tx-2026-10-inc",
+        sourceId: "inc-b2b",
+        sourceType: CategoryType.Income,
+        destinationId: "acc-bank",
+        destinationType: CategoryType.BankAccount,
+        destinationAmount: 30000,
+        destinationCurrencyId: "PLN",
+        dateTimestampISO: "2026-10-05T10:00:00Z",
+      },
+      {
+        id: "tx-2026-10-tax",
+        sourceId: "acc-bank",
+        destinationId: "cat-tax-pln",
+        destinationAmount: 3000,
+        destinationCurrencyId: "PLN",
+        tags: ["#pit"],
+        dateTimestampISO: "2026-10-25T10:00:00Z",
+      },
+      // 2026-11: Tax paid in Nov for Oct liability (Accrual mode)
+      {
+        id: "tx-2026-11-tax",
+        sourceId: "acc-bank",
+        destinationId: "cat-tax-pln",
+        destinationAmount: 3500,
+        destinationCurrencyId: "PLN",
+        tags: ["#pit"],
+        dateTimestampISO: "2026-11-20T10:00:00Z",
+      },
+    ];
+
+    it("scopes computeIncomeTaxMetrics and aggregateTaxesByTag to selected month in cash mode with YoY deltas", () => {
+      const metrics = computeIncomeTaxMetrics({
+        transactions: multiPeriodTransactions,
+        categories: periodCategories,
+        currencies,
+        defaultCurrency: "PLN",
+        periodMode: "month",
+        periodKey: "2026-10",
+        timingMode: "cash",
+      });
+
+      expect(metrics.grossIncome).toBe(30000);
+      expect(metrics.totalTaxes).toBe(3000);
+      expect(metrics.netDisposableIncome).toBe(27000);
+
+      // YoY vs 2025-10 (25,000 gross, 2,500 tax, 22,500 net)
+      expect(metrics.yoy).toBeDefined();
+      expect(metrics.yoy?.priorPeriodKey).toBe("2025-10");
+      expect(metrics.yoy?.priorGrossIncome).toBe(25000);
+      expect(metrics.yoy?.grossDelta).toBe(5000);
+      expect(metrics.yoy?.grossDeltaPct).toBe(20.0);
+      expect(metrics.yoy?.priorTotalTaxes).toBe(2500);
+      expect(metrics.yoy?.taxesDelta).toBe(500);
+      expect(metrics.yoy?.priorNetDisposable).toBe(22500);
+      expect(metrics.yoy?.netDisposableDelta).toBe(4500);
+
+      const taxes = aggregateTaxesByTag({
+        transactions: multiPeriodTransactions,
+        taxCategoryIds: new Set(["cat-tax-pln"]),
+        currencies,
+        defaultCurrency: "PLN",
+        periodMode: "month",
+        periodKey: "2026-10",
+        timingMode: "cash",
+      });
+      expect(taxes.totalPersonalTaxesConverted).toBe(3000);
+    });
+
+    it("scopes taxes to accrual month (M - 1) shifting Nov taxes into Oct", () => {
+      const metrics = computeIncomeTaxMetrics({
+        transactions: multiPeriodTransactions,
+        categories: periodCategories,
+        currencies,
+        defaultCurrency: "PLN",
+        periodMode: "month",
+        periodKey: "2026-10",
+        timingMode: "accrual",
+      });
+
+      expect(metrics.grossIncome).toBe(30000);
+      // In accrual mode, 2026-11 tax (3,500 PLN) shifts to 2026-10
+      expect(metrics.totalTaxes).toBe(3500);
+      expect(metrics.netDisposableIncome).toBe(26500);
+
+      const taxes = aggregateTaxesByTag({
+        transactions: multiPeriodTransactions,
+        taxCategoryIds: new Set(["cat-tax-pln"]),
+        currencies,
+        defaultCurrency: "PLN",
+        periodMode: "month",
+        periodKey: "2026-10",
+        timingMode: "accrual",
+      });
+      expect(taxes.totalPersonalTaxesConverted).toBe(3500);
+    });
+
+    it("scopes to calendar year in Year Mode with YoY deltas vs prior year", () => {
+      const metrics = computeIncomeTaxMetrics({
+        transactions: multiPeriodTransactions,
+        categories: periodCategories,
+        currencies,
+        defaultCurrency: "PLN",
+        periodMode: "year",
+        periodKey: "2026",
+        timingMode: "cash",
+      });
+
+      expect(metrics.grossIncome).toBe(30000);
+      // Cash mode: 2026-10 (3,000) + 2026-11 (3,500) = 6,500
+      expect(metrics.totalTaxes).toBe(6500);
+
+      expect(metrics.yoy).toBeDefined();
+      expect(metrics.yoy?.priorPeriodKey).toBe("2025");
+      expect(metrics.yoy?.priorGrossIncome).toBe(25000);
+      expect(metrics.yoy?.priorTotalTaxes).toBe(2500);
+    });
+  });
+
+  describe("Pass-Through VAT-7 Inflow Subtraction (Task 2.2)", () => {
+    it("deducts pass-through VAT-7 remittances from raw client inflows according to spec scenario", () => {
+      const categories: ExternalProviderCategory[] = [
+        ...taxCategories,
+        { id: "inc-b2b", name: "B2B Client", categoryType: CategoryType.Income, currencyId: "PLN" },
+        { id: "inc-pfron", name: "Cashback taxes", categoryType: CategoryType.Income, currencyId: "PLN" },
+      ];
+
+      // Spec scenario:
+      // Raw client bank inflow: 33,825 PLN (comprising 27,500 PLN net revenue and 6,325 PLN VAT-7)
+      // VAT-7 remitted: 6,325 PLN
+      // ZUS paid: 3,083 PLN, PFRON cashback: 389 PLN
+      // PPE paid: 3,048 PLN
+      const transactions: ExternalProviderTransaction[] = [
+        {
+          id: "tx-client-inflow",
+          sourceId: "inc-b2b",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 33825,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2026-10-05T10:00:00Z",
+        },
+        {
+          id: "tx-vat7-remit",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 6325,
+          destinationCurrencyId: "PLN",
+          tags: ["#VAT-7"],
+          dateTimestampISO: "2026-10-25T10:00:00Z",
+        },
+        {
+          id: "tx-zus",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 3083,
+          destinationCurrencyId: "PLN",
+          tags: ["#zus"],
+          dateTimestampISO: "2026-10-20T10:00:00Z",
+        },
+        {
+          id: "tx-pfron",
+          sourceId: "inc-pfron",
+          sourceType: CategoryType.Income,
+          destinationId: "acc-bank",
+          destinationType: CategoryType.BankAccount,
+          destinationAmount: 389,
+          destinationCurrencyId: "PLN",
+          dateTimestampISO: "2026-10-22T10:00:00Z",
+        },
+        {
+          id: "tx-ppe",
+          sourceId: "acc-bank",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 3048,
+          destinationCurrencyId: "PLN",
+          tags: ["#PPE"],
+          dateTimestampISO: "2026-10-20T10:00:00Z",
+        },
+      ];
+
+      const metrics = computeIncomeTaxMetrics({
+        transactions,
+        categories,
+        currencies,
+        defaultCurrency: "PLN",
+        periodMode: "month",
+        periodKey: "2026-10",
+      });
+
+      // True Gross Inflow: 33,825 - 6,325 = 27,500 PLN
+      expect(metrics.rawGrossInflow).toBe(33825);
+      expect(metrics.passThroughVat).toBe(6325);
+      expect(metrics.grossIncome).toBe(27500);
+
+      // Net ZUS: 3,083 - 389 = 2,694 PLN
+      expect(metrics.grossZus).toBe(3083);
+      expect(metrics.pfronCashback).toBe(389);
+      expect(metrics.netZus).toBe(2694);
+
+      // Total Personal Taxes: 3,048 (PPE) + 2,694 (Net ZUS) = 5,742 PLN
+      expect(metrics.totalTaxes).toBe(5742);
+
+      // Net Disposable Cash: 27,500 - 5,742 = 21,758 PLN
+      expect(metrics.netDisposableIncome).toBe(21758);
+
+      // Effective tax rate: 5,742 / 27,500 = 20.88% ≈ 20.9%
+      expect(metrics.effectiveTaxRate).toBeCloseTo(20.88, 1);
+    });
+  });
+
+  describe("VAT-7 USD FX Drag Engine & Detailed Metrics (Task 2.3)", () => {
+    it("computes VAT-7 currency rate drag and non-overlapping trade spread loss per spec scenario", () => {
+      const categories: ExternalProviderCategory[] = [
+        ...taxCategories,
+        { id: "acc-usd", name: "USD Business", categoryType: CategoryType.BankAccount, currencyId: "USD" },
+        { id: "acc-pln", name: "PLN Account", categoryType: CategoryType.BankAccount, currencyId: "PLN" },
+      ];
+
+      // Spec scenario:
+      // VAT 9,430 PLN paid in USD ($2,300 USD at NBP 4.10)
+      // User sells USD at 3.95 PLN/USD ($2,387.34 USD expended)
+      // Plus an extra $1,000 USD converted at 3.95 for general spending
+      const transactions: ExternalProviderTransaction[] = [
+        {
+          id: "tx-vat7-pln",
+          sourceId: "acc-pln",
+          destinationId: "cat-tax-pln",
+          destinationAmount: 9430,
+          destinationCurrencyId: "PLN",
+          tags: ["#VAT-7"],
+          dateTimestampISO: "2026-10-25T10:00:00Z",
+        },
+        {
+          id: "tx-fx-usd-to-pln",
+          sourceId: "acc-usd",
+          sourceCurrencyId: "USD",
+          sourceAmount: 3387.34, // 2387.34 for VAT + 1000 for net earnings
+          destinationId: "acc-pln",
+          destinationCurrencyId: "PLN",
+          destinationAmount: 13379.99, // 3387.34 * 3.95 = 13379.993
+          dateTimestampISO: "2026-10-24T10:00:00Z",
+        },
+      ];
+
+      const friction = computeFxFriction({
+        transactions,
+        categories,
+        currencies,
+        periodMode: "month",
+        periodKey: "2026-10",
+        vatInvoicedNbpRate: 4.1,
+      });
+
+      expect(friction.realizedSellRate).toBeCloseTo(3.95, 2);
+      expect(friction.nbpRate).toBe(4.1);
+      expect(friction.totalVatPln).toBe(9430);
+      expect(friction.invoicedUsdVat).toBe(2300);
+      expect(friction.expendedUsdForVat).toBeCloseTo(2387.34, 1);
+
+      // VAT Drag loss: 9430 * (1 - 3.95 / 4.10) = 345.00 PLN / 87.34 USD
+      expect(friction.vatDragLossPln).toBe(345);
+      expect(friction.vatDragLossUsd).toBeCloseTo(87.34, 1);
+
+      // Non-overlapping trade spread on the remaining $1,000 USD:
+      // 1000 * (4.10 - 3.95) = 150.00 PLN
+      expect(friction.tradeSpreadLossPln).toBeCloseTo(150, 0);
+
+      // Total FX Friction: 345 + 150 = 495 PLN
+      expect(friction.totalFxFrictionPln).toBeCloseTo(495, 0);
+    });
+  });
 });

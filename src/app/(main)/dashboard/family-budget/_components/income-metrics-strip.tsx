@@ -9,6 +9,7 @@ import { formatMoney } from "./external-provider-data";
 
 export interface IncomeMetricsStripProps {
   grossIncome: number;
+  rawGrossInflow?: number;
   totalTaxes: number;
   effectiveTaxRate?: number;
   netDisposableIncome: number;
@@ -26,6 +27,7 @@ export interface IncomeMetricsStripProps {
 
 export function IncomeMetricsStrip({
   grossIncome,
+  rawGrossInflow,
   totalTaxes,
   effectiveTaxRate,
   netDisposableIncome,
@@ -60,7 +62,11 @@ export function IncomeMetricsStrip({
             <span className="text-foreground text-lg font-semibold tabular-nums">
               {formatMoney(grossIncome, currency)}
             </span>
-            <span className="text-muted-foreground text-[11px]">Excl. PFRON & VAT</span>
+            <span className="text-muted-foreground text-[11px]">
+              {rawGrossInflow && rawGrossInflow > grossIncome
+                ? `Excl. VAT (Raw ${formatMoney(rawGrossInflow, currency)})`
+                : "Excl. PFRON & VAT"}
+            </span>
           </div>
           <div className="bg-primary/10 text-primary rounded-lg p-2">
             <DollarSign className="size-4" />
@@ -68,11 +74,11 @@ export function IncomeMetricsStrip({
         </CardContent>
       </Card>
 
-      {/* 2. USD FX Drag */}
+      {/* 2. FX & VAT-7 Drag */}
       <Card className="border-border/60 bg-card/60 border shadow-xs">
         <CardContent className="flex items-start justify-between p-4">
           <div className="flex flex-col gap-1">
-            <span className="text-muted-foreground text-xs font-normal">USD FX Drag</span>
+            <span className="text-muted-foreground text-xs font-normal">FX & VAT-7 Drag</span>
             <span className="text-lg font-semibold tabular-nums text-amber-600 dark:text-amber-400">
               {fxFriction > 0 ? `-${formatMoney(fxFriction, currency)}` : formatMoney(0, currency)}
             </span>

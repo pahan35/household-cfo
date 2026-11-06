@@ -35,14 +35,8 @@ describe("TravelBookendAssistant helpers", () => {
       "acc-eur-card",
       { id: "acc-eur-card", name: "EUR Card", currencyId: "EUR", categoryType: 2 } as ExternalProviderCategory,
     ],
-    [
-      "cat-sub-uah",
-      { id: "cat-sub-uah", name: "Subscriptions UAH", currencyId: "PLN", categoryType: 0 } as ExternalProviderCategory,
-    ],
-    [
-      "acc-kantor-usd",
-      { id: "acc-kantor-usd", name: "Kantor USD", currencyId: "PLN", categoryType: 2 } as ExternalProviderCategory,
-    ],
+    ["cat-sub-uah", { id: "cat-sub-uah", name: "Subscriptions UAH", categoryType: 0 } as ExternalProviderCategory],
+    ["acc-kantor-usd", { id: "acc-kantor-usd", name: "Kantor USD", categoryType: 2 } as ExternalProviderCategory],
   ]);
 
   describe("scoreBoundaryCandidate", () => {
@@ -58,7 +52,7 @@ describe("TravelBookendAssistant helpers", () => {
       expect(result.reasons).toContain("Lodging / Hotel");
     });
 
-    it("scores category with name suffix UAH and placeholder currencyId PLN with +40", () => {
+    it("scores category with name suffix UAH with +40", () => {
       const tx: ExternalProviderTransaction = {
         id: "tx-sub-uah",
         destinationId: "cat-sub-uah",
@@ -68,7 +62,7 @@ describe("TravelBookendAssistant helpers", () => {
       expect(result.reasons).toContain("Foreign Currency (UAH)");
     });
 
-    it("scores transfer/account with name suffix USD and placeholder currencyId PLN with +40", () => {
+    it("scores transfer/account with name suffix USD with +40", () => {
       const tx: ExternalProviderTransaction = {
         id: "tx-kantor-usd",
         sourceId: "acc-kantor-usd",

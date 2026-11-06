@@ -8,7 +8,7 @@ import {
   convertCurrencyAmount,
   isAccountType,
 } from "./external-provider-data";
-import { resolveCategoryCurrency } from "./external-provider-money";
+import { resolveCategoryCurrency, toFxRateToTarget } from "./external-provider-money";
 import { getMacroData } from "./macro-data";
 
 export interface TaxTagBucket {
@@ -150,6 +150,8 @@ export function detectUntaggedTaxTransactions(
     });
 }
 
+export type TaxTimelineTimingMode = "cash" | "accrual";
+
 export interface TagTaxAggregate {
   tagId: string;
   label: string;
@@ -171,6 +173,9 @@ export interface TaxBreakdownResult {
   untaggedCount: number;
   untaggedTotalConverted: number;
   taxCategoryIds: string[];
+  periodMode?: "month" | "year";
+  periodKey?: string;
+  timingMode?: TaxTimelineTimingMode;
 }
 
 export interface AggregateTaxesInput {
@@ -178,15 +183,23 @@ export interface AggregateTaxesInput {
   taxCategoryIds: Iterable<string>;
   currencies: ExternalProviderCurrency[];
   defaultCurrency: string;
+  periodMode?: "month" | "year";
+  periodKey?: string;
+  monthKey?: string;
+  timingMode?: TaxTimelineTimingMode;
 }
 
 /**
  * Aggregates tax transactions by tag bucket and currency.
  * Segregates VAT-7 (#vat) as neutral business pass-through, excluding it from personal taxes.
+ * Supports filtering by Month ("yyyy-MM") or Year ("yyyy") and Cash vs. Accrual ("M - 1") timing basis.
  */
 export function aggregateTaxesByTag(input: AggregateTaxesInput): TaxBreakdownResult {
   const { transactions, currencies, defaultCurrency } = input;
   const taxIdSet = input.taxCategoryIds instanceof Set ? input.taxCategoryIds : new Set(input.taxCategoryIds);
+  const periodKey = input.periodKey ?? input.monthKey;
+  const periodMode = input.periodMode ?? (periodKey?.includes("-") ? "month" : "year");
+  const timingMode: TaxTimelineTimingMode = input.timingMode ?? "cash";
 
   const otherBucket: TaxTagBucket = {
     id: "other",
@@ -229,6 +242,15 @@ export function aggregateTaxesByTag(input: AggregateTaxesInput): TaxBreakdownRes
   for (const tx of transactions) {
     if (tx.deleted) continue;
     if (!tx.destinationId || !taxIdSet.has(tx.destinationId)) continue;
+
+    if (periodKey) {
+      const txMonth = getTransactionMonthKey(tx);
+      if (!txMonth) continue;
+      const effectiveMonth = timingMode === "accrual" ? getPreviousMonthKey(txMonth) : txMonth;
+      const inPeriod =
+        periodMode === "year" ? effectiveMonth.startsWith(`${periodKey}-`) : effectiveMonth === periodKey;
+      if (!inPeriod) continue;
+    }
 
     const nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
     const currency = (tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? defaultCurrency).toUpperCase();
@@ -319,6 +341,9 @@ export function aggregateTaxesByTag(input: AggregateTaxesInput): TaxBreakdownRes
     untaggedCount,
     untaggedTotalConverted,
     taxCategoryIds: Array.from(taxIdSet),
+    periodMode,
+    periodKey,
+    timingMode,
   };
 }
 
@@ -340,14 +365,23 @@ export interface FxFrictionResult {
   totalFxFrictionPln: number;
   totalFxFrictionUsd: number;
   transfers: FxTransferItem[];
+  invoicedUsdVat?: number;
+  expendedUsdForVat?: number;
+  realizedSellRate?: number;
+  nbpRate?: number;
+  totalVatPln?: number;
 }
 
 export interface ComputeFxFrictionInput {
   transactions: ExternalProviderTransaction[];
   defaultCurrency?: string;
+  periodMode?: "month" | "year";
+  periodKey?: string;
   monthKey?: string;
+  timingMode?: TaxTimelineTimingMode;
   vatInvoicedNbpRate?: number;
   categories?: ExternalProviderCategory[];
+  currencies?: ExternalProviderCurrency[];
 }
 
 /**
@@ -378,27 +412,36 @@ export function computeVatCurrencyDrag(
   vatPln: number,
   invoiceNbpRate: number,
   realizedRate: number,
-): { vatDragLossUsd: number; vatDragLossPln: number } {
+): { vatDragLossUsd: number; vatDragLossPln: number; invoicedUsdVat: number; expendedUsdForVat: number } {
   if (invoiceNbpRate <= 0 || realizedRate <= 0 || vatPln <= 0) {
-    return { vatDragLossUsd: 0, vatDragLossPln: 0 };
+    return { vatDragLossUsd: 0, vatDragLossPln: 0, invoicedUsdVat: 0, expendedUsdForVat: 0 };
   }
   const usdExpended = vatPln / realizedRate;
   const usdInvoiced = vatPln / invoiceNbpRate;
   const vatDragLossUsd = Math.max(0, usdExpended - usdInvoiced);
-  const vatDragLossPln = Math.max(0, vatPln - usdInvoiced * realizedRate);
+  const vatDragLossPln = Math.max(0, vatPln * (1 - realizedRate / invoiceNbpRate));
   return {
     vatDragLossUsd: Number(vatDragLossUsd.toFixed(2)),
     vatDragLossPln: Number(vatDragLossPln.toFixed(2)),
+    invoicedUsdVat: Number(usdInvoiced.toFixed(2)),
+    expendedUsdForVat: Number(usdExpended.toFixed(2)),
   };
 }
 
 /**
- * Computes foreign exchange friction for USD income streams (trade spread and VAT drag).
+ * Computes foreign exchange friction for USD income streams:
+ * - VAT-7 currency drag on 23% VAT paid in USD (when client pays in USD and VAT-7 is settled in PLN)
+ * - Trade spread loss on remaining non-VAT USD conversions
+ * - Automatically derives NBP reference rate and realized USD/PLN sell rate
  */
 export function computeFxFriction(input: ComputeFxFrictionInput): FxFrictionResult {
-  const { transactions, categories = [] } = input;
+  const { transactions, categories = [], currencies = [] } = input;
   const categoryMap = new Map(categories.map((c) => [c.id, c]));
   const taxIdSet = getTaxCategoryIds(categories);
+
+  const periodKey = input.periodKey ?? input.monthKey;
+  const periodMode = input.periodMode ?? (periodKey?.includes("-") ? "month" : "year");
+  const timingMode: TaxTimelineTimingMode = input.timingMode ?? "cash";
 
   const transfers: FxTransferItem[] = [];
   let totalSpreadLossPln = 0;
@@ -409,9 +452,17 @@ export function computeFxFriction(input: ComputeFxFrictionInput): FxFrictionResu
   for (const tx of transactions) {
     if (tx.deleted) continue;
 
-    // Check if VAT tax payment
+    const txMonth = getTransactionMonthKey(tx);
+
+    // 1. Check if VAT tax payment
     if (tx.destinationId && taxIdSet.has(tx.destinationId)) {
       if (Array.isArray(tx.tags) && tx.tags.some((t) => typeof t === "string" && matchTaxBucket(t)?.id === "vat")) {
+        if (periodKey && txMonth) {
+          const effectiveMonth = timingMode === "accrual" ? getPreviousMonthKey(txMonth) : txMonth;
+          const inPeriod =
+            periodMode === "year" ? effectiveMonth.startsWith(`${periodKey}-`) : effectiveMonth === periodKey;
+          if (!inPeriod) continue;
+        }
         const amt = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
         totalVatPln += amt;
       }
@@ -423,8 +474,13 @@ export function computeFxFriction(input: ComputeFxFrictionInput): FxFrictionResu
     const srcCurr = (tx.sourceCurrencyId ?? srcCat?.currencyId ?? "").toUpperCase();
     const destCurr = (tx.destinationCurrencyId ?? destCat?.currencyId ?? "").toUpperCase();
 
-    // Check for USD -> PLN currency transfer
+    // 2. Check for USD -> PLN currency transfer
     if (srcCurr === "USD" && destCurr === "PLN") {
+      if (periodKey && txMonth) {
+        const inPeriod = periodMode === "year" ? txMonth.startsWith(`${periodKey}-`) : txMonth === periodKey;
+        if (!inPeriod) continue;
+      }
+
       const srcAmt = Math.abs(Number(tx.sourceAmount ?? tx.defaultAmount) || 0);
       const destAmt = Math.abs(Number(tx.destinationAmount ?? tx.currentAmount) || 0);
 
@@ -433,20 +489,15 @@ export function computeFxFriction(input: ComputeFxFrictionInput): FxFrictionResu
         totalPlnReceived += destAmt;
 
         let dateStr: string | undefined;
-        let txMonthKey = input.monthKey;
-        if (!txMonthKey) {
-          if (tx.dateTimestampISO) {
-            dateStr = tx.dateTimestampISO;
-            txMonthKey = tx.dateTimestampISO.slice(0, 7);
-          } else if (tx.dateTimestamp) {
-            dateStr = format(new Date(tx.dateTimestamp), "yyyy-MM-dd");
-            txMonthKey = format(new Date(tx.dateTimestamp), "yyyy-MM");
-          } else {
-            txMonthKey = format(new Date(), "yyyy-MM");
-          }
+        const txMonthKey = txMonth ?? periodKey;
+        if (tx.dateTimestampISO) {
+          dateStr = tx.dateTimestampISO;
+        } else if (tx.dateTimestamp) {
+          dateStr = format(new Date(tx.dateTimestamp), "yyyy-MM-dd");
         }
 
-        const nbpRate = getMacroData(txMonthKey).usdPlnRate;
+        const refMonth = txMonthKey ?? format(new Date(), "yyyy-MM");
+        const nbpRate = input.vatInvoicedNbpRate ?? getMacroData(refMonth).usdPlnRate;
         const spread = computeTradeSpreadLoss(srcAmt, destAmt, nbpRate);
 
         totalSpreadLossPln += spread.tradeSpreadLossPln;
@@ -463,32 +514,87 @@ export function computeFxFriction(input: ComputeFxFrictionInput): FxFrictionResu
     }
   }
 
+  // Derive reference NBP rate
+  const latestMonthKey =
+    periodKey && periodMode === "year" ? `${periodKey}-12` : (periodKey ?? format(new Date(), "yyyy-MM"));
+  let defaultNbpRate = input.vatInvoicedNbpRate ?? getMacroData(latestMonthKey).usdPlnRate;
+  if (!defaultNbpRate || defaultNbpRate <= 0) {
+    if (currencies.length > 0) {
+      defaultNbpRate = toFxRateToTarget("USD", "PLN", currencies);
+    }
+    if (!defaultNbpRate || defaultNbpRate <= 0) {
+      defaultNbpRate = 4.0;
+    }
+  }
+
+  // Fallback to all USD->PLN transfers if period-specific transfer is empty but VAT was paid
+  let effectiveUsdTransferred = totalUsdTransferred;
+  let effectivePlnReceived = totalPlnReceived;
+  if (effectiveUsdTransferred === 0 && totalVatPln > 0) {
+    for (const tx of transactions) {
+      if (tx.deleted) continue;
+      const sCat = tx.sourceId ? categoryMap.get(tx.sourceId) : undefined;
+      const dCat = tx.destinationId ? categoryMap.get(tx.destinationId) : undefined;
+      const sCurr = (tx.sourceCurrencyId ?? sCat?.currencyId ?? "").toUpperCase();
+      const dCurr = (tx.destinationCurrencyId ?? dCat?.currencyId ?? "").toUpperCase();
+      if (sCurr === "USD" && dCurr === "PLN") {
+        const sAmt = Math.abs(Number(tx.sourceAmount ?? tx.defaultAmount) || 0);
+        const dAmt = Math.abs(Number(tx.destinationAmount ?? tx.currentAmount) || 0);
+        if (sAmt > 0 && dAmt > 0) {
+          effectiveUsdTransferred += sAmt;
+          effectivePlnReceived += dAmt;
+        }
+      }
+    }
+  }
+
+  const realizedSellRate = effectiveUsdTransferred > 0 ? effectivePlnReceived / effectiveUsdTransferred : 0;
+
   // VAT currency drag computation
   let vatDragLossUsd = 0;
   let vatDragLossPln = 0;
+  let invoicedUsdVat = 0;
+  let expendedUsdForVat = 0;
 
-  if (totalVatPln > 0 && input.vatInvoicedNbpRate && totalUsdTransferred > 0) {
-    const avgRealizedRate = totalPlnReceived / totalUsdTransferred;
-    const drag = computeVatCurrencyDrag(totalVatPln, input.vatInvoicedNbpRate, avgRealizedRate);
+  if (totalVatPln > 0 && defaultNbpRate > 0 && realizedSellRate > 0) {
+    const drag = computeVatCurrencyDrag(totalVatPln, defaultNbpRate, realizedSellRate);
     vatDragLossUsd = drag.vatDragLossUsd;
     vatDragLossPln = drag.vatDragLossPln;
+    invoicedUsdVat = drag.invoicedUsdVat;
+    expendedUsdForVat = drag.expendedUsdForVat;
   }
 
-  const latestMonthKey = input.monthKey ?? format(new Date(), "yyyy-MM");
-  const defaultNbpRate = getMacroData(latestMonthKey).usdPlnRate;
-  const totalSpreadLossUsd = defaultNbpRate > 0 ? totalSpreadLossPln / defaultNbpRate : 0;
+  // Non-overlapping trade spread loss on remaining USD sold for net earnings
+  const usdForVat =
+    totalUsdTransferred > 0 && realizedSellRate > 0 ? Math.min(totalUsdTransferred, totalVatPln / realizedSellRate) : 0;
+  const remainingUsd = Math.max(0, totalUsdTransferred - usdForVat);
 
-  const totalFxFrictionPln = Number((totalSpreadLossPln + vatDragLossPln).toFixed(2));
-  const totalFxFrictionUsd = Number((totalSpreadLossUsd + vatDragLossUsd).toFixed(2));
+  let tradeSpreadLossPln = 0;
+  let tradeSpreadLossUsd = 0;
+  if (remainingUsd > 0 && realizedSellRate > 0 && defaultNbpRate > realizedSellRate) {
+    tradeSpreadLossPln = Number((remainingUsd * (defaultNbpRate - realizedSellRate)).toFixed(2));
+    tradeSpreadLossUsd = defaultNbpRate > 0 ? Number((tradeSpreadLossPln / defaultNbpRate).toFixed(2)) : 0;
+  } else if (totalVatPln === 0 && totalUsdTransferred > 0) {
+    tradeSpreadLossPln = Number(totalSpreadLossPln.toFixed(2));
+    tradeSpreadLossUsd = defaultNbpRate > 0 ? Number((tradeSpreadLossPln / defaultNbpRate).toFixed(2)) : 0;
+  }
+
+  const totalFxFrictionPln = Number((tradeSpreadLossPln + vatDragLossPln).toFixed(2));
+  const totalFxFrictionUsd = Number((tradeSpreadLossUsd + vatDragLossUsd).toFixed(2));
 
   return {
-    tradeSpreadLossPln: Number(totalSpreadLossPln.toFixed(2)),
-    tradeSpreadLossUsd: Number(totalSpreadLossUsd.toFixed(2)),
+    tradeSpreadLossPln,
+    tradeSpreadLossUsd,
     vatDragLossPln,
     vatDragLossUsd,
     totalFxFrictionPln,
     totalFxFrictionUsd,
     transfers,
+    invoicedUsdVat: invoicedUsdVat > 0 ? invoicedUsdVat : undefined,
+    expendedUsdForVat: expendedUsdForVat > 0 ? expendedUsdForVat : undefined,
+    realizedSellRate: realizedSellRate > 0 ? Number(realizedSellRate.toFixed(4)) : undefined,
+    nbpRate: Number(defaultNbpRate.toFixed(4)),
+    totalVatPln: totalVatPln > 0 ? Number(totalVatPln.toFixed(2)) : undefined,
   };
 }
 
@@ -504,9 +610,26 @@ export interface IncomeSourceSummary {
   isTaxRebate?: boolean;
 }
 
+export interface YoYComparison {
+  priorGrossIncome: number;
+  grossDelta: number;
+  grossDeltaPct: number | null;
+  priorTotalTaxes: number;
+  taxesDelta: number;
+  priorNetDisposable: number;
+  netDisposableDelta: number;
+  netDisposableDeltaPct: number | null;
+  priorEffectiveTaxRate: number;
+  effectiveTaxRateDelta: number;
+  priorPeriodKey: string;
+  priorPeriodLabel: string;
+}
+
 export interface IncomeTaxMetrics {
+  rawGrossInflow: number;
   grossIncome: number;
   totalTaxes: number;
+  personalTaxes: number;
   grossZus: number;
   pfronCashback: number;
   netZus: number;
@@ -519,6 +642,10 @@ export interface IncomeTaxMetrics {
   coverageRatio: number;
   netSurplus: number;
   incomeSources: IncomeSourceSummary[];
+  periodMode?: "month" | "year";
+  periodKey?: string;
+  timingMode?: TaxTimelineTimingMode;
+  yoy?: YoYComparison;
 }
 
 export interface ComputeIncomeTaxMetricsInput {
@@ -528,27 +655,54 @@ export interface ComputeIncomeTaxMetricsInput {
   defaultCurrency: string;
   controllableExpenses?: number;
   taxCategoryIds?: Iterable<string>;
+  periodMode?: "month" | "year";
+  periodKey?: string;
   monthKey?: string;
+  timingMode?: TaxTimelineTimingMode;
   vatInvoicedNbpRate?: number;
+  computeYoY?: boolean;
+}
+
+/**
+ * Derives prior-year period key for YoY comparisons:
+ * "2026-10" -> "2025-10" (Month Mode)
+ * "2026" -> "2025" (Year Mode)
+ */
+export function getYoYPeriodKey(periodKey: string, periodMode: "month" | "year"): string {
+  if (periodMode === "year") {
+    const y = parseInt(periodKey, 10);
+    return isNaN(y) ? periodKey : String(y - 1);
+  }
+  const [yStr, mStr] = periodKey.split("-");
+  const y = parseInt(yStr, 10);
+  return isNaN(y) ? periodKey : `${y - 1}-${mStr}`;
 }
 
 /**
  * Computes high-level income and tax metrics:
- * Gross Income, Total Taxes, Effective Tax Rate %, Net Disposable Income, and Expense Coverage Ratio.
- * Excludes PFRON cashback from gross income and credits it directly against ZUS.
- * Excludes pass-through VAT-7 from personal taxes and accounts for USD FX friction.
+ * - Scoped to Month ("yyyy-MM") or Year ("yyyy") with Cash vs. Accrual ("M - 1") timing basis
+ * - True Gross Inflow: Raw client non-rebate bank inflows MINUS pass-through VAT-7 remittances
+ * - Net Personal Taxes: PPE / PIT + Health + Belka + Net ZUS (Gross ZUS minus PFRON cashback)
+ * - USD FX & VAT-7 Drag: Realized VAT-7 rate drag + trade spread loss
+ * - Net Disposable Income: True Gross Inflow - Net Personal Taxes - FX & VAT-7 Drag
+ * - YoY comparison deltas vs. M - 12 (Month Mode) or Y - 1 (Year Mode)
  */
 export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): IncomeTaxMetrics {
   const { transactions, categories, currencies, defaultCurrency, controllableExpenses = 0 } = input;
 
   const categoryMap = new Map(categories.map((c) => [c.id, c]));
-  const taxIdSet = input.taxCategoryIds
-    ? input.taxCategoryIds instanceof Set
-      ? input.taxCategoryIds
-      : new Set(input.taxCategoryIds)
-    : getTaxCategoryIds(categories);
+  let taxIdSet: Set<string>;
+  if (input.taxCategoryIds) {
+    taxIdSet = input.taxCategoryIds instanceof Set ? input.taxCategoryIds : new Set(input.taxCategoryIds);
+  } else {
+    taxIdSet = getTaxCategoryIds(categories);
+  }
 
-  let grossIncome = 0;
+  const periodKey = input.periodKey ?? input.monthKey;
+  const periodMode = input.periodMode ?? (periodKey?.includes("-") ? "month" : "year");
+  const timingMode: TaxTimelineTimingMode = input.timingMode ?? "cash";
+
+  let rawGrossInflow = 0;
   let pfronCashback = 0;
   let grossZus = 0;
   let passThroughVat = 0;
@@ -571,8 +725,17 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
   for (const tx of transactions) {
     if (tx.deleted) continue;
 
+    const txMonth = getTransactionMonthKey(tx);
+
     // 1. Check if outgoing tax payment
     if (tx.destinationId && taxIdSet.has(tx.destinationId)) {
+      if (periodKey && txMonth) {
+        const effectiveMonth = timingMode === "accrual" ? getPreviousMonthKey(txMonth) : txMonth;
+        const inPeriod =
+          periodMode === "year" ? effectiveMonth.startsWith(`${periodKey}-`) : effectiveMonth === periodKey;
+        if (!inPeriod) continue;
+      }
+
       const nativeAmount = Math.abs(Number(tx.destinationAmount ?? tx.sourceAmount ?? tx.defaultAmount) || 0);
       const currency = (tx.destinationCurrencyId ?? tx.sourceCurrencyId ?? defaultCurrency).toUpperCase();
       const converted = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
@@ -618,6 +781,16 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
     if (isSourceIncome && isDestAccount) {
       const sourceId = tx.sourceId ?? "unknown-income";
       const sourceName = tx.sourceName ?? sourceCat?.name ?? "Unknown Income";
+      const isTaxRebate =
+        isPfronCashbackCategory(sourceName) || (sourceCat ? isPfronCashbackCategory(sourceCat.name) : false);
+
+      if (periodKey && txMonth) {
+        const effectiveMonth = isTaxRebate && timingMode === "accrual" ? getPreviousMonthKey(txMonth) : txMonth;
+        const inPeriod =
+          periodMode === "year" ? effectiveMonth.startsWith(`${periodKey}-`) : effectiveMonth === periodKey;
+        if (!inPeriod) continue;
+      }
+
       const currency = (
         tx.sourceCurrencyId ??
         (sourceCat ? resolveCategoryCurrency(sourceCat, defaultCurrency) : undefined) ??
@@ -640,13 +813,10 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
         converted = convertCurrencyAmount(nativeAmount, currency, defaultCurrency, currencies) ?? nativeAmount;
       }
 
-      const isTaxRebate =
-        isPfronCashbackCategory(sourceName) || (sourceCat ? isPfronCashbackCategory(sourceCat.name) : false);
-
       if (isTaxRebate) {
         pfronCashback += converted;
       } else {
-        grossIncome += converted;
+        rawGrossInflow += converted;
       }
 
       const existing = incomeMap.get(sourceId);
@@ -673,13 +843,20 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
   const netZus = Math.max(0, grossZus - pfronCashback);
   const totalTaxes = otherPersonalTaxes + netZus;
 
+  // True Gross Inflow: raw client inflows minus pass-through VAT-7 remittances
+  const grossIncome = Math.max(0, rawGrossInflow - passThroughVat);
+
   // Realized FX friction
   const fxFrictionDetails = computeFxFriction({
     transactions,
     defaultCurrency,
-    monthKey: input.monthKey,
+    periodMode,
+    periodKey,
+    monthKey: periodKey ?? input.monthKey,
+    timingMode,
     vatInvoicedNbpRate: input.vatInvoicedNbpRate,
     categories,
+    currencies,
   });
   const fxFriction = fxFrictionDetails.totalFxFrictionPln;
 
@@ -691,13 +868,57 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
   const incomeSources: IncomeSourceSummary[] = Array.from(incomeMap.values())
     .map((item) => ({
       ...item,
-      percentageOfGross: !item.isTaxRebate && grossIncome > 0 ? (item.totalConverted / grossIncome) * 100 : 0,
+      percentageOfGross: !item.isTaxRebate && rawGrossInflow > 0 ? (item.totalConverted / rawGrossInflow) * 100 : 0,
     }))
     .sort((a, b) => b.totalConverted - a.totalConverted);
 
+  // Compute Year-over-Year comparison deltas
+  let yoy: YoYComparison | undefined;
+  if (input.computeYoY !== false && periodKey) {
+    const priorPeriodKey = getYoYPeriodKey(periodKey, periodMode);
+    const prior = computeIncomeTaxMetrics({
+      ...input,
+      periodKey: priorPeriodKey,
+      monthKey: undefined,
+      computeYoY: false,
+    });
+    const priorGross = prior.grossIncome;
+    const grossDelta = Number((grossIncome - priorGross).toFixed(2));
+    const grossDeltaPct = priorGross > 0 ? Number(((grossDelta / priorGross) * 100).toFixed(1)) : null;
+
+    const priorTaxes = prior.totalTaxes;
+    const taxesDelta = Number((totalTaxes - priorTaxes).toFixed(2));
+
+    const priorNet = prior.netDisposableIncome;
+    const netDisposableDelta = Number((netDisposableIncome - priorNet).toFixed(2));
+    const netDisposableDeltaPct = priorNet > 0 ? Number(((netDisposableDelta / priorNet) * 100).toFixed(1)) : null;
+
+    const priorEffectiveTaxRate = prior.effectiveTaxRate;
+    const effectiveTaxRateDelta = Number((effectiveTaxRate - priorEffectiveTaxRate).toFixed(1));
+
+    const priorPeriodLabel = periodMode === "year" ? priorPeriodKey : formatMonthLabel(priorPeriodKey);
+
+    yoy = {
+      priorGrossIncome: priorGross,
+      grossDelta,
+      grossDeltaPct,
+      priorTotalTaxes: priorTaxes,
+      taxesDelta,
+      priorNetDisposable: priorNet,
+      netDisposableDelta,
+      netDisposableDeltaPct,
+      priorEffectiveTaxRate,
+      effectiveTaxRateDelta,
+      priorPeriodKey,
+      priorPeriodLabel,
+    };
+  }
+
   return {
+    rawGrossInflow,
     grossIncome,
     totalTaxes,
+    personalTaxes: totalTaxes,
     grossZus,
     pfronCashback,
     netZus,
@@ -710,10 +931,12 @@ export function computeIncomeTaxMetrics(input: ComputeIncomeTaxMetricsInput): In
     coverageRatio,
     netSurplus,
     incomeSources,
+    periodMode,
+    periodKey,
+    timingMode,
+    yoy,
   };
 }
-
-export type TaxTimelineTimingMode = "cash" | "accrual";
 
 export interface IncomeTaxTimelinePoint {
   monthKey: string;
@@ -815,11 +1038,12 @@ export function computeIncomeTaxTimeline(input: ComputeIncomeTaxTimelineInput): 
   const timingMode: TaxTimelineTimingMode = input.timingMode ?? "cash";
 
   const categoryMap = new Map(categories.map((c) => [c.id, c]));
-  const taxIdSet = input.taxCategoryIds
-    ? input.taxCategoryIds instanceof Set
-      ? input.taxCategoryIds
-      : new Set(input.taxCategoryIds)
-    : getTaxCategoryIds(categories);
+  let taxIdSet: Set<string>;
+  if (input.taxCategoryIds) {
+    taxIdSet = input.taxCategoryIds instanceof Set ? input.taxCategoryIds : new Set(input.taxCategoryIds);
+  } else {
+    taxIdSet = getTaxCategoryIds(categories);
+  }
 
   const selectedSourcesSet = input.selectedSourceIds
     ? input.selectedSourceIds instanceof Set

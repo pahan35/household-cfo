@@ -85,6 +85,8 @@ export interface IncomeSourcesCardProps {
   incomeBySourceId?: Map<string, IncomeSourceAmount>;
   onOpenNormalizeCategories?: () => void;
   onCategoriesUpdated?: (updatedCategories: ExternalProviderCategory[]) => void;
+  periodMode?: "month" | "year";
+  targetMultiplier?: number;
 }
 
 export function IncomeSourcesCard({
@@ -104,6 +106,8 @@ export function IncomeSourcesCard({
   onSelectSource,
   incomeBySourceId,
   onOpenNormalizeCategories,
+  periodMode = "month",
+  targetMultiplier = 1,
 }: IncomeSourcesCardProps) {
   const [internalCategories, setInternalCategories] = useState<ExternalProviderCategory[]>([]);
   const [internalIsLoading, setInternalIsLoading] = useState(true);
@@ -288,8 +292,28 @@ export function IncomeSourcesCard({
         title="Income Sources"
         description="Manage cash flow sources, payout targets, and active status"
         action={
-          !isLoading && !error ? (
-            <div className="flex items-center gap-2">
+          !isLoading && !error && totalPeriodIncome > 0 ? (
+            <div className="text-right">
+              <span className="text-muted-foreground text-xs">Total Inflow: </span>
+              <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                {formatMoney(totalPeriodIncome, currency)}
+              </span>
+            </div>
+          ) : undefined
+        }
+        isLoading={isLoading}
+        error={error}
+        onRetry={handleRetry}
+        isEmpty={classifiedSources.length === 0}
+        emptyTitle="No income sources found"
+        emptyDescription="No income categories found in ExternalProvider. In ExternalProvider, income sources are categories with categoryType: 1."
+        emptyIcon={<Coins className="text-muted-foreground size-6" />}
+        skeletonCount={3}
+      >
+        {/* Compact management toolbar */}
+        {!isLoading && !error && (
+          <div className="flex items-center justify-between gap-2 pb-2">
+            <div className="flex items-center gap-1.5">
               {onOpenNormalizeCategories && (
                 <Button
                   type="button"
@@ -314,26 +338,13 @@ export function IncomeSourcesCard({
                   <span>{showArchived ? "Hide archived" : `Show archived (${hiddenArchivedCount})`}</span>
                 </Button>
               )}
-              {totalPeriodIncome > 0 && (
-                <div className="text-right">
-                  <span className="text-muted-foreground text-xs">Total Inflow: </span>
-                  <span className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-                    {formatMoney(totalPeriodIncome, currency)}
-                  </span>
-                </div>
-              )}
             </div>
-          ) : undefined
-        }
-        isLoading={isLoading}
-        error={error}
-        onRetry={handleRetry}
-        isEmpty={classifiedSources.length === 0}
-        emptyTitle="No income sources found"
-        emptyDescription="No income categories found in ExternalProvider. In ExternalProvider, income sources are categories with categoryType: 1."
-        emptyIcon={<Coins className="text-muted-foreground size-6" />}
-        skeletonCount={3}
-      >
+            {periodMode === "year" && targetMultiplier > 1 && (
+              <span className="text-[11px] text-muted-foreground">Annual targets scaled ({targetMultiplier} mo)</span>
+            )}
+          </div>
+        )}
+
         {sourcesBelowArchived.length > 0 && !isLoading && !error && (
           <div className="border-amber-500/20 bg-amber-500/10 mb-2 flex items-center justify-between rounded-lg border px-3 py-2 text-xs">
             <div className="flex items-center gap-2">
@@ -387,6 +398,8 @@ export function IncomeSourcesCard({
                   onUnarchive={(id) => void handleUnarchive(id)}
                   onMoveAboveArchived={(id) => void handleMoveAboveArchived(id)}
                   onRename={(cat) => setRenamingCategory(cat)}
+                  periodMode={periodMode}
+                  targetMultiplier={targetMultiplier}
                 />
               );
             })}
@@ -453,6 +466,8 @@ interface SortableIncomeRowProps {
   onUnarchive?: (id: string) => void;
   onMoveAboveArchived?: (id: string) => void;
   onRename?: (category: ExternalProviderCategory) => void;
+  periodMode?: "month" | "year";
+  targetMultiplier?: number;
 }
 
 function SortableIncomeRow({
@@ -473,6 +488,8 @@ function SortableIncomeRow({
   onUnarchive,
   onMoveAboveArchived,
   onRename,
+  periodMode = "month",
+  targetMultiplier = 1,
 }: SortableIncomeRowProps) {
   const { handleRef, isDragging, ref } = useSortable({
     id,
@@ -486,6 +503,7 @@ function SortableIncomeRow({
 
   const displayName = isArchived ? category.name.replace(/^_+/, "").trim() : category.name;
   const limitAmount = Number(category.limitAmount) || 0;
+  const effectiveTarget = limitAmount * (periodMode === "year" ? Math.max(1, targetMultiplier) : 1);
   const isPfron = isPfronCashbackCategory(category.name);
   const sourceCurrency = resolveCategoryCurrency(category, reportingCurrency);
 
@@ -594,9 +612,9 @@ function SortableIncomeRow({
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
             {isPfron ? (
               <span className="text-purple-600 dark:text-purple-400">Credited against ZUS contributions</span>
-            ) : limitAmount > 0 ? (
+            ) : effectiveTarget > 0 ? (
               <span className="flex items-center gap-1">
-                <Target className="size-3" /> Target: {formatMoney(limitAmount, sourceCurrency)}
+                <Target className="size-3" /> Target: {formatMoney(effectiveTarget, sourceCurrency)}
               </span>
             ) : (
               <span>No target set</span>
@@ -621,9 +639,9 @@ function SortableIncomeRow({
             prefix="+"
             primaryClassName="text-emerald-600 dark:text-emerald-400 font-semibold tabular-nums"
           />
-          {limitAmount > 0 && periodAmount !== undefined && (
+          {effectiveTarget > 0 && periodAmount !== undefined && (
             <span className="text-muted-foreground text-[10px] tabular-nums">
-              {Math.round((nativeReceived / limitAmount) * 100)}% of target
+              {Math.round((nativeReceived / effectiveTarget) * 100)}% of target
             </span>
           )}
         </div>

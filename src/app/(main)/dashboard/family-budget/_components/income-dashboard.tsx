@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { cn } from "cn";
 import { format, startOfMonth } from "date-fns";
-import { Banknote, RotateCw } from "lucide-react";
+import { Banknote, Calendar, ChevronLeft, ChevronRight, RotateCw } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { CategoryRenamingDialog } from "./category-renaming-dialog";
@@ -16,6 +18,7 @@ import {
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
+  formatMoney,
   type StatPingData,
 } from "./external-provider-data";
 import { IncomeMetricsStrip } from "./income-metrics-strip";
@@ -28,9 +31,13 @@ import {
   aggregateTaxesByTag,
   computeIncomeTaxMetrics,
   detectUntaggedTaxTransactions,
+  formatMonthLabel,
+  getPreviousMonthKey,
   getTaxCategoryIds,
+  getTransactionMonthKey,
   hasRecognizedTaxTag,
   matchTaxBucket,
+  type TaxTimelineTimingMode,
 } from "./tax-transforms";
 import { parsePointDate } from "./yoy-transforms";
 
@@ -43,6 +50,12 @@ export function IncomeDashboard() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+
+  // Period Selection State (Month vs. Year Mode)
+  const [periodMode, setPeriodMode] = useState<"month" | "year">("month");
+  const [activeMonthKey, setActiveMonthKey] = useState<string>(() => format(new Date(), "yyyy-MM"));
+  const [activeYear, setActiveYear] = useState<number>(() => new Date().getFullYear());
+  const [timingMode, setTimingMode] = useState<TaxTimelineTimingMode>("cash");
 
   // Filtering state for embedded transaction ledger
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
@@ -98,17 +111,78 @@ export function IncomeDashboard() {
     return () => controller.abort();
   }, [loadData]);
 
+  // Default to latest transaction month if current month has no activity
+  useEffect(() => {
+    if (transactions.length > 0) {
+      const months = new Set<string>();
+      for (const tx of transactions) {
+        if (tx.deleted) continue;
+        const m = getTransactionMonthKey(tx);
+        if (m) months.add(m);
+      }
+      const sorted = Array.from(months).sort();
+      if (sorted.length > 0) {
+        const latest = sorted[sorted.length - 1];
+        const currentMonth = format(new Date(), "yyyy-MM");
+        if (!months.has(currentMonth)) {
+          setActiveMonthKey(latest);
+          const y = parseInt(latest.slice(0, 4), 10);
+          if (!isNaN(y)) setActiveYear(y);
+        }
+      }
+    }
+  }, [transactions]);
+
   // Tax categories auto-detection
   const taxCategoryIds = useMemo(() => getTaxCategoryIds(categories), [categories]);
+
+  // Active period key: "yyyy" in Year Mode, "yyyy-MM" in Month Mode
+  const periodKey = periodMode === "year" ? String(activeYear) : activeMonthKey;
+
+  // Active months count in Year Mode for scaling targets (e.g. 10 * limitAmount)
+  const activeMonthsCount = useMemo(() => {
+    if (periodMode !== "year") return 1;
+    const months = new Set<string>();
+    for (const tx of transactions) {
+      if (tx.deleted) continue;
+      const m = getTransactionMonthKey(tx);
+      if (m && m.startsWith(`${activeYear}-`)) {
+        months.add(m);
+      }
+    }
+    return Math.max(1, Math.min(12, months.size));
+  }, [periodMode, activeYear, transactions]);
 
   // Controllable living expenses from stat ping (sum of non-tax expense categories)
   const controllableExpenses = useMemo(() => {
     const points = statData?.selection?.points ?? [];
     if (points.length === 0) return 0;
-    const currentMonthStart = format(startOfMonth(new Date()), "yyyy-MM-dd");
-    const activePoint =
-      points.find((p) => p.id === currentMonthStart || parsePointDate(p)?.dateStr === currentMonthStart) ?? points[0];
     const categoryMap = new Map(categories.map((c) => [c.id, c]));
+
+    if (periodMode === "year") {
+      let annualSum = 0;
+      for (const p of points) {
+        const dStr = p.id ?? parsePointDate(p)?.dateStr;
+        if (dStr && dStr.startsWith(`${activeYear}-`)) {
+          for (const cat of p.categories ?? []) {
+            const catMeta = categoryMap.get(cat.id);
+            if (catMeta?.categoryType === CategoryType.Income) continue;
+            if (!taxCategoryIds.has(cat.id)) {
+              annualSum += Number(cat.value ?? cat.amount) || 0;
+            }
+          }
+        }
+      }
+      return annualSum;
+    }
+
+    // Month Mode
+    const targetMonthStart = `${activeMonthKey}-01`;
+    const activePoint =
+      points.find((p) => p.id === targetMonthStart || parsePointDate(p)?.dateStr === targetMonthStart) ??
+      points.find((p) => p.id?.startsWith(activeMonthKey) || parsePointDate(p)?.dateStr?.startsWith(activeMonthKey)) ??
+      points[0];
+
     let sum = 0;
     for (const cat of activePoint?.categories ?? []) {
       const catMeta = categoryMap.get(cat.id);
@@ -118,9 +192,9 @@ export function IncomeDashboard() {
       }
     }
     return sum;
-  }, [statData, categories, taxCategoryIds]);
+  }, [statData, categories, taxCategoryIds, periodMode, activeYear, activeMonthKey]);
 
-  // Tax breakdown & audit
+  // Tax breakdown & audit scoped to period
   const taxBreakdown = useMemo(
     () =>
       aggregateTaxesByTag({
@@ -128,8 +202,11 @@ export function IncomeDashboard() {
         taxCategoryIds,
         currencies,
         defaultCurrency,
+        periodMode,
+        periodKey,
+        timingMode,
       }),
-    [transactions, taxCategoryIds, currencies, defaultCurrency],
+    [transactions, taxCategoryIds, currencies, defaultCurrency, periodMode, periodKey, timingMode],
   );
 
   const untaggedTaxTransactions = useMemo(
@@ -137,7 +214,7 @@ export function IncomeDashboard() {
     [transactions, taxCategoryIds],
   );
 
-  // Income metrics strip
+  // Income metrics strip scoped to period with YoY statistics
   const incomeMetrics = useMemo(
     () =>
       computeIncomeTaxMetrics({
@@ -147,8 +224,21 @@ export function IncomeDashboard() {
         defaultCurrency,
         controllableExpenses,
         taxCategoryIds,
+        periodMode,
+        periodKey,
+        timingMode,
       }),
-    [transactions, categories, currencies, defaultCurrency, controllableExpenses, taxCategoryIds],
+    [
+      transactions,
+      categories,
+      currencies,
+      defaultCurrency,
+      controllableExpenses,
+      taxCategoryIds,
+      periodMode,
+      periodKey,
+      timingMode,
+    ],
   );
 
   // Inflow by source ID map
@@ -169,16 +259,25 @@ export function IncomeDashboard() {
     [transactions, categories, defaultCurrency, currencies],
   );
 
-  // Filtered transactions for the ledger
+  // Filtered transactions for the ledger (scoped to period + optional source/tag filter)
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
   const filteredTransactions = useMemo(() => {
+    // 1. First filter by active period
+    const inPeriodTxs = transactions.filter((tx) => {
+      const txMonth = getTransactionMonthKey(tx);
+      if (!txMonth) return false;
+      const isTax = tx.destinationId ? taxCategoryIds.has(tx.destinationId) : false;
+      const effectiveMonth = isTax && timingMode === "accrual" ? getPreviousMonthKey(txMonth) : txMonth;
+      return periodMode === "year" ? effectiveMonth.startsWith(`${activeYear}-`) : effectiveMonth === activeMonthKey;
+    });
+
     if (selectedSourceId) {
-      return transactions.filter((tx) => tx.sourceId === selectedSourceId);
+      return inPeriodTxs.filter((tx) => tx.sourceId === selectedSourceId);
     }
 
     if (selectedTaxTag) {
-      return transactions.filter((tx) => {
+      return inPeriodTxs.filter((tx) => {
         if (!tx.destinationId || !taxCategoryIds.has(tx.destinationId)) return false;
         if (selectedTaxTag === "other") {
           return !hasRecognizedTaxTag(tx);
@@ -191,7 +290,7 @@ export function IncomeDashboard() {
     }
 
     // Default: Show all transactions relevant to income sources, tax categories, or currency exchange transfers
-    return transactions.filter((tx) => {
+    return inPeriodTxs.filter((tx) => {
       const srcCat = tx.sourceId ? categoryById.get(tx.sourceId) : undefined;
       const destCat = tx.destinationId ? categoryById.get(tx.destinationId) : undefined;
       const isIncome =
@@ -202,7 +301,17 @@ export function IncomeDashboard() {
         (srcCat?.currencyId?.toUpperCase() === "USD" && destCat?.currencyId?.toUpperCase() === "PLN");
       return isIncome || isTax || isCurrencyTransfer;
     });
-  }, [transactions, selectedSourceId, selectedTaxTag, taxCategoryIds, categoryById]);
+  }, [
+    transactions,
+    periodMode,
+    activeYear,
+    activeMonthKey,
+    timingMode,
+    selectedSourceId,
+    selectedTaxTag,
+    taxCategoryIds,
+    categoryById,
+  ]);
 
   // Active filter label
   const activeFilterLabel = useMemo(() => {
@@ -244,30 +353,184 @@ export function IncomeDashboard() {
     );
   }, []);
 
+  const handlePrevPeriod = () => {
+    if (periodMode === "year") {
+      setActiveYear((y) => y - 1);
+    } else {
+      const [yStr, mStr] = activeMonthKey.split("-");
+      let y = parseInt(yStr, 10);
+      let m = parseInt(mStr, 10) - 1;
+      if (m === 0) {
+        m = 12;
+        y -= 1;
+      }
+      const newKey = `${y}-${String(m).padStart(2, "0")}`;
+      setActiveMonthKey(newKey);
+      setActiveYear(y);
+    }
+  };
+
+  const handleNextPeriod = () => {
+    if (periodMode === "year") {
+      setActiveYear((y) => y + 1);
+    } else {
+      const [yStr, mStr] = activeMonthKey.split("-");
+      let y = parseInt(yStr, 10);
+      let m = parseInt(mStr, 10) + 1;
+      if (m === 13) {
+        m = 1;
+        y += 1;
+      }
+      const newKey = `${y}-${String(m).padStart(2, "0")}`;
+      setActiveMonthKey(newKey);
+      setActiveYear(y);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-6">
-      {/* Top Action Bar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Banknote className="size-4 text-emerald-600 dark:text-emerald-400" />
-          <span>Multi-currency cash flow, tag-attributed tax deductions, and disposable income</span>
+      {/* Top Header & Unified Period Control Bar */}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Banknote className="size-4 text-emerald-600 dark:text-emerald-400" />
+            <span>Multi-currency cash flow, tag-attributed tax deductions, and disposable income</span>
+          </div>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={isLoading}
-          onClick={() => void loadData(undefined, true)}
-          className="h-8 gap-1.5 text-xs"
-        >
-          <RotateCw className={`size-3.5 ${isLoading ? "animate-spin" : ""}`} />
-          <span>Refresh</span>
-        </Button>
+
+        {/* Unified Period & Basis Navigation Bar */}
+        <div className="bg-card/70 border-border/60 flex flex-col justify-between gap-3 rounded-xl border p-3.5 shadow-xs md:flex-row md:items-center">
+          {/* Left: Mode toggle, Steppers & Period Label */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Month / Year Segmented Toggle */}
+            <div className="bg-muted inline-flex rounded-lg p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setPeriodMode("month")}
+                className={cn(
+                  "rounded-md px-3 py-1 font-medium transition-all",
+                  periodMode === "month"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Month Mode
+              </button>
+              <button
+                type="button"
+                onClick={() => setPeriodMode("year")}
+                className={cn(
+                  "rounded-md px-3 py-1 font-medium transition-all",
+                  periodMode === "year"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Year Mode
+              </button>
+            </div>
+
+            {/* Steppers & Label */}
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-xs"
+                onClick={handlePrevPeriod}
+                aria-label="Previous period"
+                className="size-7"
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+              <div className="border-border/60 bg-background/80 flex items-center gap-1.5 rounded-lg border px-3 py-1 font-medium text-xs">
+                <Calendar className="text-muted-foreground size-3.5" />
+                <span>{periodMode === "year" ? String(activeYear) : formatMonthLabel(activeMonthKey)}</span>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-xs"
+                onClick={handleNextPeriod}
+                aria-label="Next period"
+                className="size-7"
+              >
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
+
+            {/* YoY Delta Badges */}
+            {incomeMetrics.yoy && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge
+                  variant="outline"
+                  className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-mono text-[11px] gap-1"
+                >
+                  <span>vs {incomeMetrics.yoy.priorPeriodLabel}:</span>
+                  <span className="font-semibold">
+                    Inflow {incomeMetrics.yoy.grossDelta >= 0 ? "+" : ""}
+                    {formatMoney(incomeMetrics.yoy.grossDelta, defaultCurrency)}
+                    {incomeMetrics.yoy.grossDeltaPct !== null &&
+                      ` (${incomeMetrics.yoy.grossDeltaPct >= 0 ? "+" : ""}${incomeMetrics.yoy.grossDeltaPct.toFixed(1)}%)`}
+                  </span>
+                </Badge>
+                {incomeMetrics.yoy.netDisposableDelta !== 0 && (
+                  <Badge variant="secondary" className="font-mono text-[11px]">
+                    Net {incomeMetrics.yoy.netDisposableDelta >= 0 ? "+" : ""}
+                    {formatMoney(incomeMetrics.yoy.netDisposableDelta, defaultCurrency)}
+                  </Badge>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Cash vs. Accrual Toggle & Refresh Button */}
+          <div className="flex items-center gap-2 self-end md:self-center">
+            <div className="bg-muted inline-flex rounded-lg p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setTimingMode("cash")}
+                className={cn(
+                  "rounded-md px-2.5 py-1 font-medium transition-all",
+                  timingMode === "cash"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Cash Basis
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimingMode("accrual")}
+                className={cn(
+                  "rounded-md px-2.5 py-1 font-medium transition-all",
+                  timingMode === "accrual"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Accrual (M - 1)
+              </button>
+            </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isLoading}
+              onClick={() => void loadData(undefined, true)}
+              className="h-7 gap-1.5 px-2.5 text-xs"
+            >
+              <RotateCw className={`size-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              <span>Refresh</span>
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* 1. Metrics Strip */}
       <IncomeMetricsStrip
         grossIncome={incomeMetrics.grossIncome}
+        rawGrossInflow={incomeMetrics.rawGrossInflow}
         totalTaxes={incomeMetrics.totalTaxes}
         grossZus={incomeMetrics.grossZus}
         pfronCashback={incomeMetrics.pfronCashback}
@@ -290,6 +553,17 @@ export function IncomeDashboard() {
         defaultCurrency={defaultCurrency}
         taxCategoryIds={taxCategoryIds}
         isLoading={isLoading}
+        periodMode={periodMode}
+        activeMonthKey={activeMonthKey}
+        activeYear={activeYear}
+        timingMode={timingMode}
+        onTimingModeChange={setTimingMode}
+        onSelectMonth={(monthKey) => {
+          setPeriodMode("month");
+          setActiveMonthKey(monthKey);
+          const y = parseInt(monthKey.slice(0, 4), 10);
+          if (!isNaN(y)) setActiveYear(y);
+        }}
       />
 
       {/* 3. Main Content Grid */}
@@ -309,6 +583,8 @@ export function IncomeDashboard() {
             incomeBySourceId={incomeBySourceId}
             onOpenNormalizeCategories={() => setIsRenamingDialogOpen(true)}
             onCategoriesUpdated={setCategories}
+            periodMode={periodMode}
+            targetMultiplier={activeMonthsCount}
           />
         </div>
 
@@ -317,6 +593,7 @@ export function IncomeDashboard() {
           <TaxBreakdownCard
             taxBreakdown={taxBreakdown}
             grossIncome={incomeMetrics.grossIncome}
+            rawGrossInflow={incomeMetrics.rawGrossInflow}
             netDisposableIncome={incomeMetrics.netDisposableIncome}
             effectiveTaxRate={incomeMetrics.effectiveTaxRate}
             grossZus={incomeMetrics.grossZus}
@@ -324,6 +601,7 @@ export function IncomeDashboard() {
             netZus={incomeMetrics.netZus}
             passThroughVat={incomeMetrics.passThroughVat}
             fxFriction={incomeMetrics.fxFriction}
+            fxFrictionDetails={incomeMetrics.fxFrictionDetails}
             currency={defaultCurrency}
             selectedTagId={selectedTaxTag}
             onSelectTag={handleSelectTag}
@@ -355,7 +633,7 @@ export function IncomeDashboard() {
         emptyDescription={
           activeFilterLabel
             ? `No transactions found matching ${activeFilterLabel}.`
-            : "No income, tax, or currency exchange transactions found for the period."
+            : `No income, tax, or currency exchange transactions found for ${periodMode === "year" ? activeYear : formatMonthLabel(activeMonthKey)}.`
         }
       />
 

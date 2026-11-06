@@ -73,6 +73,26 @@ describe("MoneyValue component", () => {
     expect(html).not.toContain("≈");
   });
 
+  it("omits secondary conversion subline when foreign amount is zero in ledger mode", () => {
+    const html = renderToString(
+      <MoneyValue amount={0} currency="USD" convertedAmount={0} reportingCurrency="PLN" mode="ledger" />,
+    );
+
+    expect(html).toContain("$0.00");
+    expect(html).not.toContain("≈");
+    expect(html).not.toContain("PLN");
+  });
+
+  it("omits secondary conversion subline when foreign amount is zero in rollup mode", () => {
+    const html = renderToString(
+      <MoneyValue amount={0} currency="USD" convertedAmount={0} reportingCurrency="PLN" mode="rollup" />,
+    );
+
+    expect(html).toContain("PLN");
+    expect(html).not.toContain("orig.");
+    expect(html).not.toContain("USD");
+  });
+
   it("auto-calculates convertedAmount when currencies array is provided", () => {
     const currencies = [
       { id: "USD", rate: 1.0 },

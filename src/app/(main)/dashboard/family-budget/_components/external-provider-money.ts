@@ -46,9 +46,9 @@ const CYRILLIC_UAH_REGEX = /(?:грн|гривн[ая]|приват|моно)/i;
 /**
  * Resolves the currency code from a ExternalProvider category entity, string name, or fallback.
  * Follows strict priority:
- * 1. Category name trailing uppercase 3-letter ISO code or legacy Cyrillic match,
- *    when `category.currencyId` is missing or matches the default currency ("PLN") placeholder.
- * 2. `category.currencyId` if non-empty and not a default placeholder being overridden by an explicit name suffix
+ * 1. `category.currencyId` directly when present and non-empty on a ExternalProviderCategory entity
+ * 2. Category name trailing uppercase 3-letter ISO code or legacy Cyrillic match,
+ *    when `category.currencyId` is missing/empty or when a plain string name is passed
  * 3. Fallback to default currency ("PLN")
  */
 export function resolveCategoryCurrency(
@@ -80,27 +80,11 @@ export function resolveCategoryCurrency(
   }
 
   const rawCurrencyId = typeof category.currencyId === "string" ? category.currencyId.trim().toUpperCase() : "";
-  const isDefaultPlaceholder =
-    !rawCurrencyId || rawCurrencyId === "PLN" || (normDefault.length > 0 && rawCurrencyId === normDefault);
-
-  const name = category.name ? category.name.trim() : "";
-  if (name && isDefaultPlaceholder) {
-    const match = name.match(TRAILING_CURRENCY_CODE_REGEX);
-    if (match) {
-      const code = match[1].toUpperCase();
-      if (KNOWN_CURRENCY_SET.has(code)) {
-        return code;
-      }
-    }
-    if (CYRILLIC_UAH_REGEX.test(name)) {
-      return "UAH";
-    }
-  }
-
   if (rawCurrencyId) {
     return rawCurrencyId;
   }
 
+  const name = category.name ? category.name.trim() : "";
   if (name) {
     const match = name.match(TRAILING_CURRENCY_CODE_REGEX);
     if (match) {

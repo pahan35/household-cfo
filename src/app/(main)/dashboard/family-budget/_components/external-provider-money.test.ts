@@ -16,21 +16,37 @@ import {
 
 describe("external-provider-money", () => {
   describe("resolveCategoryCurrency", () => {
-    it("prioritizes category.currencyId over category name suffix when non-default currency", () => {
-      const cat: ExternalProviderCategory = {
+    it("prioritizes category.currencyId directly over category name suffix", () => {
+      const cat1: ExternalProviderCategory = {
         id: "cat-1",
         name: "Hotels USD",
         currencyId: "EUR",
         categoryType: CategoryType.Expense,
       };
-      expect(resolveCategoryCurrency(cat)).toBe("EUR");
-    });
+      expect(resolveCategoryCurrency(cat1)).toBe("EUR");
 
-    it("prioritizes explicit name suffix when currencyId is default PLN placeholder", () => {
-      const cat1: ExternalProviderCategory = {
+      const cat2: ExternalProviderCategory = {
         id: "cat-sub-uah",
         name: "Subscriptions UAH",
         currencyId: "PLN",
+        categoryType: CategoryType.Expense,
+      };
+      expect(resolveCategoryCurrency(cat2, "PLN")).toBe("PLN");
+
+      const cat3: ExternalProviderCategory = {
+        id: "acc-kantor-usd",
+        name: "Kantor USD",
+        currencyId: "PLN",
+        categoryType: CategoryType.Account,
+      };
+      expect(resolveCategoryCurrency(cat3, "PLN")).toBe("PLN");
+    });
+
+    it("resolves from name suffix when currencyId is missing or empty or on string category", () => {
+      const cat1: ExternalProviderCategory = {
+        id: "cat-sub-uah",
+        name: "Subscriptions UAH",
+        currencyId: undefined,
         categoryType: CategoryType.Expense,
       };
       expect(resolveCategoryCurrency(cat1, "PLN")).toBe("UAH");
@@ -38,10 +54,12 @@ describe("external-provider-money", () => {
       const cat2: ExternalProviderCategory = {
         id: "acc-kantor-usd",
         name: "Kantor USD",
-        currencyId: "PLN",
+        currencyId: "",
         categoryType: CategoryType.Account,
       };
       expect(resolveCategoryCurrency(cat2, "PLN")).toBe("USD");
+
+      expect(resolveCategoryCurrency("Subscriptions UAH", "PLN")).toBe("UAH");
     });
 
     it("extracts 3-letter uppercase currency suffix from category name", () => {
