@@ -11,7 +11,7 @@ The system SHALL authenticate users via Google OAuth (OpenID Connect) and SHALL 
 
 #### Scenario: Allowlisted family member signs in with Google
 - **WHEN** a user completes Google OAuth with a verified email matching an entry in `ALLOWED_USER_EMAILS` (case-insensitive, comma-separated)
-- **THEN** the server issues an encrypted/signed `HttpOnly` session cookie and redirects the user to the requested dashboard route (or `/dashboard/default`)
+- **THEN** the server issues an encrypted/signed `HttpOnly` session cookie and redirects the user to the requested dashboard route (or to `/dashboard/family-budget` in `"focused"` mode and `/dashboard/default` in `"full"` mode when no specific `returnTo` route was requested)
 
 #### Scenario: Non-allowlisted Google account attempts to sign in
 - **WHEN** a user completes Google OAuth with a Google account whose email is not in `ALLOWED_USER_EMAILS` (or whose email is not verified)
