@@ -80,7 +80,7 @@ The system SHALL project the steady-state household budget after moving in, repl
 
 ### Requirement: Local persistence of mortgage scenarios
 
-The system SHALL persist all simulator inputs, property assumptions, financing options, linked Goal IDs, and milestone dates in a dedicated Supabase PostgreSQL relational table (`mortgage_scenarios`) for authenticated family users, with graceful client-side fallback/caching in browser `localStorage`. The system SHALL support creating, renaming, duplicating, and deleting multiple named scenarios, with one designated as the primary household scenario.
+The system SHALL persist all simulator inputs, property assumptions, financing options, linked Goal IDs, and milestone dates in a dedicated Supabase PostgreSQL relational table (`mortgage_scenarios`) for authenticated family users, with graceful client-side fallback/caching in browser `localStorage`. The system SHALL support creating, renaming, duplicating, and deleting multiple named scenarios, with one designated as the primary household scenario. The system SHALL display the standardized `<CloudSyncBadge />` status indicator, automatically replay offline-created scenarios on reconnect, and halt silent local overwriting when concurrent conflicts exist between browser storage and the database.
 
 #### Scenario: Restoring saved mortgage scenario on page reload
 - **WHEN** the user modifies mortgage parameters and refreshes `/dashboard/family-budget/mortgage`
@@ -97,6 +97,10 @@ The system SHALL persist all simulator inputs, property assumptions, financing o
 #### Scenario: Creating and switching between multiple scenarios
 - **WHEN** the user creates a new scenario named "Wola 68m²" and modifies its property parameters
 - **THEN** the system persists "Wola 68m²" independently in Supabase without overwriting the previous scenario, and allows instantaneous switching between scenarios via a scenario selector toolbar
+
+#### Scenario: Auto-replaying offline-created mortgage scenarios
+- **WHEN** the user creates or updates a mortgage scenario while offline resulting in an `offline-*` identifier, and the browser subsequently reconnects
+- **THEN** the repository automatically replays creation to Supabase, updates local storage with the server UUID, and updates the toolbar badge to Cloud Synced
 
 ### Requirement: Multi-scenario comparison matrix
 
