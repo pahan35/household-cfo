@@ -27,16 +27,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { BudgetImpactCard } from "./budget-impact-card";
 import { HomeGoalTrackerCard } from "./home-goal-tracker-card";
-import {
-  calculateAmortization,
-  calculatePropertyAcquisition,
-  DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
-} from "./mortgage-engine";
+import { calculateAmortization, calculatePropertyAcquisition } from "./mortgage-engine";
 import { MortgageFinancingCard } from "./mortgage-financing-card";
 import { MortgageRepository } from "./mortgage-repository";
+import { MortgageScenarioComparisonDialog } from "./mortgage-scenario-comparison-dialog";
+import { MortgageScenarioToolbar } from "./mortgage-scenario-toolbar";
 import type {
   HomeGoalTrackingConfig,
   MortgageFinancingConfig,
+  MortgageScenario,
   MortgageSimulatorConfig,
   OverlapTimelineConfig,
   PropertyAcquisitionConfig,
@@ -54,8 +53,23 @@ export function MortgageDashboard() {
   const [_settings, setSettings] = useState<ExternalProviderSettings>({});
   const [statPoints, setStatPoints] = useState<StatPoint[]>([]);
 
+  // Multi-scenario state
+  const [scenarios, setScenarios] = useState<MortgageScenario[]>(() => {
+    const local = repository.loadLocalScenarios();
+    return local.scenarios;
+  });
+  const [activeScenarioId, setActiveScenarioId] = useState<string>(() => {
+    const local = repository.loadLocalScenarios();
+    return local.activeScenarioId ?? local.scenarios[0]?.id ?? "local-primary";
+  });
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
+
   // Simulator scenario configuration
-  const [config, setConfig] = useState<MortgageSimulatorConfig>(DEFAULT_MORTGAGE_SIMULATOR_CONFIG);
+  const [config, setConfig] = useState<MortgageSimulatorConfig>(() => {
+    return repository.loadConfig();
+  });
 
   const loadData = useCallback(async (signal?: AbortSignal, forceRefresh = false) => {
     setIsLoading(true);
@@ -74,9 +88,23 @@ export function MortgageDashboard() {
       if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
       if (statRes.status === "fulfilled") setStatPoints(statRes.value?.selection?.points ?? []);
 
-      // Load persisted configuration from localStorage
-      const loadedConfig = repository.loadConfig();
-      setConfig(loadedConfig);
+      // Synchronize scenarios from Supabase
+      setIsSyncing(true);
+      try {
+        const remote = await repository.fetchRemoteScenarios(signal);
+        setScenarios(remote.scenarios);
+        setActiveScenarioId(remote.activeScenarioId);
+        setIsOfflineFallback(Boolean(remote.isOfflineFallback));
+
+        const active = remote.scenarios.find((s) => s.id === remote.activeScenarioId) ?? remote.scenarios[0];
+        if (active) {
+          setConfig(active.config);
+        }
+      } catch (err) {
+        console.error("Failed to sync scenarios with Supabase:", err);
+      } finally {
+        setIsSyncing(false);
+      }
     } catch (err) {
       console.error("Failed to load mortgage dashboard data:", err);
       toast.error("Failed to load live ExternalProvider data");
@@ -108,7 +136,11 @@ export function MortgageDashboard() {
       ...patch,
     };
     setConfig(updated);
+    setScenarios((prev) => prev.map((s) => (s.id === activeScenarioId ? { ...s, config: updated } : s)));
     repository.saveConfig(updated);
+    void repository.updateRemoteScenario(activeScenarioId, { config: updated }).catch(() => {
+      // Ignore background sync errors
+    });
   };
 
   const handlePropertyChange = (property: PropertyAcquisitionConfig) => {
@@ -130,17 +162,111 @@ export function MortgageDashboard() {
   const handleReset = () => {
     const reset = repository.resetToDefaults();
     setConfig(reset);
+    updateConfig(reset);
     toast.success("Reset mortgage simulator scenario to project defaults.");
   };
 
   const handleRefresh = () => {
     void loadData(undefined, true);
-    toast.info("Refreshed live ExternalProvider categories and statistics.");
+    toast.info("Refreshed live ExternalProvider categories and cloud scenarios.");
+  };
+
+  // Scenario Management Handlers
+  const handleSelectScenario = (id: string) => {
+    const target = scenarios.find((s) => s.id === id);
+    if (!target) return;
+    setActiveScenarioId(id);
+    setConfig(target.config);
+    repository.saveLocalScenarios(scenarios, id);
+    toast.info(`Switched to scenario: ${target.name}`);
+  };
+
+  const handleCreateScenario = async (name: string) => {
+    try {
+      setIsSyncing(true);
+      const created = await repository.createRemoteScenario({
+        name,
+        isPrimary: false,
+        config,
+      });
+      setScenarios((prev) => [...prev, created]);
+      setActiveScenarioId(created.id);
+      setConfig(created.config);
+      toast.success(`Created scenario: ${created.name}`);
+    } catch {
+      toast.error("Failed to create scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDuplicateScenario = async (id: string, name?: string) => {
+    try {
+      setIsSyncing(true);
+      const duplicated = await repository.duplicateRemoteScenario(id, name);
+      setScenarios((prev) => [...prev, duplicated]);
+      setActiveScenarioId(duplicated.id);
+      setConfig(duplicated.config);
+      toast.success(`Duplicated scenario: ${duplicated.name}`);
+    } catch {
+      toast.error("Failed to duplicate scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleRenameScenario = async (id: string, newName: string) => {
+    try {
+      setIsSyncing(true);
+      const updated = await repository.updateRemoteScenario(id, { name: newName });
+      setScenarios((prev) => prev.map((s) => (s.id === id ? updated : s)));
+      toast.success(`Renamed scenario to: ${updated.name}`);
+    } catch {
+      toast.error("Failed to rename scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDeleteScenario = async (id: string) => {
+    try {
+      setIsSyncing(true);
+      await repository.deleteRemoteScenario(id);
+      const nextList = scenarios.filter((s) => s.id !== id);
+      setScenarios(nextList);
+
+      if (activeScenarioId === id) {
+        const nextActive = nextList.find((s) => s.isPrimary) ?? nextList[0];
+        if (nextActive) {
+          setActiveScenarioId(nextActive.id);
+          setConfig(nextActive.config);
+        }
+      }
+      toast.success("Deleted scenario");
+    } catch {
+      toast.error("Failed to delete scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleSetPrimaryScenario = async (id: string) => {
+    try {
+      setIsSyncing(true);
+      const updated = await repository.setRemotePrimary(id);
+      setScenarios((prev) => prev.map((s) => (s.id === id ? updated : { ...s, isPrimary: false })));
+      toast.success(`Designated "${updated.name}" as primary household plan`);
+    } catch {
+      toast.error("Failed to update primary scenario");
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   if (isLoading && categories.length === 0) {
     return (
       <div className="space-y-4">
+        <Skeleton className="h-12 w-full rounded-lg" />
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[...Array(4)].map((_, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: skeleton preview
@@ -155,6 +281,21 @@ export function MortgageDashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Multi-Scenario Toolbar */}
+      <MortgageScenarioToolbar
+        scenarios={scenarios}
+        activeScenarioId={activeScenarioId}
+        isSyncing={isSyncing}
+        isOfflineFallback={isOfflineFallback}
+        onSelectScenario={handleSelectScenario}
+        onCreateScenario={handleCreateScenario}
+        onDuplicateScenario={handleDuplicateScenario}
+        onRenameScenario={handleRenameScenario}
+        onDeleteScenario={handleDeleteScenario}
+        onSetPrimaryScenario={handleSetPrimaryScenario}
+        onOpenCompare={() => setIsCompareOpen(true)}
+      />
+
       {/* Action Row */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -175,7 +316,7 @@ export function MortgageDashboard() {
             className="text-muted-foreground hover:text-foreground h-8 gap-1.5 text-xs"
           >
             <RotateCcw className="size-3.5" />
-            Reset Scenario
+            Reset Inputs
           </Button>
 
           <Button
@@ -289,6 +430,15 @@ export function MortgageDashboard() {
         financing={config.financing}
         goalTracking={config.goalTracking}
         onGoalTrackingChange={handleGoalTrackingChange}
+      />
+
+      {/* Comparison Modal */}
+      <MortgageScenarioComparisonDialog
+        open={isCompareOpen}
+        onOpenChange={setIsCompareOpen}
+        scenarios={scenarios}
+        activeScenarioId={activeScenarioId}
+        onSelectScenario={handleSelectScenario}
       />
     </div>
   );

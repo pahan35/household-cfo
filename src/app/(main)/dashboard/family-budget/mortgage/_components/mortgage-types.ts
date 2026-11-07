@@ -170,7 +170,18 @@ export interface BudgetImpactSummary {
   stressedHousingDtiPct: number;
 }
 
-export interface MortgageSimulatorStoragePayload {
-  version: 1;
+export interface MortgageScenario {
+  id: string;
+  name: string;
+  isPrimary: boolean;
   config: MortgageSimulatorConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MortgageSimulatorStoragePayload {
+  version: 1 | 2;
+  config?: MortgageSimulatorConfig;
+  scenarios?: MortgageScenario[];
+  activeScenarioId?: string;
 }

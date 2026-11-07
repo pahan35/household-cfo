@@ -5,7 +5,7 @@ import {
   DEFAULT_OVERLAP_TIMELINE_CONFIG,
   DEFAULT_PROPERTY_ACQUISITION_CONFIG,
 } from "./mortgage-engine";
-import type { MortgageSimulatorConfig, MortgageSimulatorStoragePayload } from "./mortgage-types";
+import type { MortgageScenario, MortgageSimulatorConfig, MortgageSimulatorStoragePayload } from "./mortgage-types";
 
 export const MORTGAGE_STORAGE_KEY = "family-budget:mortgage-simulator:v1";
 
@@ -15,11 +15,49 @@ export interface StorageLike {
   removeItem(key: string): void;
 }
 
+export function sanitizeConfig(raw?: Partial<MortgageSimulatorConfig> | null): MortgageSimulatorConfig {
+  if (!raw) return DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+
+  return {
+    property: {
+      ...DEFAULT_PROPERTY_ACQUISITION_CONFIG,
+      ...raw.property,
+    },
+    financing: {
+      ...DEFAULT_MORTGAGE_FINANCING_CONFIG,
+      ...raw.financing,
+    },
+    overlap: {
+      ...DEFAULT_OVERLAP_TIMELINE_CONFIG,
+      ...raw.overlap,
+    },
+    goalTracking: {
+      ...DEFAULT_HOME_GOAL_TRACKING_CONFIG,
+      ...raw.goalTracking,
+      linkedGoalCategoryIds: Array.isArray(raw.goalTracking?.linkedGoalCategoryIds)
+        ? [...raw.goalTracking.linkedGoalCategoryIds]
+        : [],
+    },
+  };
+}
+
+export function createDefaultScenario(id = "default-plan", name = "Primary Plan"): MortgageScenario {
+  return {
+    id,
+    name,
+    isPrimary: true,
+    config: DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export class MortgageRepository {
   private readonly storageKey: string;
   private readonly storage: StorageLike | null = null;
+  private readonly fetchFn: typeof fetch;
 
-  constructor(storageKey = MORTGAGE_STORAGE_KEY, customStorage?: StorageLike) {
+  constructor(storageKey = MORTGAGE_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
     this.storageKey = storageKey;
     if (customStorage) {
       this.storage = customStorage;
@@ -28,68 +66,132 @@ export class MortgageRepository {
     } else {
       this.storage = null;
     }
+    this.fetchFn = customFetch ?? ((...args) => fetch(...args));
   }
 
   /**
-   * Loads persisted mortgage simulator config from localStorage.
-   * Gracefully falls back to default settings if empty, invalid, or corrupted.
+   * Fast synchronous read of the active scenario's configuration.
+   * Maintains backwards-compatibility with existing synchronous callers.
    */
   public loadConfig(): MortgageSimulatorConfig {
+    const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+    const active =
+      scenarios.find((s) => s.id === activeScenarioId) ?? scenarios.find((s) => s.isPrimary) ?? scenarios[0];
+    return active ? active.config : DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+  }
+
+  /**
+   * Synchronously saves configuration for the active (or primary) scenario.
+   */
+  public saveConfig(config: MortgageSimulatorConfig): void {
+    const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+    const targetId = activeScenarioId ?? scenarios.find((s) => s.isPrimary)?.id ?? scenarios[0]?.id;
+
+    if (!targetId || scenarios.length === 0) {
+      const initial: MortgageScenario = {
+        id: "local-primary",
+        name: "Primary Plan",
+        isPrimary: true,
+        config: sanitizeConfig(config),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.saveLocalScenarios([initial], initial.id);
+      return;
+    }
+
+    const updated = scenarios.map((s) =>
+      s.id === targetId
+        ? {
+            ...s,
+            config: sanitizeConfig(config),
+            updatedAt: new Date().toISOString(),
+          }
+        : s,
+    );
+
+    this.saveLocalScenarios(updated, targetId);
+  }
+
+  /**
+   * Loads scenarios stored locally in browser localStorage.
+   * Gracefully migrates v1 single-scenario payload to multi-scenario v2 format.
+   */
+  public loadLocalScenarios(): { scenarios: MortgageScenario[]; activeScenarioId: string | null } {
     if (!this.storage) {
-      return DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+      return { scenarios: [], activeScenarioId: null };
     }
 
     try {
       const raw = this.storage.getItem(this.storageKey);
       if (!raw) {
-        return DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+        return { scenarios: [], activeScenarioId: null };
       }
 
       const parsed = JSON.parse(raw) as MortgageSimulatorStoragePayload | null;
-      if (parsed?.version !== 1 || !parsed.config) {
-        return DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+      if (!parsed) {
+        return { scenarios: [], activeScenarioId: null };
       }
 
-      // Deeply merge with defaults to ensure complete config even if fields were added in updates
-      return {
-        property: {
-          ...DEFAULT_PROPERTY_ACQUISITION_CONFIG,
-          ...parsed.config.property,
-        },
-        financing: {
-          ...DEFAULT_MORTGAGE_FINANCING_CONFIG,
-          ...parsed.config.financing,
-        },
-        overlap: {
-          ...DEFAULT_OVERLAP_TIMELINE_CONFIG,
-          ...parsed.config.overlap,
-        },
-        goalTracking: {
-          ...DEFAULT_HOME_GOAL_TRACKING_CONFIG,
-          ...parsed.config.goalTracking,
-          linkedGoalCategoryIds: Array.isArray(parsed.config.goalTracking.linkedGoalCategoryIds)
-            ? parsed.config.goalTracking.linkedGoalCategoryIds
-            : [],
-        },
-      };
+      // If already v2 format with scenarios array
+      if (Array.isArray(parsed.scenarios)) {
+        if (parsed.scenarios.length === 0) {
+          return { scenarios: [], activeScenarioId: null };
+        }
+        const scenarios: MortgageScenario[] = parsed.scenarios.map((s) => ({
+          id: s.id || `local-${Math.random().toString(36).slice(2, 9)}`,
+          name: s.name || "Saved Plan",
+          isPrimary: Boolean(s.isPrimary),
+          config: sanitizeConfig(s.config),
+          createdAt: s.createdAt || new Date().toISOString(),
+          updatedAt: s.updatedAt || new Date().toISOString(),
+        }));
+
+        let activeId = parsed.activeScenarioId ?? null;
+        if (!activeId || !scenarios.some((s) => s.id === activeId)) {
+          const primary = scenarios.find((s) => s.isPrimary);
+          activeId = primary ? primary.id : scenarios[0].id;
+        }
+
+        return { scenarios, activeScenarioId: activeId };
+      }
+
+      // Legacy v1 single-config format migration
+      if (parsed.config) {
+        const migrated: MortgageScenario = {
+          id: "local-migrated",
+          name: "Primary Plan",
+          isPrimary: true,
+          config: sanitizeConfig(parsed.config),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        return { scenarios: [migrated], activeScenarioId: migrated.id };
+      }
+
+      return { scenarios: [], activeScenarioId: null };
     } catch {
-      return DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+      return { scenarios: [], activeScenarioId: null };
     }
   }
 
   /**
-   * Persists simulator configuration to localStorage.
+   * Persists scenarios array and active scenario ID to localStorage.
    */
-  public saveConfig(config: MortgageSimulatorConfig): void {
-    if (!this.storage) {
-      return;
-    }
+  public saveLocalScenarios(scenarios: MortgageScenario[], activeScenarioId?: string): void {
+    if (!this.storage) return;
 
     try {
+      const primary = scenarios.find((s) => s.isPrimary) ?? scenarios[0];
+      const active = scenarios.find((s) => s.id === activeScenarioId) ?? primary;
+
       const payload: MortgageSimulatorStoragePayload = {
-        version: 1,
-        config,
+        version: 2,
+        scenarios,
+        activeScenarioId: active ? active.id : undefined,
+        config: active ? active.config : DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
       };
+
       this.storage.setItem(this.storageKey, JSON.stringify(payload));
     } catch {
       // Ignore quota errors in constrained environments
@@ -97,7 +199,7 @@ export class MortgageRepository {
   }
 
   /**
-   * Clears persisted configuration and resets to project defaults.
+   * Resets local storage and returns default configuration.
    */
   public resetToDefaults(): MortgageSimulatorConfig {
     if (this.storage) {
@@ -108,5 +210,310 @@ export class MortgageRepository {
       }
     }
     return DEFAULT_MORTGAGE_SIMULATOR_CONFIG;
+  }
+
+  // =========================================================================
+  // Asynchronous Cloud Synchronization & Auto-Migration (Supabase)
+  // =========================================================================
+
+  /**
+   * Fetches scenarios from Supabase.
+   * If remote is empty, automatically seeds it with existing localStorage settings (Task 3.2).
+   * Gracefully falls back to local cache if offline or on network error.
+   */
+  public async fetchRemoteScenarios(signal?: AbortSignal): Promise<{
+    scenarios: MortgageScenario[];
+    activeScenarioId: string;
+    isOfflineFallback?: boolean;
+  }> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch scenarios: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const remoteScenarios: MortgageScenario[] = data.scenarios ?? [];
+
+      // Auto-migration: if remote database is empty, seed it with the current local scenario
+      if (remoteScenarios.length === 0) {
+        const localConfig = this.loadConfig();
+        const seeded = await this.createRemoteScenario({
+          name: "Primary Plan",
+          isPrimary: true,
+          config: localConfig,
+        });
+
+        this.saveLocalScenarios([seeded], seeded.id);
+        return {
+          scenarios: [seeded],
+          activeScenarioId: seeded.id,
+        };
+      }
+
+      // Reconcile active scenario
+      const { activeScenarioId: currentActiveId } = this.loadLocalScenarios();
+      const activeId =
+        currentActiveId && remoteScenarios.some((s) => s.id === currentActiveId)
+          ? currentActiveId
+          : (remoteScenarios.find((s) => s.isPrimary)?.id ?? remoteScenarios[0].id);
+
+      this.saveLocalScenarios(remoteScenarios, activeId);
+
+      return {
+        scenarios: remoteScenarios,
+        activeScenarioId: activeId,
+      };
+    } catch (_err) {
+      // Offline fallback: load from localStorage
+      const local = this.loadLocalScenarios();
+      const scenarios = local.scenarios.length > 0 ? local.scenarios : [createDefaultScenario()];
+      return {
+        scenarios,
+        activeScenarioId: local.activeScenarioId ?? scenarios[0].id,
+        isOfflineFallback: true,
+      };
+    }
+  }
+
+  /**
+   * Creates a new scenario remotely, falling back to local storage if offline.
+   */
+  public async createRemoteScenario(input: {
+    name: string;
+    isPrimary?: boolean;
+    config?: Partial<MortgageSimulatorConfig>;
+  }): Promise<MortgageScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to create scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const created: MortgageScenario = data.scenario;
+
+      // Update local storage
+      const { scenarios } = this.loadLocalScenarios();
+      const updatedList = created.isPrimary
+        ? scenarios.map((s) => ({ ...s, isPrimary: false })).concat(created)
+        : [...scenarios, created];
+
+      this.saveLocalScenarios(updatedList, created.id);
+      return created;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const isFirst = scenarios.length === 0;
+      const isPrimary = input.isPrimary ?? isFirst;
+
+      const fallback: MortgageScenario = {
+        id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: input.name.trim() || "New Scenario",
+        isPrimary,
+        config: sanitizeConfig(input.config),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updatedList = isPrimary
+        ? scenarios.map((s) => ({ ...s, isPrimary: false })).concat(fallback)
+        : [...scenarios, fallback];
+
+      this.saveLocalScenarios(updatedList, fallback.id);
+      return fallback;
+    }
+  }
+
+  /**
+   * Updates an existing scenario remotely, falling back to local storage if offline.
+   */
+  public async updateRemoteScenario(
+    id: string,
+    updates: {
+      name?: string;
+      isPrimary?: boolean;
+      config?: Partial<MortgageSimulatorConfig>;
+    },
+  ): Promise<MortgageScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...updates }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to update scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const updated: MortgageScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      const nextList = scenarios.map((s) => {
+        if (s.id === id) return updated;
+        if (updates.isPrimary && s.isPrimary) return { ...s, isPrimary: false };
+        return s;
+      });
+
+      this.saveLocalScenarios(nextList, id);
+      return updated;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const target = scenarios.find((s) => s.id === id);
+      if (!target) {
+        throw new Error(`Scenario not found locally: ${id}`);
+      }
+
+      const updated: MortgageScenario = {
+        ...target,
+        name: updates.name !== undefined ? updates.name.trim() : target.name,
+        isPrimary: updates.isPrimary ?? target.isPrimary,
+        config: sanitizeConfig({
+          property: { ...target.config.property, ...updates.config?.property },
+          financing: { ...target.config.financing, ...updates.config?.financing },
+          overlap: { ...target.config.overlap, ...updates.config?.overlap },
+          goalTracking: { ...target.config.goalTracking, ...updates.config?.goalTracking },
+        }),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const nextList = scenarios.map((s) => {
+        if (s.id === id) return updated;
+        if (updates.isPrimary && s.isPrimary) return { ...s, isPrimary: false };
+        return s;
+      });
+
+      this.saveLocalScenarios(nextList, id);
+      return updated;
+    }
+  }
+
+  /**
+   * Deletes a scenario remotely and removes it from local cache.
+   */
+  public async deleteRemoteScenario(id: string): Promise<boolean> {
+    try {
+      const res = await this.fetchFn(`/api/family-budget/mortgage/scenarios?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to delete scenario remotely: HTTP ${res.status}`);
+      }
+    } catch {
+      // Proceed to update local storage anyway for offline resiliency
+    }
+
+    const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+    const remaining = scenarios.filter((s) => s.id !== id);
+
+    if (remaining.length > 0 && !remaining.some((s) => s.isPrimary)) {
+      remaining[0].isPrimary = true;
+    }
+
+    const newActiveId =
+      activeScenarioId === id ? (remaining.find((s) => s.isPrimary)?.id ?? remaining[0]?.id ?? null) : activeScenarioId;
+
+    this.saveLocalScenarios(remaining, newActiveId ?? undefined);
+    return true;
+  }
+
+  /**
+   * Sets a scenario as primary remotely.
+   */
+  public async setRemotePrimary(id: string): Promise<MortgageScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_primary", id }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to set primary scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const updated: MortgageScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      const nextList = scenarios.map((s) => (s.id === id ? updated : { ...s, isPrimary: false }));
+      this.saveLocalScenarios(nextList, id);
+      return updated;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      let updated: MortgageScenario | null = null;
+      const nextList = scenarios.map((s) => {
+        if (s.id === id) {
+          updated = { ...s, isPrimary: true, updatedAt: new Date().toISOString() };
+          return updated;
+        }
+        return { ...s, isPrimary: false };
+      });
+
+      if (!updated) {
+        throw new Error(`Scenario not found: ${id}`);
+      }
+
+      this.saveLocalScenarios(nextList, id);
+      return updated;
+    }
+  }
+
+  /**
+   * Duplicates an existing scenario remotely.
+   */
+  public async duplicateRemoteScenario(id: string, newName?: string): Promise<MortgageScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "duplicate", id, name: newName }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to duplicate scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const duplicated: MortgageScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      this.saveLocalScenarios([...scenarios, duplicated], duplicated.id);
+      return duplicated;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const source = scenarios.find((s) => s.id === id);
+      if (!source) {
+        throw new Error(`Scenario not found: ${id}`);
+      }
+
+      const duplicated: MortgageScenario = {
+        id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: newName ?? `${source.name} (Copy)`,
+        isPrimary: false,
+        config: structuredClone(source.config),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.saveLocalScenarios([...scenarios, duplicated], duplicated.id);
+      return duplicated;
+    }
   }
 }

@@ -32,6 +32,7 @@ import {
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-money";
 import { computeComprehensiveTimeValueSummary } from "@/app/(main)/dashboard/family-budget/lifestyle/time-value/_components/time-value-engine";
 import { TimeValueRepository } from "@/app/(main)/dashboard/family-budget/lifestyle/time-value/_components/time-value-repository";
+import { TIME_VALUE_STORAGE_KEY } from "@/app/(main)/dashboard/family-budget/lifestyle/time-value/_components/time-value-types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -106,7 +107,7 @@ export function HomeGoalTrackerCard({
 
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === timeValueRepo["storageKey"]) {
+      if (e.key === TIME_VALUE_STORAGE_KEY) {
         setTimeValueConfig(timeValueRepo.loadConfig());
       }
     };
@@ -278,15 +279,15 @@ export function HomeGoalTrackerCard({
         </div>
 
         {/* Side-Hustle & Reclaimed Time Accelerator Banner */}
-        <div className="rounded-lg border border-primary/25 bg-primary/5 p-3.5 space-y-2.5">
+        <div className="border-primary/25 bg-primary/5 space-y-2.5 rounded-lg border p-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <Sparkles className="size-4 text-primary shrink-0" />
+              <Sparkles className="text-primary size-4 shrink-0" />
               <div>
-                <span className="text-xs font-semibold text-foreground block">
+                <span className="text-foreground block text-xs font-semibold">
                   Side-Hustle &amp; Reclaimed Time Accelerator
                 </span>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-muted-foreground text-[11px]">
                   +{formatMoney(timeValueSummary.household.totalMonthlyCashflowBoostPln, "PLN")}/mo extra cashflow from
                   reclaimed drift
                 </span>
@@ -295,7 +296,7 @@ export function HomeGoalTrackerCard({
             <div className="flex items-center gap-3">
               <Link
                 href="/dashboard/family-budget/lifestyle/time-value"
-                className="text-[11px] text-primary hover:underline flex items-center gap-1 font-medium"
+                className="text-primary flex items-center gap-1 text-[11px] font-medium hover:underline"
               >
                 <span>Time &amp; Opportunity</span>
                 <ExternalLink className="size-3" />
@@ -306,7 +307,7 @@ export function HomeGoalTrackerCard({
                   checked={isAcceleratorActive}
                   onCheckedChange={setIsAcceleratorActive}
                 />
-                <Label htmlFor="accelerator-toggle" className="text-xs font-medium cursor-pointer">
+                <Label htmlFor="accelerator-toggle" className="cursor-pointer text-xs font-medium">
                   {isAcceleratorActive ? "Enabled" : "Preview"}
                 </Label>
               </div>
@@ -314,12 +315,12 @@ export function HomeGoalTrackerCard({
           </div>
 
           {isAcceleratorActive && (
-            <div className="rounded-md border border-primary/20 bg-background/80 p-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            <div className="border-primary/20 bg-background/80 grid grid-cols-1 gap-2 rounded-md border p-2.5 text-xs sm:grid-cols-2">
               <div className="space-y-0.5">
                 <span className="text-muted-foreground text-[11px]">Milestone 1 Accelerated:</span>
                 <div className="font-semibold text-emerald-600 dark:text-emerald-400">
                   {timeValueSummary.mortgageAcceleration.acceleratedMonthsMilestone1} mos{" "}
-                  <span className="text-xs text-muted-foreground font-normal">
+                  <span className="text-muted-foreground text-xs font-normal">
                     (-{timeValueSummary.mortgageAcceleration.monthsSavedMilestone1} mos saved)
                   </span>
                 </div>
@@ -328,7 +329,7 @@ export function HomeGoalTrackerCard({
                 <span className="text-muted-foreground text-[11px]">Milestone 2 Accelerated:</span>
                 <div className="font-semibold text-blue-600 dark:text-blue-400">
                   {timeValueSummary.mortgageAcceleration.acceleratedMonthsMilestone2} mos{" "}
-                  <span className="text-xs text-muted-foreground font-normal">
+                  <span className="text-muted-foreground text-xs font-normal">
                     (-{timeValueSummary.mortgageAcceleration.monthsSavedMilestone2} mos saved)
                   </span>
                 </div>
