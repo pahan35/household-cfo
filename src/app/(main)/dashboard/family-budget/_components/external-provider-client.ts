@@ -14,8 +14,40 @@ import {
   type TransactionPageResponse,
   unarchiveIncomeCategory,
 } from "./external-provider-data";
+import {
+  type ExternalProviderSnapshot,
+  type ExternalProviderSyncConfig,
+  loadSnapshotFromIDB,
+  saveSnapshotToIDB,
+} from "./external-provider-idb";
 
 export const CLIENT_CACHE_TTL_MS = 5 * 60 * 60 * 1000; // 5 hours
+
+let localSnapshot: ExternalProviderSnapshot | null = null;
+
+export function getClientSnapshot(): ExternalProviderSnapshot | null {
+  return localSnapshot;
+}
+
+export function setClientSnapshot(snapshot: ExternalProviderSnapshot | null): void {
+  localSnapshot = snapshot;
+  if (snapshot) {
+    void saveSnapshotToIDB(snapshot);
+  }
+}
+
+export async function hydrateClientFromIDB(): Promise<ExternalProviderSnapshot | null> {
+  const snapshot = await loadSnapshotFromIDB();
+  if (snapshot) {
+    localSnapshot = snapshot;
+  }
+  return snapshot;
+}
+
+export function resetClientState(): void {
+  localSnapshot = null;
+  invalidateExternalProviderClientCache();
+}
 
 type ClientCacheEntry<T = unknown> = {
   data: T;
@@ -176,6 +208,10 @@ export async function getSettings(options?: {
   signal?: AbortSignal;
   forceRefresh?: boolean;
 }): Promise<ExternalProviderSettings> {
+  if (localSnapshot?.settings && Object.keys(localSnapshot.settings).length > 0 && !options?.forceRefresh) {
+    return localSnapshot.settings;
+  }
+
   return cachedClientFetch(
     "settings",
     async () => {
@@ -192,7 +228,12 @@ export async function getSettings(options?: {
       });
 
       const body = await handleResponse<SettingsResponseEnvelope>(response);
-      return body.data ?? {};
+      const data = body.data ?? {};
+      if (localSnapshot) {
+        localSnapshot.settings = data;
+        void saveSnapshotToIDB(localSnapshot);
+      }
+      return data;
     },
     options,
   );
@@ -202,6 +243,10 @@ export async function getCategories(options?: {
   signal?: AbortSignal;
   forceRefresh?: boolean;
 }): Promise<ExternalProviderCategory[]> {
+  if (localSnapshot?.categories && localSnapshot.categories.length > 0 && !options?.forceRefresh) {
+    return localSnapshot.categories;
+  }
+
   return cachedClientFetch(
     "categories",
     async () => {
@@ -228,7 +273,12 @@ export async function getCategories(options?: {
 
       const body = await handleResponse<ExchangePingResponseEnvelope>(response);
       const items = body.data?.items ?? [];
-      return extractExchangeEntities<ExternalProviderCategory>(items, ExchangeKey.Category);
+      const cats = extractExchangeEntities<ExternalProviderCategory>(items, ExchangeKey.Category);
+      if (localSnapshot) {
+        localSnapshot.categories = cats;
+        void saveSnapshotToIDB(localSnapshot);
+      }
+      return cats;
     },
     options,
   );
@@ -238,6 +288,10 @@ export async function getCurrencies(options?: {
   signal?: AbortSignal;
   forceRefresh?: boolean;
 }): Promise<ExternalProviderCurrency[]> {
+  if (localSnapshot?.currencies && localSnapshot.currencies.length > 0 && !options?.forceRefresh) {
+    return localSnapshot.currencies;
+  }
+
   return cachedClientFetch(
     "currencies",
     async () => {
@@ -304,6 +358,16 @@ export async function updateCategoriesOrder(
   });
 
   const body = await handleResponse<ExchangePingResponseEnvelope>(response);
+
+  if (localSnapshot) {
+    const categoryMap = new Map(localSnapshot.categories.map((c) => [c.id, c]));
+    for (const mod of modifiedCategories) {
+      const existing = categoryMap.get(mod.id);
+      categoryMap.set(mod.id, { ...existing, ...mod });
+    }
+    localSnapshot.categories = Array.from(categoryMap.values());
+    void saveSnapshotToIDB(localSnapshot);
+  }
 
   if (options?.allUpdatedCategories) {
     clientCacheState.entries.set("categories", {
@@ -394,6 +458,16 @@ export async function createTransaction(
 
   const body = await handleResponse<{ isSuccess?: boolean; data?: unknown }>(response);
 
+  if (localSnapshot) {
+    const existingIndex = localSnapshot.transactions.findIndex((t) => t.id === tx.id);
+    if (existingIndex >= 0) {
+      localSnapshot.transactions[existingIndex] = { ...tx };
+    } else {
+      localSnapshot.transactions = [tx, ...localSnapshot.transactions];
+    }
+    void saveSnapshotToIDB(localSnapshot);
+  }
+
   invalidateExternalProviderClientCache("categories");
   for (const key of Array.from(clientCacheState.entries.keys())) {
     if (key.startsWith("tx:") || key.startsWith("stat:")) {
@@ -430,6 +504,19 @@ export async function updateTransaction(
 
   const body = await handleResponse<{ isSuccess?: boolean; data?: unknown }>(response);
 
+  if (localSnapshot) {
+    const existingIndex = localSnapshot.transactions.findIndex((t) => t.id === tx.id);
+    if (existingIndex >= 0) {
+      localSnapshot.transactions[existingIndex] = {
+        ...localSnapshot.transactions[existingIndex],
+        ...tx,
+      };
+    } else {
+      localSnapshot.transactions = [tx, ...localSnapshot.transactions];
+    }
+    void saveSnapshotToIDB(localSnapshot);
+  }
+
   invalidateExternalProviderClientCache("categories");
   for (const key of Array.from(clientCacheState.entries.keys())) {
     if (key.startsWith("tx:") || key.startsWith("stat:")) {
@@ -453,6 +540,68 @@ export async function updateTransactionTags(
   return updateTransaction({ ...tx, tags }, options);
 }
 
+export function filterTransactionsLocally(
+  transactions: ExternalProviderTransaction[],
+  options?: {
+    skip?: number;
+    take?: number;
+    period?: { from?: string | null; to?: string | null };
+    categoryIds?: string[];
+  },
+): TransactionPageResponse {
+  const skip = options?.skip ?? 0;
+  const take = options?.take ?? 20;
+  const fromStr = options?.period?.from;
+  const toStr = options?.period?.to;
+  const categoryIds = options?.categoryIds?.filter(Boolean) ?? [];
+  const categorySet = categoryIds.length > 0 ? new Set(categoryIds) : null;
+
+  let filtered = transactions.filter((tx) => !tx.deleted);
+
+  if (categorySet) {
+    filtered = filtered.filter(
+      (tx) => (tx.sourceId && categorySet.has(tx.sourceId)) || (tx.destinationId && categorySet.has(tx.destinationId)),
+    );
+  }
+
+  if (fromStr) {
+    const fromTime = new Date(fromStr).getTime();
+    if (!Number.isNaN(fromTime)) {
+      filtered = filtered.filter((tx) => {
+        const txTime = tx.dateTimestamp ?? (tx.dateTimestampISO ? new Date(tx.dateTimestampISO).getTime() : 0);
+        return txTime >= fromTime;
+      });
+    }
+  }
+
+  if (toStr) {
+    const toTime = new Date(toStr).getTime();
+    if (!Number.isNaN(toTime)) {
+      const endOfDay = toStr.length === 10 ? toTime + 24 * 60 * 60 * 1000 - 1 : toTime;
+      filtered = filtered.filter((tx) => {
+        const txTime = tx.dateTimestamp ?? (tx.dateTimestampISO ? new Date(tx.dateTimestampISO).getTime() : 0);
+        return txTime <= endOfDay;
+      });
+    }
+  }
+
+  filtered.sort((a, b) => {
+    const timeA = a.dateTimestamp ?? (a.dateTimestampISO ? new Date(a.dateTimestampISO).getTime() : 0);
+    const timeB = b.dateTimestamp ?? (b.dateTimestampISO ? new Date(b.dateTimestampISO).getTime() : 0);
+    if (timeB !== timeA) return timeB - timeA;
+    return (b.timestamp ?? 0) - (a.timestamp ?? 0);
+  });
+
+  const total = filtered.length;
+  const slice = filtered.slice(skip, skip + take);
+
+  return {
+    transactions: slice,
+    importedTransactions: [],
+    hasMoreData: skip + take < total,
+  };
+}
+
 export async function getTransactionPage(options?: {
   skip?: number;
   take?: number;
@@ -461,6 +610,10 @@ export async function getTransactionPage(options?: {
   signal?: AbortSignal;
   forceRefresh?: boolean;
 }): Promise<TransactionPageResponse> {
+  if (localSnapshot && localSnapshot.transactions.length > 0 && !options?.forceRefresh) {
+    return filterTransactionsLocally(localSnapshot.transactions, options);
+  }
+
   const skip = options?.skip ?? 0;
   const take = options?.take ?? 20;
   const from = options?.period?.from ?? "";
@@ -513,6 +666,22 @@ export async function getBudgetSelection(options: {
   signal?: AbortSignal;
   forceRefresh?: boolean;
 }): Promise<StatPingData> {
+  if (localSnapshot?.statPoints && localSnapshot.statPoints.length > 0 && !options.forceRefresh) {
+    return {
+      selection: {
+        periodType: 0,
+        statisticType: 0,
+        period: {
+          from: options.from,
+          to: null,
+          before: 40,
+          after: null,
+        },
+        points: localSnapshot.statPoints,
+      },
+    };
+  }
+
   const cacheKey = `stat:${options.from}`;
 
   return cachedClientFetch(
@@ -554,4 +723,50 @@ export async function getBudgetSelection(options: {
     },
     options,
   );
+}
+
+export async function syncClientWithServer(options?: {
+  tier?: "hot" | "warm" | "cold";
+  force?: boolean;
+}): Promise<{ upToDate: boolean; syncVersion: number }> {
+  const currentVersion = localSnapshot?.syncConfig.sync_version ?? 0;
+
+  if (!options?.force && currentVersion > 0) {
+    const res = await fetch(`/api/external-provider/sync?sinceVersion=${currentVersion}`, {
+      headers: { Accept: "application/json" },
+    });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        upToDate: boolean;
+        syncVersion: number;
+        syncConfig?: ExternalProviderSyncConfig;
+        snapshot?: ExternalProviderSnapshot;
+      };
+      if (data.upToDate && localSnapshot && data.syncConfig) {
+        localSnapshot.syncConfig = data.syncConfig;
+        await saveSnapshotToIDB(localSnapshot);
+        return { upToDate: true, syncVersion: data.syncVersion };
+      }
+      if (data.snapshot) {
+        setClientSnapshot(data.snapshot);
+        await saveSnapshotToIDB(data.snapshot);
+        return { upToDate: false, syncVersion: data.syncVersion };
+      }
+    }
+  }
+
+  const res = await fetch("/api/external-provider/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ tier: options?.tier ?? "hot", force: options?.force ?? true }),
+  });
+  if (!res.ok) {
+    throw new ExternalProviderClientError(`Sync failed with status ${res.status}`, res.status);
+  }
+  const data = (await res.json()) as { snapshot?: ExternalProviderSnapshot; syncVersion: number };
+  if (data.snapshot) {
+    setClientSnapshot(data.snapshot);
+    await saveSnapshotToIDB(data.snapshot);
+  }
+  return { upToDate: false, syncVersion: data.syncVersion };
 }

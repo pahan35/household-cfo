@@ -35,11 +35,13 @@ import {
   reorderCategoriesSubset,
   unarchiveAccountCategory,
 } from "./external-provider-data";
+import { useExternalProviderSync } from "./external-provider-sync-toolbar";
 import { DebtAccountInitDialog } from "./debt-account-init-dialog";
 import { DebtClearingPanel } from "./debt-clearing-panel";
 import { RecentTransactionsCard } from "./recent-transactions-card";
 
 export function FamilyBudgetDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -49,7 +51,6 @@ export function FamilyBudgetDashboard() {
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [isInitDebtDialogOpen, setIsInitDebtDialogOpen] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   const loadBaseData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
     setIsLoadingBaseData(true);
@@ -90,12 +91,13 @@ export function FamilyBudgetDashboard() {
   }, []);
 
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadBaseData(controller.signal);
     return () => {
       controller.abort();
     };
-  }, [loadBaseData]);
+  }, [loadBaseData, syncVersion]);
 
   // Read ?categoryId (comma-separated) and ?accountId from the URL on mount and browser Back/Forward
   useEffect(() => {
@@ -180,7 +182,6 @@ export function FamilyBudgetDashboard() {
         });
         toast.success(`Archived "${target?.name ?? "account"}"`);
         void loadBaseData(undefined, true);
-        setRefreshKey((k) => k + 1);
       } catch (err) {
         setCategories(prevCategories);
         toast.error(err instanceof Error ? err.message : "Failed to archive account");
@@ -204,7 +205,6 @@ export function FamilyBudgetDashboard() {
         setSelectedAccountId(newAccount.id);
         toast.success(`Created "${newAccount.name}"`);
         void loadBaseData(undefined, true);
-        setRefreshKey((k) => k + 1);
       } catch (err) {
         setCategories(prevCategories);
         toast.error(err instanceof Error ? err.message : "Failed to create debt account");
@@ -218,7 +218,6 @@ export function FamilyBudgetDashboard() {
     async (tx: ExternalProviderTransaction) => {
       await createTransaction(tx);
       void loadBaseData(undefined, true);
-      setRefreshKey((k) => k + 1);
     },
     [loadBaseData],
   );
@@ -275,30 +274,8 @@ export function FamilyBudgetDashboard() {
     [categories],
   );
 
-  function handleRefreshAll() {
-    void loadBaseData(undefined, true);
-    setRefreshKey((prev) => prev + 1);
-  }
-
   return (
     <div className="flex flex-col gap-4">
-      {/* Top Header Control Bar */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="gap-1.5 px-2.5 py-1 text-xs font-normal">
-            <span className="size-2 animate-pulse rounded-full bg-emerald-500" />
-            Live External API Data
-          </Badge>
-          <span className="text-muted-foreground text-xs">•</span>
-          <span className="text-muted-foreground text-xs font-medium">Default: {defaultCurrency}</span>
-        </div>
-
-        <Button size="sm" variant="outline" onClick={handleRefreshAll} className="gap-1.5 text-xs">
-          <RotateCw className={cn("size-3.5", isLoadingBaseData && "animate-spin")} />
-          <span>Refresh Data</span>
-        </Button>
-      </div>
-
       <AccountLiquidityStrip
         summary={liquiditySummary}
         currency={defaultCurrency}
@@ -338,7 +315,6 @@ export function FamilyBudgetDashboard() {
             />
           )}
           <RecentTransactionsCard
-            key={refreshKey}
             defaultCurrency={defaultCurrency}
             categories={categories}
             selectedAccountId={selectedAccountId}

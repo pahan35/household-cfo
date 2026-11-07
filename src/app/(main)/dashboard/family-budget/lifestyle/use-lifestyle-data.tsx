@@ -17,6 +17,7 @@ import type {
   ExternalProviderSettings,
   ExternalProviderTransaction,
 } from "../_components/external-provider-data";
+import { useExternalProviderSync } from "../_components/external-provider-sync-toolbar";
 
 export interface LifestyleDataContextValue {
   settings: ExternalProviderSettings | null;
@@ -37,6 +38,7 @@ const BATCH_SIZE = 500;
 const MAX_PAGES = 10; // Load up to 5,000 transactions
 
 export function LifestyleDataProvider({ children }: { children: ReactNode }) {
+  const { syncVersion } = useExternalProviderSync();
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -70,32 +72,15 @@ export function LifestyleDataProvider({ children }: { children: ReactNode }) {
       setCategories(categoriesRes);
       setCurrencies(currenciesRes);
 
-      // Paged load for all-time transactions
-      let skip = 0;
-      let allLoadedTx: ExternalProviderTransaction[] = [];
-      let pageIndex = 0;
+      // Load transactions from unified ledger
+      const pageRes = await getTransactionPage({
+        skip: 0,
+        take: 5000,
+        signal,
+        forceRefresh,
+      });
 
-      while (pageIndex < MAX_PAGES) {
-        if (signal?.aborted) return;
-        const pageRes = await getTransactionPage({
-          skip,
-          take: BATCH_SIZE,
-          signal,
-          forceRefresh,
-        });
-
-        const txs = pageRes.transactions ?? [];
-        allLoadedTx = [...allLoadedTx, ...txs];
-
-        if (!pageRes.hasMoreData || txs.length === 0) {
-          break;
-        }
-
-        skip += txs.length;
-        pageIndex++;
-      }
-
-      setTransactions(allLoadedTx);
+      setTransactions(pageRes.transactions ?? []);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") return;
       setError(err instanceof Error ? err : new Error(String(err)));
@@ -108,10 +93,11 @@ export function LifestyleDataProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadAllData(controller.signal);
     return () => controller.abort();
-  }, [loadAllData]);
+  }, [loadAllData, syncVersion]);
 
   const refresh = useCallback(async () => {
     await loadAllData(undefined, true);

@@ -11,6 +11,7 @@ import type {
   ExternalProviderSettings,
   ExternalProviderTransaction,
 } from "../../_components/external-provider-data";
+import { useExternalProviderSync } from "../../_components/external-provider-sync-toolbar";
 import { type BenefitCeilingsSummary, computeBenefitSpendCeilings } from "./benefit-matcher";
 import { BudgetImpactView } from "./budget-impact-view";
 import { DEFAULT_COMPARATOR_CONFIG } from "./compensation-engine";
@@ -24,6 +25,7 @@ import { ReverseRecruiterCard } from "./reverse-recruiter-card";
 const repository = new LocalStorageOfferRepository();
 
 export function OfferComparatorDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   // State for tracks and config
   const [tracks, setTracks] = useState<OfferTrack[]>([]);
   const [config, setConfig] = useState<ComparatorGlobalConfig>(DEFAULT_COMPARATOR_CONFIG);
@@ -59,6 +61,7 @@ export function OfferComparatorDashboard() {
 
   // 2. Fetch ExternalProvider live data
   useEffect(() => {
+    if (syncVersion < 0) return;
     async function loadExternalProvider() {
       try {
         const [catRes, curRes, txRes] = await Promise.allSettled([
@@ -88,7 +91,7 @@ export function OfferComparatorDashboard() {
       }
     }
     void loadExternalProvider();
-  }, []);
+  }, [syncVersion]);
 
   // 3. Compute live benefit spend ceilings
   const ceilings: BenefitCeilingsSummary = useMemo(() => {

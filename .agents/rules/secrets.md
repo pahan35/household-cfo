@@ -46,6 +46,17 @@ In production on Vercel, the following environment variables configure Google OA
 
 Never log or expose `GOOGLE_CLIENT_SECRET`, `AUTH_SECRET`, or `ALLOWED_USER_EMAILS`. Never expose these variables with a `NEXT_PUBLIC_` prefix.
 
+## Database & Cron Secrets
+
+In production on Vercel, the following environment variables configure the shared PostgreSQL persistence layer and scheduled synchronization jobs:
+
+- `DATABASE_URL`: Direct or pooled PostgreSQL connection string for Supabase
+- `SUPABASE_URL`: Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service role key (elevated server-side access to bypass RLS)
+- `CRON_SECRET`: Bearer token configured in Vercel project settings to authenticate Vercel Cron invocation of `/api/external-provider/cron/daily-sync`
+
+Never log or expose `DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, or `CRON_SECRET`. Never prefix these with `NEXT_PUBLIC_`.
+
 ## How to work with the upstream API
 
 - Call the local proxy at `/api/external-provider/...` from client code. It runs server-side and attaches the credential for you.

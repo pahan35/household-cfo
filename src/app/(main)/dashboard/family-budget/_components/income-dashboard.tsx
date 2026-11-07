@@ -21,6 +21,7 @@ import {
   formatMoney,
   type StatPingData,
 } from "./external-provider-data";
+import { useExternalProviderSync } from "./external-provider-sync-toolbar";
 import { IncomeMetricsStrip } from "./income-metrics-strip";
 import { IncomeSourcesCard } from "./income-sources-card";
 import { IncomeTaxTimelineCard } from "./income-tax-timeline-card";
@@ -42,6 +43,7 @@ import {
 import { parsePointDate } from "./yoy-transforms";
 
 export function IncomeDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -106,10 +108,11 @@ export function IncomeDashboard() {
   }, []);
 
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadData(controller.signal);
     return () => controller.abort();
-  }, [loadData]);
+  }, [loadData, syncVersion]);
 
   // Default to latest transaction month if current month has no activity
   useEffect(() => {

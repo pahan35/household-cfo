@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 
 import { getBudgetSelection, getCategories, getSettings } from "./external-provider-client";
 import type { ExternalProviderCategory, ExternalProviderSettings, StatPingData, StatPoint } from "./external-provider-data";
+import { useExternalProviderSync } from "./external-provider-sync-toolbar";
 import { CpiInflationCard } from "./cpi-inflation-card";
 import { transformExpenses } from "./expense-transforms";
 import { FxSimulatorCard } from "./fx-simulator-card";
@@ -19,6 +20,7 @@ import { useExclusionPresets } from "./use-exclusion-presets";
 import { parsePointDate } from "./yoy-transforms";
 
 export function FxInflationDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
@@ -87,11 +89,12 @@ export function FxInflationDashboard() {
   );
 
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadBaseData(controller.signal);
     void loadStatData(controller.signal);
     return () => controller.abort();
-  }, [loadBaseData, loadStatData]);
+  }, [loadBaseData, loadStatData, syncVersion]);
 
   // Compute latest month's controllable expense run rate to pre-populate the forward simulator
   const latestControllableExpense = useMemo(() => {
@@ -119,23 +122,11 @@ export function FxInflationDashboard() {
     return transformed.totalControllableExpense > 0 ? Math.round(transformed.totalControllableExpense) : 12000;
   }, [statData, categories, presetController.activePreset]);
 
-  const isRefreshing = isLoadingBaseData || isLoadingStatData;
-
-  const handleRefreshAll = () => {
-    void loadBaseData(undefined, true);
-    void loadStatData(undefined, true);
-  };
-
   return (
     <div className="flex flex-col gap-4">
       {/* Top Header Control Bar */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline" className="gap-1.5 px-2.5 py-1 text-xs font-normal">
-            <span className="size-2 animate-pulse rounded-full bg-emerald-500" />
-            Live External API Stats
-          </Badge>
-          <span className="text-muted-foreground text-xs">•</span>
           <span className="text-muted-foreground text-xs font-medium">
             Account Base: {settings?.defaultCurrency ?? "PLN"}
           </span>
@@ -163,18 +154,7 @@ export function FxInflationDashboard() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefreshAll}
-            disabled={isRefreshing}
-            className="h-8 gap-1.5 text-xs"
-          >
-            <RotateCw className={cn("size-3.5", isRefreshing && "animate-spin")} />
-            <span>Refresh</span>
-          </Button>
-        </div>
+        <div className="flex items-center gap-2" />
       </div>
 
       {/* CPI Inflation Erosion Analysis */}

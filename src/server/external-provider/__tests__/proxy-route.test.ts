@@ -10,6 +10,7 @@ import { AUTH_COOKIE_NAME, createSessionToken } from "@/server/auth/session";
 
 import { clearProxyCache, getProxyCachedResponse, setProxyCachedResponse } from "../cache";
 import { type CredentialIssue, onCredentialIssue, resetCredentialIssueHandlers } from "../credentials";
+import { LocalFileExternalProviderStore, setTestExternalProviderStore } from "../db";
 import { injectUserId } from "../http";
 import * as tokenModule from "../token";
 
@@ -175,6 +176,82 @@ describe("Proxy Route write logging and request body isolation", () => {
     expect(getProxyCachedResponse("POST:/Exchange/Ping::h1")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/stat/ping:?data=xyz:h2")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/settings::h3")).toBeDefined();
+  });
+
+  it("performs write-through upsert into ExternalProviderStore on /api/transaction/create and bumps sync_version", async () => {
+    const store = new LocalFileExternalProviderStore({ inMemory: true });
+    setTestExternalProviderStore(store);
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return new Response(JSON.stringify({ isSuccess: true, data: { id: "tx-new-1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const txPayload = [{ id: "tx-new-1", sourceAmount: 250, timestamp: 99999 }];
+    const req = new NextRequest("http://localhost:3000/api/external-provider/api/transaction/create", {
+      method: "POST",
+      body: JSON.stringify(txPayload),
+      headers: { "content-type": "application/json" },
+    });
+
+    const context = { params: Promise.resolve({ path: ["api", "transaction", "create"] }) };
+    const res = await POST(req, context);
+
+    expect(res.status).toBe(200);
+
+    const savedTxs = await store.getTransactions();
+    expect(savedTxs).toHaveLength(1);
+    expect(savedTxs[0].id).toBe("tx-new-1");
+
+    const config = await store.getSyncConfig();
+    expect(config.sync_version).toBe(1);
+    expect(config.sync_status).toBe("reconciling");
+
+    setTestExternalProviderStore(null);
+  });
+
+  it("performs write-through upsert into ExternalProviderStore on category reorder /Exchange/Ping", async () => {
+    const store = new LocalFileExternalProviderStore({ inMemory: true });
+    setTestExternalProviderStore(store);
+
+    globalThis.fetch = vi.fn().mockImplementation(async () => {
+      return new Response(JSON.stringify({ isSuccess: true, data: { items: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    const categoryWriteBody = {
+      items: [
+        {
+          key: 2,
+          entityJson: JSON.stringify([{ id: "cat-written", name: "Groceries Reordered", order: 1 }]),
+        },
+      ],
+    };
+
+    const req = new NextRequest("http://localhost:3000/api/external-provider/Exchange/Ping", {
+      method: "POST",
+      body: JSON.stringify(categoryWriteBody),
+      headers: { "content-type": "application/json" },
+    });
+
+    const context = { params: Promise.resolve({ path: ["Exchange", "Ping"] }) };
+    const res = await POST(req, context);
+
+    expect(res.status).toBe(200);
+
+    const savedCats = await store.getCategories(true);
+    expect(savedCats).toHaveLength(1);
+    expect(savedCats[0].id).toBe("cat-written");
+
+    const config = await store.getSyncConfig();
+    expect(config.sync_version).toBe(1);
+    expect(config.sync_status).toBe("reconciling");
+
+    setTestExternalProviderStore(null);
   });
 
   describe("defense-in-depth auth enforcement", () => {

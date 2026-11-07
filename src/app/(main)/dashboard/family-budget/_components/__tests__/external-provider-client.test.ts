@@ -12,15 +12,27 @@ import {
 import {
   archiveIncomeSource,
   createTransaction,
+  filterTransactionsLocally,
+  getBudgetSelection,
+  getCategories,
   getExternalProviderClientCacheEntry,
+  getCurrencies,
+  getSettings,
+  getTransactionPage,
+  hydrateClientFromIDB,
   invalidateExternalProviderClientCache,
   reorderIncomeCategories,
+  resetClientState,
+  setClientSnapshot,
   setExternalProviderClientCacheEntry,
+  syncClientWithServer,
   unarchiveIncomeSource,
   updateCategoriesOrder,
+  updateTransaction,
   updateTransactionTags,
 } from "../external-provider-client";
 import { CategoryType, type ExternalProviderCategory, type ExternalProviderTransaction, ExchangeKey } from "../external-provider-data";
+import { type ExternalProviderSnapshot, clearIDB, loadSnapshotFromIDB, saveSnapshotToIDB } from "../external-provider-idb";
 
 describe("Proxy Cache Invalidation (invalidateProxyCacheByPathPrefix)", () => {
   beforeEach(() => {
@@ -398,5 +410,212 @@ describe("Category Write Proxy Invalidation", () => {
     expect(getProxyCachedResponse("POST:/Exchange/Ping::h1")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/stat/ping:?data=xyz:h2")).toBeUndefined();
     expect(getProxyCachedResponse("GET:/settings::h3")).toBeDefined();
+  });
+});
+
+describe("IndexedDB hydration & Unified Local Ledger (external-provider-client)", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(async () => {
+    resetClientState();
+    await clearIDB();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    resetClientState();
+    await clearIDB();
+    vi.restoreAllMocks();
+  });
+
+  const mockSnapshot: ExternalProviderSnapshot = {
+    syncConfig: {
+      id: "default",
+      sync_version: 3,
+      sync_status: "idle",
+      last_synced_at: "2026-11-06T12:00:00Z",
+      last_warm_reconcile_at: "2026-11-06T12:00:00Z",
+      last_full_reconcile_at: "2026-11-06T12:00:00Z",
+      last_cron_run_at: null,
+      last_error: null,
+      watermark_tx_ticks: 99999,
+      hot_pull_months: 3,
+      auto_poll_interval_minutes: 0,
+      settings_json: { language: "en", defaultCurrency: "c-pln" },
+      currencies_json: [{ id: "c-pln", name: "PLN", symbol: "zł" }],
+      updated_at: "2026-11-06T12:00:00Z",
+    },
+    settings: { language: "en", defaultCurrency: "c-pln" },
+    currencies: [{ id: "c-pln", name: "PLN", symbol: "zł" }],
+    categories: [
+      { id: "cat-groceries", name: "Groceries", categoryType: CategoryType.Expense, order: 0 },
+      { id: "acc-bank", name: "Bank Account", categoryType: CategoryType.Account, order: 1 },
+    ],
+    transactions: [
+      {
+        id: "tx-1",
+        dateTimestamp: new Date("2026-11-05T10:00:00Z").getTime(),
+        dateTimestampISO: "2026-11-05T10:00:00Z",
+        sourceId: "acc-bank",
+        destinationId: "cat-groceries",
+        sourceAmount: 150,
+        destinationAmount: 150,
+      },
+      {
+        id: "tx-2",
+        dateTimestamp: new Date("2026-10-15T10:00:00Z").getTime(),
+        dateTimestampISO: "2026-10-15T10:00:00Z",
+        sourceId: "acc-bank",
+        destinationId: "cat-groceries",
+        sourceAmount: 200,
+        destinationAmount: 200,
+      },
+      {
+        id: "tx-3",
+        dateTimestamp: new Date("2026-09-01T10:00:00Z").getTime(),
+        dateTimestampISO: "2026-09-01T10:00:00Z",
+        sourceId: "acc-bank",
+        destinationId: "cat-groceries",
+        sourceAmount: 300,
+        destinationAmount: 300,
+      },
+    ],
+    statPoints: [
+      { id: "sp-2026-11", date: "2026-11-01", categories: [] },
+      { id: "sp-2026-10", date: "2026-10-01", categories: [] },
+    ],
+  };
+
+  it("hydrates from IDB and serves getSettings, getCategories, and getCurrencies without fetch calls", async () => {
+    await saveSnapshotToIDB(mockSnapshot);
+    const hydrated = await hydrateClientFromIDB();
+    expect(hydrated?.syncConfig.sync_version).toBe(3);
+
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy;
+
+    const settings = await getSettings();
+    const categories = await getCategories();
+    const currencies = await getCurrencies();
+    const budgetSelection = await getBudgetSelection({ from: "2026-11-01" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(settings.defaultCurrency).toBe("c-pln");
+    expect(categories).toHaveLength(2);
+    expect(currencies).toHaveLength(1);
+    expect(budgetSelection.selection?.points).toHaveLength(2);
+  });
+
+  it("getTransactionPage filters transactions locally from unified ledger", async () => {
+    setClientSnapshot(mockSnapshot);
+
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy;
+
+    const directFiltered = filterTransactionsLocally(mockSnapshot.transactions, { take: 1 });
+    expect(directFiltered.transactions).toHaveLength(1);
+
+    // Filter by period
+    const novPage = await getTransactionPage({
+      period: { from: "2026-11-01", to: "2026-11-30" },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(novPage.transactions).toHaveLength(1);
+    expect(novPage.transactions?.[0].id).toBe("tx-1");
+
+    // Filter by categoryIds
+    const catPage = await getTransactionPage({
+      categoryIds: ["cat-groceries"],
+      take: 2,
+    });
+    expect(catPage.transactions).toHaveLength(2);
+    expect(catPage.hasMoreData).toBe(true);
+
+    // Pagination
+    const page2 = await getTransactionPage({
+      categoryIds: ["cat-groceries"],
+      skip: 2,
+      take: 2,
+    });
+    expect(page2.transactions).toHaveLength(1);
+    expect(page2.transactions?.[0].id).toBe("tx-3");
+    expect(page2.hasMoreData).toBe(false);
+  });
+
+  it("createTransaction and updateTransaction perform optimistic write-through into local snapshot", async () => {
+    setClientSnapshot(mockSnapshot);
+
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL) => {
+      const urlStr = url.toString();
+      if (urlStr.includes("/api/transaction/create") || urlStr.includes("/api/transaction/update")) {
+        return new Response(JSON.stringify({ isSuccess: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 404 });
+    });
+
+    const newTx: ExternalProviderTransaction = {
+      id: "tx-brand-new",
+      dateTimestamp: Date.now(),
+      sourceId: "acc-bank",
+      destinationId: "cat-groceries",
+      sourceAmount: 99,
+    };
+
+    await createTransaction(newTx);
+
+    // Verify local snapshot contains newTx immediately
+    const localPage = await getTransactionPage({ take: 10 });
+    expect(localPage.transactions?.find((t) => t.id === "tx-brand-new")).toBeDefined();
+
+    // Verify updateTransaction updates local snapshot in place
+    await updateTransaction({ ...newTx, sourceAmount: 149 });
+    const updatedPage = await getTransactionPage({ take: 10 });
+    const found = updatedPage.transactions?.find((t) => t.id === "tx-brand-new");
+    expect(found?.sourceAmount).toBe(149);
+  });
+
+  it("syncClientWithServer handles lightweight upToDate confirmation and full snapshot bootstrap", async () => {
+    setClientSnapshot(mockSnapshot);
+
+    // 1. Lightweight upToDate confirmation
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          upToDate: true,
+          syncVersion: 3,
+          syncConfig: mockSnapshot.syncConfig,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const syncRes1 = await syncClientWithServer();
+    expect(syncRes1.upToDate).toBe(true);
+    expect(syncRes1.syncVersion).toBe(3);
+
+    // 2. Updated snapshot from server
+    const updatedSnapshot: ExternalProviderSnapshot = {
+      ...mockSnapshot,
+      syncConfig: { ...mockSnapshot.syncConfig, sync_version: 4 },
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          upToDate: false,
+          syncVersion: 4,
+          snapshot: updatedSnapshot,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const syncRes2 = await syncClientWithServer();
+    expect(syncRes2.upToDate).toBe(false);
+    expect(syncRes2.syncVersion).toBe(4);
+    expect(await loadSnapshotFromIDB()).toEqual(updatedSnapshot);
   });
 });

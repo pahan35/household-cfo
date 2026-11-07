@@ -19,6 +19,7 @@ import type {
   ExternalProviderTransaction,
   StatPingData,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
+import { useExternalProviderSync } from "@/app/(main)/dashboard/family-budget/_components/external-provider-sync-toolbar";
 import { useExclusionPresets } from "@/app/(main)/dashboard/family-budget/_components/use-exclusion-presets";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ import type {
 } from "./runway-types";
 
 export function RunwayDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -118,10 +120,11 @@ export function RunwayDashboard() {
   }, []);
 
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadData(controller.signal);
     return () => controller.abort();
-  }, [loadData]);
+  }, [loadData, syncVersion]);
 
   // 2. Auto-detect recent Month-1 VAT-7 and PPE outflows from transactions
   const detectedTaxes = useMemo(() => {

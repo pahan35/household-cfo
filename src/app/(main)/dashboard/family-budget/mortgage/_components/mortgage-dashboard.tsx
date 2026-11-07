@@ -19,6 +19,7 @@ import {
   formatMoney,
   type StatPoint,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
+import { useExternalProviderSync } from "@/app/(main)/dashboard/family-budget/_components/external-provider-sync-toolbar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -46,6 +47,7 @@ import { PropertyAcquisitionCard } from "./property-acquisition-card";
 const repository = new MortgageRepository();
 
 export function MortgageDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   const [isLoading, setIsLoading] = useState(true);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -84,10 +86,11 @@ export function MortgageDashboard() {
   }, []);
 
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadData(controller.signal);
     return () => controller.abort();
-  }, [loadData]);
+  }, [loadData, syncVersion]);
 
   // Derived financial models
   const propertySummary = useMemo(() => {

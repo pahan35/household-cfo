@@ -2,12 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { cn } from "cn";
 import { endOfMonth, format, isValid, parseISO, startOfMonth } from "date-fns";
-import { RotateCw, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
@@ -44,6 +42,7 @@ import {
   type StatPingData,
   unarchiveExpenseCategory,
 } from "./external-provider-data";
+import { useExternalProviderSync } from "./external-provider-sync-toolbar";
 import { ExpensePieCard } from "./expense-pie-card";
 import { type CompareMode, computePeriodComparison, type ExpenseSlice, transformExpenses } from "./expense-transforms";
 import { MonthPeriodPicker } from "./month-period-picker";
@@ -52,6 +51,7 @@ import { extractAvailableMonths, parsePointDate, resolveBaselineMonth } from "./
 import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 
 export function BudgetOverviewDashboard() {
+  const { syncVersion } = useExternalProviderSync();
   const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -199,15 +199,16 @@ export function BudgetOverviewDashboard() {
     [periodFilter],
   );
 
-  // Initial mount load for base data and 40-month statistics series
+  // Initial mount load for base data and 40-month statistics series (and when syncVersion increments)
   useEffect(() => {
+    if (syncVersion < 0) return;
     const controller = new AbortController();
     void loadBaseData(controller.signal);
     void loadStatData(controller.signal);
     return () => {
       controller.abort();
     };
-  }, [loadBaseData, loadStatData]);
+  }, [loadBaseData, loadStatData, syncVersion]);
 
   // Load period transactions when active period filter changes
   useEffect(() => {
@@ -301,23 +302,18 @@ export function BudgetOverviewDashboard() {
     const controller = new AbortController();
 
     async function fetchMissingTransactions() {
-      const chunkSize = 25;
-      for (let i = 0; i < missingIds.length; i += chunkSize) {
-        if (controller.signal.aborted) break;
-        const chunk = missingIds.slice(i, i + chunkSize);
-        try {
-          const res = await getTransactionPage({
-            categoryIds: chunk,
-            take: Math.min(100, Math.max(20, chunk.length * 2)),
-            signal: controller.signal,
-          });
-          const txs = res.transactions ?? [];
-          if (txs.length > 0) {
-            setTargetedTransactions((prev) => [...prev, ...txs]);
-          }
-        } catch (err) {
-          if (err instanceof Error && err.name === "AbortError") break;
+      try {
+        const res = await getTransactionPage({
+          categoryIds: missingIds,
+          take: 500,
+          signal: controller.signal,
+        });
+        const txs = res.transactions ?? [];
+        if (txs.length > 0) {
+          setTargetedTransactions((prev) => [...prev, ...txs]);
         }
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
       }
     }
 
@@ -492,28 +488,12 @@ export function BudgetOverviewDashboard() {
   }, [transformed, categories, selectedTraceCategory, traceSyncTick]);
 
   const isLoadingPeriodData = isLoadingStatData || isLoadingPeriodTx;
-  const isRefreshing = isLoadingBaseData || isLoadingStatData || isLoadingPeriodTx;
-
-  function handleRefreshAll() {
-    queriedMissingCategoryIdsRef.current.clear();
-    setTargetedTransactions([]);
-    void loadBaseData(undefined, true);
-    void loadStatData(undefined, true);
-    void loadPeriodTransactions(undefined, true);
-  }
 
   return (
     <div className="flex flex-col gap-4">
       {/* Top Header Control Bar */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="gap-1.5 px-2.5 py-1 text-xs font-normal">
-            <span className="size-2 animate-pulse rounded-full bg-emerald-500" />
-            Live External API Data
-          </Badge>
-          <span className="text-muted-foreground text-xs">•</span>
-          <span className="text-muted-foreground text-xs font-medium">Default: {defaultCurrency}</span>
-        </div>
+        <div className="text-muted-foreground text-xs font-medium">Default currency: {defaultCurrency}</div>
 
         <div className="flex flex-wrap items-center gap-2">
           <MonthPeriodPicker
@@ -526,11 +506,6 @@ export function BudgetOverviewDashboard() {
             onCompareCustomDateChange={setCompareCustomDateStr}
             baselineResolution={baselineResolution}
           />
-
-          <Button size="sm" variant="outline" onClick={handleRefreshAll} className="gap-1.5 text-xs">
-            <RotateCw className={cn("size-3.5", isRefreshing && "animate-spin")} />
-            <span>Refresh Data</span>
-          </Button>
 
           <Button size="sm" variant="outline" onClick={() => setIsRenamingDialogOpen(true)} className="gap-1.5 text-xs">
             <Sparkles className="text-primary size-3.5" />
@@ -646,7 +621,9 @@ export function BudgetOverviewDashboard() {
         defaultScope="expense"
         onRenamed={(updatedCategories) => {
           setCategories(updatedCategories);
-          handleRefreshAll();
+          void loadBaseData(undefined, true);
+          void loadStatData(undefined, true);
+          void loadPeriodTransactions(undefined, true);
         }}
       />
     </div>

@@ -48,6 +48,9 @@ secrets.*.json
 # vercel
 .vercel
 
+# local cache
+/.cache/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

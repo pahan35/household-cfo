@@ -11,6 +11,7 @@ import {
   UPSTREAM_ORIGIN,
 } from "@/server/external-provider/config";
 import { isRedirectError, isStaleUpstreamResponse, notifyCredentialIssue } from "@/server/external-provider/credentials";
+import { getExternalProviderStore } from "@/server/external-provider/db";
 import {
   buildUpstreamErrorBody,
   injectUserId,
@@ -159,16 +160,6 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
   const isTransactionWrite =
     method === "POST" && (upstreamPath === "/api/transaction/create" || upstreamPath === "/api/transaction/update");
 
-  if (isExchangeWritePayload) {
-    invalidateProxyCacheByPathPrefix("/Exchange/Ping");
-    invalidateProxyCacheByPathPrefix("/stat/ping");
-  }
-  if (isTransactionWrite) {
-    invalidateProxyCacheByPathPrefix("/api/transaction");
-    invalidateProxyCacheByPathPrefix("/Exchange/Ping");
-    invalidateProxyCacheByPathPrefix("/stat/ping");
-  }
-
   const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
   const bypassCache =
     cacheControl.includes("no-cache") ||
@@ -186,16 +177,6 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
         cache: "no-store",
         redirect: "error",
       });
-
-      if (isExchangeWritePayload) {
-        invalidateProxyCacheByPathPrefix("/Exchange/Ping");
-        invalidateProxyCacheByPathPrefix("/stat/ping");
-      }
-      if (isTransactionWrite) {
-        invalidateProxyCacheByPathPrefix("/api/transaction");
-        invalidateProxyCacheByPathPrefix("/Exchange/Ping");
-        invalidateProxyCacheByPathPrefix("/stat/ping");
-      }
 
       const contentType = upstreamResponse.headers.get("content-type");
       const isHtmlPayload = Boolean(contentType?.toLowerCase().includes("text/html"));
@@ -250,6 +231,54 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
           headers: { "content-type": "application/json" },
           status: upstreamResponse.status,
         });
+      }
+
+      if (isTransactionWrite && requestBody && requestBody.byteLength > 0) {
+        try {
+          const rawText = new TextDecoder().decode(requestBody);
+          const parsed = JSON.parse(rawText);
+          const txs = Array.isArray(parsed) ? parsed : [parsed];
+          const store = getExternalProviderStore();
+          await store.upsertTransactions(txs);
+          const conf = await store.getSyncConfig();
+          await store.updateSyncConfig({
+            sync_version: conf.sync_version + 1,
+            sync_status: "reconciling",
+          });
+        } catch {
+          // non-blocking
+        }
+        invalidateProxyCacheByPathPrefix("/api/transaction");
+        invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+        invalidateProxyCacheByPathPrefix("/stat/ping");
+      }
+
+      if (isExchangeWritePayload && requestBody && requestBody.byteLength > 0) {
+        try {
+          const rawText = new TextDecoder().decode(requestBody);
+          const parsed = JSON.parse(rawText) as {
+            items?: Array<{ key: number; entityJson: string | null }>;
+          };
+          if (Array.isArray(parsed.items)) {
+            const catItem = parsed.items.find((item) => item.key === 2);
+            if (catItem?.entityJson) {
+              const categories = JSON.parse(catItem.entityJson);
+              if (Array.isArray(categories)) {
+                const store = getExternalProviderStore();
+                await store.upsertCategories(categories);
+                const conf = await store.getSyncConfig();
+                await store.updateSyncConfig({
+                  sync_version: conf.sync_version + 1,
+                  sync_status: "reconciling",
+                });
+              }
+            }
+          }
+        } catch {
+          // non-blocking
+        }
+        invalidateProxyCacheByPathPrefix("/Exchange/Ping");
+        invalidateProxyCacheByPathPrefix("/stat/ping");
       }
 
       const statusMsg = upstreamResponse.statusText

@@ -55,12 +55,18 @@ export function buildProxyCacheKey(
   return `${method.toUpperCase()}:${pathname}:${normalizedSearch}${bodyHash}`;
 }
 
-export function getProxyCachedResponse(key: string): CachedProxyResponse | undefined {
+export function getProxyCachedResponse(
+  key: string,
+  options?: { allowStale?: boolean },
+): CachedProxyResponse | undefined {
   const entry = proxyCacheState.entries.get(key);
   if (!entry) {
     return undefined;
   }
   if (Date.now() > entry.expiresAt) {
+    if (options?.allowStale) {
+      return entry;
+    }
     proxyCacheState.entries.delete(key);
     return undefined;
   }
@@ -114,6 +120,13 @@ export async function fetchWithProxyCache(
         setProxyCachedResponse(key, res, options?.ttlMs ?? PROXY_CACHE_TTL_MS);
       }
       return res;
+    } catch (err) {
+      // SWR fallback: if fetch failed, serve stale cached response if available
+      const stale = proxyCacheState.entries.get(key);
+      if (stale) {
+        return stale;
+      }
+      throw err;
     } finally {
       proxyCacheState.inflight.delete(key);
     }
@@ -130,11 +143,12 @@ export function clearProxyCache(): void {
 
 /**
  * Invalidates cached proxy responses whose pathname matches or starts with the given prefix.
+ * Non-destructively marks matching entries as stale for SWR unless deleteNow is true.
  */
-export function invalidateProxyCacheByPathPrefix(pathnamePrefix: string): void {
+export function invalidateProxyCacheByPathPrefix(pathnamePrefix: string, options?: { deleteNow?: boolean }): void {
   const normalizedPrefix = pathnamePrefix.startsWith("/") ? pathnamePrefix : `/${pathnamePrefix}`;
 
-  for (const key of proxyCacheState.entries.keys()) {
+  for (const [key, entry] of proxyCacheState.entries.entries()) {
     // Key format is METHOD:pathname:search:bodyHash
     const parts = key.split(":");
     const pathname = parts[1];
@@ -143,7 +157,11 @@ export function invalidateProxyCacheByPathPrefix(pathnamePrefix: string): void {
       (pathname === normalizedPrefix ||
         pathname.startsWith(normalizedPrefix.endsWith("/") ? normalizedPrefix : `${normalizedPrefix}/`))
     ) {
-      proxyCacheState.entries.delete(key);
+      if (options?.deleteNow) {
+        proxyCacheState.entries.delete(key);
+      } else {
+        entry.expiresAt = 0; // Expired, but preserved for SWR fallback
+      }
     }
   }
 
