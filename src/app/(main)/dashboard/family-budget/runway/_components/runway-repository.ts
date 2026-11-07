@@ -8,7 +8,16 @@ import type {
 } from "@/app/(main)/dashboard/family-budget/offer-comparator/_components/offer-types";
 
 import { DEFAULT_CAPITAL_POOL_CONFIG, DEFAULT_JDG_RUNWAY_CONFIG } from "./runway-engine";
-import type { JdgRunwayConfig, JdgTaxRegime, RunwaySimulatorStoragePayload } from "./runway-types";
+import type {
+  AusterityPreset,
+  CapitalPoolConfig,
+  CategoryAusterityWeight,
+  JdgRunwayConfig,
+  JdgTaxRegime,
+  LookbackWindow,
+  RunwayScenario,
+  RunwaySimulatorStoragePayload,
+} from "./runway-types";
 
 export const RUNWAY_STORAGE_KEY = "family-budget:runway-simulator:v1";
 
@@ -28,12 +37,60 @@ export interface StorageLike {
   removeItem(key: string): void;
 }
 
+export function createDefaultRunwayScenario(
+  id = "default-runway",
+  name = "Baseline Austerity",
+  seededJdg?: Partial<JdgRunwayConfig>,
+): RunwayScenario {
+  return {
+    id,
+    name,
+    isPrimary: true,
+    jdgConfig: {
+      ...DEFAULT_JDG_RUNWAY_CONFIG,
+      ...seededJdg,
+    },
+    capitalPoolConfig: { ...DEFAULT_CAPITAL_POOL_CONFIG },
+    lookbackWindow: "3m",
+    activePresetId: "preset-normal",
+    customPresets: [],
+    categoryCuts: {},
+    baselineOfferRevisionId: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function sanitizeRunwayScenario(raw: Partial<RunwayScenario>, id?: string): RunwayScenario {
+  return {
+    id: raw.id ?? id ?? `scen-${Math.random().toString(36).slice(2, 9)}`,
+    name: raw.name?.trim() ? raw.name.trim() : "Baseline Austerity",
+    isPrimary: Boolean(raw.isPrimary),
+    jdgConfig: {
+      ...DEFAULT_JDG_RUNWAY_CONFIG,
+      ...raw.jdgConfig,
+    },
+    capitalPoolConfig: {
+      ...DEFAULT_CAPITAL_POOL_CONFIG,
+      ...raw.capitalPoolConfig,
+    },
+    lookbackWindow: raw.lookbackWindow ?? "3m",
+    activePresetId: raw.activePresetId ?? "preset-normal",
+    customPresets: Array.isArray(raw.customPresets) ? [...raw.customPresets] : [],
+    categoryCuts: raw.categoryCuts ? { ...raw.categoryCuts } : {},
+    baselineOfferRevisionId: raw.baselineOfferRevisionId ?? null,
+    createdAt: raw.createdAt ?? new Date().toISOString(),
+    updatedAt: raw.updatedAt ?? new Date().toISOString(),
+  };
+}
+
 export class RunwayRepository {
   private memoryPayload: RunwaySimulatorStoragePayload | null = null;
   private readonly storageKey: string;
   private readonly storage: StorageLike | null = null;
+  private readonly fetchFn: typeof fetch;
 
-  constructor(storageKey = RUNWAY_STORAGE_KEY, customStorage?: StorageLike) {
+  constructor(storageKey = RUNWAY_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
     this.storageKey = storageKey;
     if (customStorage) {
       this.storage = customStorage;
@@ -42,6 +99,7 @@ export class RunwayRepository {
     } else {
       this.storage = null;
     }
+    this.fetchFn = customFetch ?? ((...args) => fetch(...args));
   }
 
   /**
@@ -109,30 +167,118 @@ export class RunwayRepository {
     }
   }
 
-  public async load(): Promise<RunwaySimulatorStoragePayload> {
-    if (this.storage) {
-      try {
-        const raw = this.storage.getItem(this.storageKey);
-        if (raw) {
-          const parsed = JSON.parse(raw) as RunwaySimulatorStoragePayload;
-          if (parsed && parsed.version === 1) {
-            return {
-              ...DEFAULT_RUNWAY_STORAGE_PAYLOAD,
-              ...parsed,
-              jdgConfig: {
-                ...DEFAULT_JDG_RUNWAY_CONFIG,
-                ...parsed.jdgConfig,
-              },
-              capitalPoolConfig: {
-                ...DEFAULT_CAPITAL_POOL_CONFIG,
-                ...parsed.capitalPoolConfig,
-              },
-            };
-          }
-        }
-      } catch (e) {
-        console.warn("Failed to load runway simulator state from storage:", e);
+  /**
+   * Loads scenarios stored locally in browser localStorage.
+   * Seamlessly migrates legacy v1 single-scenario payload to multi-scenario v2 format.
+   */
+  public loadLocalScenarios(): { scenarios: RunwayScenario[]; activeScenarioId: string | null } {
+    if (!this.storage) {
+      return { scenarios: [], activeScenarioId: null };
+    }
+
+    try {
+      const raw = this.storage.getItem(this.storageKey);
+      if (!raw) {
+        return { scenarios: [], activeScenarioId: null };
       }
+
+      const parsed = JSON.parse(raw) as RunwaySimulatorStoragePayload | null;
+      if (!parsed) {
+        return { scenarios: [], activeScenarioId: null };
+      }
+
+      // If already v2 format with scenarios array
+      if (Array.isArray(parsed.scenarios) && parsed.scenarios.length > 0) {
+        const scenarios: RunwayScenario[] = parsed.scenarios.map((s) => sanitizeRunwayScenario(s));
+        let activeId = parsed.activeScenarioId ?? null;
+        if (!activeId || !scenarios.some((s) => s.id === activeId)) {
+          const primary = scenarios.find((s) => s.isPrimary);
+          activeId = primary ? primary.id : scenarios[0].id;
+        }
+        return { scenarios, activeScenarioId: activeId };
+      }
+
+      // Legacy v1 single-scenario format migration
+      if (parsed.jdgConfig || parsed.capitalPoolConfig) {
+        const migrated: RunwayScenario = {
+          id: "local-migrated",
+          name: "Baseline Austerity",
+          isPrimary: true,
+          jdgConfig: {
+            ...DEFAULT_JDG_RUNWAY_CONFIG,
+            ...parsed.jdgConfig,
+          },
+          capitalPoolConfig: {
+            ...DEFAULT_CAPITAL_POOL_CONFIG,
+            ...parsed.capitalPoolConfig,
+          },
+          lookbackWindow: parsed.lookbackWindow ?? "3m",
+          activePresetId: parsed.activePresetId ?? "preset-normal",
+          customPresets: Array.isArray(parsed.customPresets) ? parsed.customPresets : [],
+          categoryCuts: parsed.categoryWeights ?? {},
+          baselineOfferRevisionId: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+        };
+        return { scenarios: [migrated], activeScenarioId: migrated.id };
+      }
+
+      return { scenarios: [], activeScenarioId: null };
+    } catch {
+      return { scenarios: [], activeScenarioId: null };
+    }
+  }
+
+  /**
+   * Persists scenarios array and active scenario ID to localStorage.
+   */
+  public saveLocalScenarios(scenarios: RunwayScenario[], activeScenarioId?: string): void {
+    if (!this.storage) return;
+
+    try {
+      const primary = scenarios.find((s) => s.isPrimary) ?? scenarios[0];
+      const active = scenarios.find((s) => s.id === activeScenarioId) ?? primary;
+
+      const payload: RunwaySimulatorStoragePayload = {
+        version: 2,
+        scenarios,
+        activeScenarioId: active ? active.id : undefined,
+        jdgConfig: active ? active.jdgConfig : DEFAULT_JDG_RUNWAY_CONFIG,
+        capitalPoolConfig: active ? active.capitalPoolConfig : DEFAULT_CAPITAL_POOL_CONFIG,
+        lookbackWindow: active ? active.lookbackWindow : "3m",
+        activePresetId: active ? active.activePresetId : "preset-normal",
+        customPresets: active ? active.customPresets : [],
+        categoryWeights: active ? active.categoryCuts : {},
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.storage.setItem(this.storageKey, JSON.stringify(payload));
+    } catch {
+      // Ignore quota errors in constrained environments
+    }
+  }
+
+  /**
+   * Backwards-compatible load method for single-scenario readers.
+   */
+  public async load(): Promise<RunwaySimulatorStoragePayload> {
+    const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+
+    if (scenarios.length > 0) {
+      const active =
+        scenarios.find((s) => s.id === activeScenarioId) ?? scenarios.find((s) => s.isPrimary) ?? scenarios[0];
+
+      return {
+        version: 1,
+        jdgConfig: active.jdgConfig,
+        capitalPoolConfig: active.capitalPoolConfig,
+        lookbackWindow: active.lookbackWindow,
+        activePresetId: active.activePresetId,
+        customPresets: active.customPresets,
+        categoryWeights: active.categoryCuts,
+        scenarios,
+        activeScenarioId: active.id,
+      };
     }
 
     if (this.memoryPayload) {
@@ -141,56 +287,448 @@ export class RunwayRepository {
 
     // Default initialization with offer repo seeding attempt
     const seededJdg = await this.seedJdgConfigFromOfferRepository();
+    const defaultScenario = createDefaultRunwayScenario("local-primary", "Baseline Austerity", seededJdg);
+    this.saveLocalScenarios([defaultScenario], defaultScenario.id);
+
     const initialPayload: RunwaySimulatorStoragePayload = {
       ...DEFAULT_RUNWAY_STORAGE_PAYLOAD,
-      jdgConfig: {
-        ...DEFAULT_JDG_RUNWAY_CONFIG,
-        ...seededJdg,
-      },
+      jdgConfig: defaultScenario.jdgConfig,
+      scenarios: [defaultScenario],
+      activeScenarioId: defaultScenario.id,
     };
-
-    if (this.storage) {
-      try {
-        this.storage.setItem(this.storageKey, JSON.stringify(initialPayload));
-      } catch {
-        // storage quota exceeded or private mode
-      }
-    }
 
     this.memoryPayload = initialPayload;
     return initialPayload;
   }
 
+  /**
+   * Backwards-compatible save method for single-scenario callers.
+   */
   public async save(payload: RunwaySimulatorStoragePayload): Promise<void> {
-    const dataToSave: RunwaySimulatorStoragePayload = {
-      ...payload,
-      version: 1,
-      updatedAt: new Date().toISOString(),
-    };
+    const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+    const targetId = activeScenarioId ?? scenarios.find((s) => s.isPrimary)?.id ?? scenarios[0]?.id;
 
-    this.memoryPayload = dataToSave;
-
-    if (this.storage) {
-      try {
-        this.storage.setItem(this.storageKey, JSON.stringify(dataToSave));
-      } catch (e) {
-        console.error("Failed to save runway simulator state to storage:", e);
-      }
+    if (!targetId || scenarios.length === 0) {
+      const initial: RunwayScenario = {
+        id: "local-primary",
+        name: "Baseline Austerity",
+        isPrimary: true,
+        jdgConfig: { ...DEFAULT_JDG_RUNWAY_CONFIG, ...payload.jdgConfig },
+        capitalPoolConfig: { ...DEFAULT_CAPITAL_POOL_CONFIG, ...payload.capitalPoolConfig },
+        lookbackWindow: payload.lookbackWindow ?? "3m",
+        activePresetId: payload.activePresetId ?? "preset-normal",
+        customPresets: payload.customPresets ? [...payload.customPresets] : [],
+        categoryCuts: payload.categoryWeights ? { ...payload.categoryWeights } : {},
+        baselineOfferRevisionId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.saveLocalScenarios([initial], initial.id);
+      return;
     }
+
+    const updated = scenarios.map((s) =>
+      s.id === targetId
+        ? {
+            ...s,
+            jdgConfig: { ...s.jdgConfig, ...payload.jdgConfig },
+            capitalPoolConfig: { ...s.capitalPoolConfig, ...payload.capitalPoolConfig },
+            lookbackWindow: payload.lookbackWindow ?? s.lookbackWindow,
+            activePresetId: payload.activePresetId ?? s.activePresetId,
+            customPresets: payload.customPresets ? [...payload.customPresets] : s.customPresets,
+            categoryCuts: payload.categoryWeights ? { ...payload.categoryWeights } : s.categoryCuts,
+            updatedAt: new Date().toISOString(),
+          }
+        : s,
+    );
+
+    this.saveLocalScenarios(updated, targetId);
   }
 
   public async resetToDefaults(): Promise<RunwaySimulatorStoragePayload> {
-    const seededJdg = await this.seedJdgConfigFromOfferRepository();
-    const resetPayload: RunwaySimulatorStoragePayload = {
-      ...DEFAULT_RUNWAY_STORAGE_PAYLOAD,
-      jdgConfig: {
-        ...DEFAULT_JDG_RUNWAY_CONFIG,
-        ...seededJdg,
-      },
-    };
+    if (this.storage) {
+      try {
+        this.storage.removeItem(this.storageKey);
+      } catch {
+        // Ignore
+      }
+    }
 
-    await this.save(resetPayload);
-    return resetPayload;
+    const seededJdg = await this.seedJdgConfigFromOfferRepository();
+    const defaultScenario = createDefaultRunwayScenario("local-primary", "Baseline Austerity", seededJdg);
+    this.saveLocalScenarios([defaultScenario], defaultScenario.id);
+
+    return {
+      ...DEFAULT_RUNWAY_STORAGE_PAYLOAD,
+      jdgConfig: defaultScenario.jdgConfig,
+      scenarios: [defaultScenario],
+      activeScenarioId: defaultScenario.id,
+    };
+  }
+
+  // =========================================================================
+  // Asynchronous Cloud Synchronization & Auto-Migration (Supabase)
+  // =========================================================================
+
+  /**
+   * Fetches scenarios from Supabase.
+   * If remote is empty, automatically seeds it with existing localStorage settings (Task 3.2).
+   * Gracefully falls back to local cache if offline or on network error.
+   */
+  public async fetchRemoteScenarios(signal?: AbortSignal): Promise<{
+    scenarios: RunwayScenario[];
+    activeScenarioId: string;
+    isOfflineFallback?: boolean;
+  }> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch runway scenarios: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const remoteScenarios: RunwayScenario[] = data.scenarios ?? [];
+
+      // Auto-migration: if remote database is empty, seed it with the current local scenario
+      if (remoteScenarios.length === 0) {
+        const local = this.loadLocalScenarios();
+        const activeLocal =
+          local.scenarios.find((s) => s.id === local.activeScenarioId) ??
+          local.scenarios.find((s) => s.isPrimary) ??
+          local.scenarios[0];
+
+        const seededJdg = await this.seedJdgConfigFromOfferRepository();
+
+        const seedInput = {
+          name: activeLocal ? activeLocal.name : "Baseline Austerity",
+          isPrimary: true,
+          jdgConfig: activeLocal ? activeLocal.jdgConfig : { ...DEFAULT_JDG_RUNWAY_CONFIG, ...seededJdg },
+          capitalPoolConfig: activeLocal ? activeLocal.capitalPoolConfig : DEFAULT_CAPITAL_POOL_CONFIG,
+          lookbackWindow: activeLocal ? activeLocal.lookbackWindow : ("3m" as LookbackWindow),
+          activePresetId: activeLocal ? activeLocal.activePresetId : "preset-normal",
+          customPresets: activeLocal ? activeLocal.customPresets : [],
+          categoryCuts: activeLocal ? activeLocal.categoryCuts : {},
+        };
+
+        const seeded = await this.createRemoteScenario(seedInput);
+        this.saveLocalScenarios([seeded], seeded.id);
+        return {
+          scenarios: [seeded],
+          activeScenarioId: seeded.id,
+        };
+      }
+
+      // Reconcile active scenario
+      const { activeScenarioId: currentActiveId } = this.loadLocalScenarios();
+      const activeId =
+        currentActiveId && remoteScenarios.some((s) => s.id === currentActiveId)
+          ? currentActiveId
+          : (remoteScenarios.find((s) => s.isPrimary)?.id ?? remoteScenarios[0].id);
+
+      this.saveLocalScenarios(remoteScenarios, activeId);
+
+      return {
+        scenarios: remoteScenarios,
+        activeScenarioId: activeId,
+      };
+    } catch (_err) {
+      // Offline fallback: load from localStorage
+      const local = this.loadLocalScenarios();
+      const scenarios = local.scenarios.length > 0 ? local.scenarios : [createDefaultRunwayScenario()];
+      return {
+        scenarios,
+        activeScenarioId: local.activeScenarioId ?? scenarios[0].id,
+        isOfflineFallback: true,
+      };
+    }
+  }
+
+  /**
+   * Creates a new scenario remotely, falling back to local storage if offline.
+   */
+  public async createRemoteScenario(input: {
+    name: string;
+    isPrimary?: boolean;
+    jdgConfig?: Partial<JdgRunwayConfig>;
+    capitalPoolConfig?: Partial<CapitalPoolConfig>;
+    lookbackWindow?: LookbackWindow;
+    activePresetId?: string;
+    customPresets?: AusterityPreset[];
+    categoryCuts?: Record<string, CategoryAusterityWeight>;
+    baselineOfferRevisionId?: string | null;
+  }): Promise<RunwayScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to create scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const created: RunwayScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      const updatedList = created.isPrimary
+        ? scenarios.map((s) => ({ ...s, isPrimary: false })).concat(created)
+        : [...scenarios, created];
+
+      this.saveLocalScenarios(updatedList, created.id);
+      return created;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const isFirst = scenarios.length === 0;
+      const isPrimary = input.isPrimary ?? isFirst;
+
+      const fallback: RunwayScenario = {
+        id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: input.name.trim() ? input.name.trim() : "New Scenario",
+        isPrimary,
+        jdgConfig: { ...DEFAULT_JDG_RUNWAY_CONFIG, ...input.jdgConfig },
+        capitalPoolConfig: { ...DEFAULT_CAPITAL_POOL_CONFIG, ...input.capitalPoolConfig },
+        lookbackWindow: input.lookbackWindow ?? "3m",
+        activePresetId: input.activePresetId ?? "preset-normal",
+        customPresets: input.customPresets ? [...input.customPresets] : [],
+        categoryCuts: input.categoryCuts ? { ...input.categoryCuts } : {},
+        baselineOfferRevisionId: input.baselineOfferRevisionId ?? null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updatedList = isPrimary
+        ? scenarios.map((s) => ({ ...s, isPrimary: false })).concat(fallback)
+        : [...scenarios, fallback];
+
+      this.saveLocalScenarios(updatedList, fallback.id);
+      return fallback;
+    }
+  }
+
+  /**
+   * Updates an existing scenario remotely, falling back to local storage if offline.
+   */
+  public async updateRemoteScenario(
+    id: string,
+    updates: {
+      name?: string;
+      isPrimary?: boolean;
+      jdgConfig?: Partial<JdgRunwayConfig>;
+      capitalPoolConfig?: Partial<CapitalPoolConfig>;
+      lookbackWindow?: LookbackWindow;
+      activePresetId?: string;
+      customPresets?: AusterityPreset[];
+      categoryCuts?: Record<string, CategoryAusterityWeight>;
+      baselineOfferRevisionId?: string | null;
+    },
+  ): Promise<RunwayScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, ...updates }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to update scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const updated: RunwayScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      const nextList = scenarios.map((s) => {
+        if (s.id === id) return updated;
+        if (updates.isPrimary && s.isPrimary) return { ...s, isPrimary: false };
+        return s;
+      });
+
+      this.saveLocalScenarios(nextList, id);
+      return updated;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const target = scenarios.find((s) => s.id === id);
+      if (!target) {
+        throw new Error(`Scenario not found locally: ${id}`);
+      }
+
+      const updated: RunwayScenario = {
+        ...target,
+        name: updates.name !== undefined ? updates.name.trim() : target.name,
+        isPrimary: updates.isPrimary ?? target.isPrimary,
+        jdgConfig: updates.jdgConfig ? { ...target.jdgConfig, ...updates.jdgConfig } : target.jdgConfig,
+        capitalPoolConfig: updates.capitalPoolConfig
+          ? { ...target.capitalPoolConfig, ...updates.capitalPoolConfig }
+          : target.capitalPoolConfig,
+        lookbackWindow: updates.lookbackWindow ?? target.lookbackWindow,
+        activePresetId: updates.activePresetId ?? target.activePresetId,
+        customPresets: updates.customPresets ? [...updates.customPresets] : target.customPresets,
+        categoryCuts: updates.categoryCuts ? { ...updates.categoryCuts } : target.categoryCuts,
+        baselineOfferRevisionId: updates.baselineOfferRevisionId ?? target.baselineOfferRevisionId,
+        updatedAt: new Date().toISOString(),
+      };
+
+      const nextList = scenarios.map((s) => {
+        if (s.id === id) return updated;
+        if (updates.isPrimary && s.isPrimary) return { ...s, isPrimary: false };
+        return s;
+      });
+
+      this.saveLocalScenarios(nextList, id);
+      return updated;
+    }
+  }
+
+  /**
+   * Deletes a scenario remotely, falling back to local storage if offline.
+   */
+  public async deleteRemoteScenario(id: string): Promise<boolean> {
+    try {
+      const res = await this.fetchFn(`/api/family-budget/runway/scenarios?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to delete scenario remotely: HTTP ${res.status}`);
+      }
+
+      const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+      const remaining = scenarios.filter((s) => s.id !== id);
+
+      let nextActiveId = activeScenarioId;
+      if (activeScenarioId === id) {
+        const primary = remaining.find((s) => s.isPrimary);
+        nextActiveId = primary ? primary.id : (remaining[0]?.id ?? null);
+      }
+
+      this.saveLocalScenarios(remaining, nextActiveId ?? undefined);
+      return true;
+    } catch {
+      // Offline fallback
+      const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+      const remaining = scenarios.filter((s) => s.id !== id);
+
+      let nextActiveId = activeScenarioId;
+      if (activeScenarioId === id) {
+        const primary = remaining.find((s) => s.isPrimary);
+        nextActiveId = primary ? primary.id : (remaining[0]?.id ?? null);
+      }
+
+      this.saveLocalScenarios(remaining, nextActiveId ?? undefined);
+      return true;
+    }
+  }
+
+  /**
+   * Sets primary scenario remotely, falling back to local storage if offline.
+   */
+  public async setPrimaryRemoteScenario(id: string): Promise<RunwayScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_primary", id }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to set primary scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const primary: RunwayScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      const updatedList = scenarios.map((s) => ({
+        ...s,
+        isPrimary: s.id === id,
+      }));
+
+      this.saveLocalScenarios(updatedList, id);
+      return primary;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const updatedList = scenarios.map((s) => ({
+        ...s,
+        isPrimary: s.id === id,
+      }));
+
+      const target = updatedList.find((s) => s.id === id);
+      if (!target) throw new Error(`Scenario not found: ${id}`);
+
+      this.saveLocalScenarios(updatedList, id);
+      return target;
+    }
+  }
+
+  /**
+   * Duplicates a scenario remotely, falling back to local storage if offline.
+   */
+  public async duplicateRemoteScenario(id: string, newName?: string): Promise<RunwayScenario> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "duplicate", id, name: newName }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to duplicate scenario remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const duplicated: RunwayScenario = data.scenario;
+
+      const { scenarios } = this.loadLocalScenarios();
+      this.saveLocalScenarios([...scenarios, duplicated], duplicated.id);
+      return duplicated;
+    } catch {
+      // Offline fallback
+      const { scenarios } = this.loadLocalScenarios();
+      const source = scenarios.find((s) => s.id === id);
+      if (!source) throw new Error(`Source scenario not found: ${id}`);
+
+      const fallback: RunwayScenario = {
+        ...structuredClone(source),
+        id: `offline-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        name: newName ?? `${source.name} (Copy)`,
+        isPrimary: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.saveLocalScenarios([...scenarios, fallback], fallback.id);
+      return fallback;
+    }
+  }
+
+  /**
+   * Fetches linked OfferRevision from offer comparator database if baselineOfferRevisionId is set.
+   */
+  public async fetchLinkedOfferRevision(scenarioId: string): Promise<OfferRevision | null> {
+    try {
+      const res = await this.fetchFn(
+        `/api/family-budget/runway/scenarios?id=${encodeURIComponent(scenarioId)}&include_offer=true`,
+        {
+          method: "GET",
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.linkedOfferRevision ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 

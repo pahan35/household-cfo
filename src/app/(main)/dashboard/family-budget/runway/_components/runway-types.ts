@@ -125,13 +125,32 @@ export interface RunwayScenarioResult {
   rows: RunwayCashflowRow[];
 }
 
-export interface RunwaySimulatorStoragePayload {
-  version: 1;
-  jdgConfig: Partial<JdgRunwayConfig>;
+export interface RunwayScenario {
+  id: string;
+  name: string;
+  isPrimary: boolean;
+  jdgConfig: JdgRunwayConfig;
   capitalPoolConfig: CapitalPoolConfig;
   lookbackWindow: LookbackWindow;
   activePresetId: string;
   customPresets: AusterityPreset[];
-  categoryWeights: Record<string, CategoryAusterityWeight>;
+  categoryCuts: Record<string, CategoryAusterityWeight>;
+  baselineOfferRevisionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunwaySimulatorStoragePayload {
+  version: 1 | 2;
+  // Legacy v1 fields
+  jdgConfig?: Partial<JdgRunwayConfig>;
+  capitalPoolConfig?: CapitalPoolConfig;
+  lookbackWindow?: LookbackWindow;
+  activePresetId?: string;
+  customPresets?: AusterityPreset[];
+  categoryWeights?: Record<string, CategoryAusterityWeight>;
+  // Multi-scenario v2 fields
+  scenarios?: RunwayScenario[];
+  activeScenarioId?: string;
   updatedAt?: string;
 }

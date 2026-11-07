@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { format } from "date-fns";
 import { AlertCircle, RotateCcw, RotateCw, ShieldCheck } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   getBudgetSelection,
@@ -21,6 +22,7 @@ import type {
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
 import { useExternalProviderSync } from "@/app/(main)/dashboard/family-budget/_components/external-provider-sync-toolbar";
 import { useExclusionPresets } from "@/app/(main)/dashboard/family-budget/_components/use-exclusion-presets";
+import type { OfferRevision } from "@/app/(main)/dashboard/family-budget/offer-comparator/_components/offer-types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -40,6 +42,7 @@ import {
 } from "./runway-engine";
 import { RunwayKpiStrip } from "./runway-kpi-strip";
 import { runwayRepository } from "./runway-repository";
+import { RunwayScenarioToolbar } from "./runway-scenario-toolbar";
 import { RunwayTrajectoryCard } from "./runway-trajectory-card";
 import type {
   AusterityPreset,
@@ -47,7 +50,7 @@ import type {
   CategoryAusterityWeight,
   JdgRunwayConfig,
   LookbackWindow,
-  RunwaySimulatorStoragePayload,
+  RunwayScenario,
 } from "./runway-types";
 
 export function RunwayDashboard() {
@@ -61,7 +64,14 @@ export function RunwayDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
-  // Persistence State
+  // Multi-Scenario Cloud State
+  const [scenarios, setScenarios] = useState<RunwayScenario[]>([]);
+  const [activeScenarioId, setActiveScenarioId] = useState<string>("");
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
+  const [linkedOffer, setLinkedOffer] = useState<OfferRevision | null>(null);
+
+  // Active Configuration State (projected from active scenario)
   const [jdgConfig, setJdgConfig] = useState<JdgRunwayConfig>(DEFAULT_JDG_RUNWAY_CONFIG);
   const [capitalPoolConfig, setCapitalPoolConfig] = useState<CapitalPoolConfig>(DEFAULT_CAPITAL_POOL_CONFIG);
   const [lookbackWindow, setLookbackWindow] = useState<LookbackWindow>("3m");
@@ -80,14 +90,14 @@ export function RunwayDashboard() {
     try {
       const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
 
-      const [settingsRes, categoriesRes, currenciesRes, transactionsRes, statRes, storagePayload] =
+      const [settingsRes, categoriesRes, currenciesRes, transactionsRes, statRes, scenariosRes] =
         await Promise.allSettled([
           getSettings({ signal, forceRefresh }),
           getCategories({ signal, forceRefresh }),
           getCurrencies({ signal, forceRefresh }),
           getTransactionPage({ skip: 0, take: 500, signal, forceRefresh }),
           getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
-          runwayRepository.load(),
+          runwayRepository.fetchRemoteScenarios(signal),
         ]);
 
       if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
@@ -96,20 +106,30 @@ export function RunwayDashboard() {
       if (transactionsRes.status === "fulfilled") setTransactions(transactionsRes.value.transactions ?? []);
       if (statRes.status === "fulfilled") setStatData(statRes.value);
 
-      if (storagePayload.status === "fulfilled") {
-        const payload = storagePayload.value;
-        setJdgConfig({
-          ...DEFAULT_JDG_RUNWAY_CONFIG,
-          ...payload.jdgConfig,
-        });
-        setCapitalPoolConfig({
-          ...DEFAULT_CAPITAL_POOL_CONFIG,
-          ...payload.capitalPoolConfig,
-        });
-        setLookbackWindow(payload.lookbackWindow);
-        setActivePresetId(payload.activePresetId);
-        setCustomPresets(payload.customPresets || []);
-        setCategoryWeights(payload.categoryWeights || {});
+      if (scenariosRes.status === "fulfilled") {
+        const {
+          scenarios: loadedScenarios,
+          activeScenarioId: loadedActiveId,
+          isOfflineFallback: offline,
+        } = scenariosRes.value;
+
+        setScenarios(loadedScenarios);
+        setActiveScenarioId(loadedActiveId);
+        setIsOfflineFallback(Boolean(offline));
+
+        const active =
+          loadedScenarios.find((s) => s.id === loadedActiveId) ??
+          loadedScenarios.find((s) => s.isPrimary) ??
+          loadedScenarios[0];
+
+        if (active) {
+          setJdgConfig(active.jdgConfig);
+          setCapitalPoolConfig(active.capitalPoolConfig);
+          setLookbackWindow(active.lookbackWindow);
+          setActivePresetId(active.activePresetId);
+          setCustomPresets(active.customPresets || []);
+          setCategoryWeights(active.categoryCuts || {});
+        }
       }
     } catch (err) {
       console.error("Failed to load runway dashboard data:", err);
@@ -125,6 +145,19 @@ export function RunwayDashboard() {
     void loadData(controller.signal);
     return () => controller.abort();
   }, [loadData, syncVersion]);
+
+  // Fetch linked OfferRevision if active scenario is tied to Offer Comparator track
+  useEffect(() => {
+    if (!activeScenarioId) return;
+    const current = scenarios.find((s) => s.id === activeScenarioId);
+    if (current?.baselineOfferRevisionId) {
+      void runwayRepository.fetchLinkedOfferRevision(activeScenarioId).then((rev) => {
+        setLinkedOffer(rev);
+      });
+    } else {
+      setLinkedOffer(null);
+    }
+  }, [activeScenarioId, scenarios]);
 
   // 2. Auto-detect recent Month-1 VAT-7 and PPE outflows from transactions
   const detectedTaxes = useMemo(() => {
@@ -147,45 +180,64 @@ export function RunwayDashboard() {
   }, [detectedTaxes, jdgConfig.month1Vat7Pln, jdgConfig.month1PpePln]);
 
   // 3. Persist State Changes
-  const handleSaveState = useCallback(
-    (patch: Partial<RunwaySimulatorStoragePayload>) => {
-      const updated: RunwaySimulatorStoragePayload = {
-        version: 1,
-        jdgConfig: patch.jdgConfig ?? jdgConfig,
-        capitalPoolConfig: patch.capitalPoolConfig ?? capitalPoolConfig,
-        lookbackWindow: patch.lookbackWindow ?? lookbackWindow,
-        activePresetId: patch.activePresetId ?? activePresetId,
-        customPresets: patch.customPresets ?? customPresets,
-        categoryWeights: patch.categoryWeights ?? categoryWeights,
-      };
-      void runwayRepository.save(updated);
+  const updateScenarioConfig = useCallback(
+    (patch: {
+      jdgConfig?: JdgRunwayConfig;
+      capitalPoolConfig?: CapitalPoolConfig;
+      lookbackWindow?: LookbackWindow;
+      activePresetId?: string;
+      customPresets?: AusterityPreset[];
+      categoryCuts?: Record<string, CategoryAusterityWeight>;
+    }) => {
+      if (!activeScenarioId) return;
+
+      setScenarios((prev) =>
+        prev.map((s) => {
+          if (s.id !== activeScenarioId) return s;
+          return {
+            ...s,
+            ...(patch.jdgConfig ? { jdgConfig: patch.jdgConfig } : {}),
+            ...(patch.capitalPoolConfig ? { capitalPoolConfig: patch.capitalPoolConfig } : {}),
+            ...(patch.lookbackWindow ? { lookbackWindow: patch.lookbackWindow } : {}),
+            ...(patch.activePresetId ? { activePresetId: patch.activePresetId } : {}),
+            ...(patch.customPresets ? { customPresets: patch.customPresets } : {}),
+            ...(patch.categoryCuts ? { categoryCuts: patch.categoryCuts } : {}),
+            updatedAt: new Date().toISOString(),
+          };
+        }),
+      );
+
+      // Async remote update in background with local cache persistence
+      void runwayRepository.updateRemoteScenario(activeScenarioId, patch).catch((err) => {
+        console.warn("Background runway scenario sync error:", err);
+      });
     },
-    [jdgConfig, capitalPoolConfig, lookbackWindow, activePresetId, customPresets, categoryWeights],
+    [activeScenarioId],
   );
 
   const handleJdgConfigChange = (updated: JdgRunwayConfig) => {
     setJdgConfig(updated);
-    handleSaveState({ jdgConfig: updated });
+    updateScenarioConfig({ jdgConfig: updated });
   };
 
   const handleCapitalPoolConfigChange = (updated: CapitalPoolConfig) => {
     setCapitalPoolConfig(updated);
-    handleSaveState({ capitalPoolConfig: updated });
+    updateScenarioConfig({ capitalPoolConfig: updated });
   };
 
   const handleWeightsChange = (weights: Record<string, CategoryAusterityWeight>) => {
     setCategoryWeights(weights);
-    handleSaveState({ categoryWeights: weights });
+    updateScenarioConfig({ categoryCuts: weights });
   };
 
   const handleLookbackWindowChange = (window: LookbackWindow) => {
     setLookbackWindow(window);
-    handleSaveState({ lookbackWindow: window });
+    updateScenarioConfig({ lookbackWindow: window });
   };
 
   const handlePresetSelect = (presetId: string) => {
     setActivePresetId(presetId);
-    handleSaveState({ activePresetId: presetId });
+    updateScenarioConfig({ activePresetId: presetId });
   };
 
   const handleSaveCustomPreset = (name: string) => {
@@ -198,7 +250,7 @@ export function RunwayDashboard() {
     const updatedCustom = [...customPresets, newPreset];
     setCustomPresets(updatedCustom);
     setActivePresetId(newPreset.id);
-    handleSaveState({
+    updateScenarioConfig({
       customPresets: updatedCustom,
       activePresetId: newPreset.id,
     });
@@ -209,9 +261,126 @@ export function RunwayDashboard() {
     setCustomPresets(updatedCustom);
     if (activePresetId === presetId) {
       setActivePresetId("preset-normal");
-      handleSaveState({ customPresets: updatedCustom, activePresetId: "preset-normal" });
+      updateScenarioConfig({ customPresets: updatedCustom, activePresetId: "preset-normal" });
     } else {
-      handleSaveState({ customPresets: updatedCustom });
+      updateScenarioConfig({ customPresets: updatedCustom });
+    }
+  };
+
+  // Scenario Management Handlers
+  const handleSelectScenario = (id: string) => {
+    const target = scenarios.find((s) => s.id === id);
+    if (!target) return;
+    setActiveScenarioId(id);
+    setJdgConfig(target.jdgConfig);
+    setCapitalPoolConfig(target.capitalPoolConfig);
+    setLookbackWindow(target.lookbackWindow);
+    setActivePresetId(target.activePresetId);
+    setCustomPresets(target.customPresets || []);
+    setCategoryWeights(target.categoryCuts || {});
+    runwayRepository.saveLocalScenarios(scenarios, id);
+    toast.info(`Switched to scenario: ${target.name}`);
+  };
+
+  const handleCreateScenario = async (name: string) => {
+    try {
+      setIsSyncing(true);
+      const created = await runwayRepository.createRemoteScenario({
+        name,
+        isPrimary: false,
+        jdgConfig,
+        capitalPoolConfig,
+        lookbackWindow,
+        activePresetId,
+        customPresets,
+        categoryCuts: categoryWeights,
+      });
+      setScenarios((prev) => [...prev, created]);
+      setActiveScenarioId(created.id);
+      setJdgConfig(created.jdgConfig);
+      setCapitalPoolConfig(created.capitalPoolConfig);
+      setLookbackWindow(created.lookbackWindow);
+      setActivePresetId(created.activePresetId);
+      setCustomPresets(created.customPresets);
+      setCategoryWeights(created.categoryCuts);
+      toast.success(`Created scenario: ${created.name}`);
+    } catch {
+      toast.error("Failed to create scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDuplicateScenario = async (id: string, name?: string) => {
+    try {
+      setIsSyncing(true);
+      const duplicated = await runwayRepository.duplicateRemoteScenario(id, name);
+      setScenarios((prev) => [...prev, duplicated]);
+      setActiveScenarioId(duplicated.id);
+      setJdgConfig(duplicated.jdgConfig);
+      setCapitalPoolConfig(duplicated.capitalPoolConfig);
+      setLookbackWindow(duplicated.lookbackWindow);
+      setActivePresetId(duplicated.activePresetId);
+      setCustomPresets(duplicated.customPresets);
+      setCategoryWeights(duplicated.categoryCuts);
+      toast.success(`Duplicated scenario: ${duplicated.name}`);
+    } catch {
+      toast.error("Failed to duplicate scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleRenameScenario = async (id: string, newName: string) => {
+    try {
+      setIsSyncing(true);
+      const updated = await runwayRepository.updateRemoteScenario(id, { name: newName });
+      setScenarios((prev) => prev.map((s) => (s.id === id ? updated : s)));
+      toast.success(`Renamed scenario to: ${updated.name}`);
+    } catch {
+      toast.error("Failed to rename scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleDeleteScenario = async (id: string) => {
+    try {
+      setIsSyncing(true);
+      await runwayRepository.deleteRemoteScenario(id);
+      const nextList = scenarios.filter((s) => s.id !== id);
+      setScenarios(nextList);
+
+      if (activeScenarioId === id) {
+        const nextActive = nextList.find((s) => s.isPrimary) ?? nextList[0];
+        if (nextActive) {
+          setActiveScenarioId(nextActive.id);
+          setJdgConfig(nextActive.jdgConfig);
+          setCapitalPoolConfig(nextActive.capitalPoolConfig);
+          setLookbackWindow(nextActive.lookbackWindow);
+          setActivePresetId(nextActive.activePresetId);
+          setCustomPresets(nextActive.customPresets);
+          setCategoryWeights(nextActive.categoryCuts);
+        }
+      }
+      toast.success("Deleted scenario");
+    } catch {
+      toast.error("Failed to delete scenario");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const handleSetPrimaryScenario = async (id: string) => {
+    try {
+      setIsSyncing(true);
+      const updated = await runwayRepository.setPrimaryRemoteScenario(id);
+      setScenarios((prev) => prev.map((s) => (s.id === id ? updated : { ...s, isPrimary: false })));
+      toast.success(`Designated "${updated.name}" as primary household plan`);
+    } catch {
+      toast.error("Failed to update primary scenario");
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -225,10 +394,11 @@ export function RunwayDashboard() {
       ...DEFAULT_CAPITAL_POOL_CONFIG,
       ...reset.capitalPoolConfig,
     });
-    setLookbackWindow(reset.lookbackWindow);
-    setActivePresetId(reset.activePresetId);
-    setCustomPresets(reset.customPresets);
-    setCategoryWeights(reset.categoryWeights);
+    setLookbackWindow(reset.lookbackWindow ?? "3m");
+    setActivePresetId(reset.activePresetId ?? "preset-normal");
+    setCustomPresets(reset.customPresets ?? []);
+    setCategoryWeights(reset.categoryWeights ?? {});
+    toast.success("Reset runway scenario to project defaults.");
   };
 
   // 4. Derived Computations
@@ -299,20 +469,18 @@ export function RunwayDashboard() {
   if (isLoading && categories.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-6 w-48" />
-          <Skeleton className="h-8 w-24" />
-        </div>
+        <Skeleton className="h-10 w-full" />
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: skeleton
-            <Skeleton key={i} className="h-28 rounded-lg" />
-          ))}
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
         </div>
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <Skeleton className="h-96 rounded-lg" />
-          <Skeleton className="h-96 rounded-lg" />
+          <Skeleton className="h-80" />
+          <Skeleton className="h-80" />
         </div>
+        <Skeleton className="h-96" />
       </div>
     );
   }
@@ -320,17 +488,17 @@ export function RunwayDashboard() {
   // Error State
   if (error && categories.length === 0) {
     return (
-      <Alert variant="destructive" className="border-destructive/50">
+      <Alert variant="destructive">
         <AlertCircle className="size-4" />
         <AlertTitle>Failed to load runway simulator data</AlertTitle>
-        <AlertDescription className="mt-2 flex flex-col gap-3">
+        <AlertDescription className="space-y-3">
           <p>{error.message}</p>
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-1.5"
             onClick={() => void loadData(undefined, true)}
+            className="gap-1.5"
           >
             <RotateCw className="size-3.5" />
             Retry
@@ -342,6 +510,21 @@ export function RunwayDashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Multi-scenario Toolbar */}
+      <RunwayScenarioToolbar
+        scenarios={scenarios}
+        activeScenarioId={activeScenarioId}
+        isSyncing={isSyncing}
+        isOfflineFallback={isOfflineFallback}
+        linkedOfferTitle={linkedOffer?.title ?? null}
+        onSelectScenario={handleSelectScenario}
+        onCreateScenario={handleCreateScenario}
+        onDuplicateScenario={handleDuplicateScenario}
+        onRenameScenario={handleRenameScenario}
+        onDeleteScenario={handleDeleteScenario}
+        onSetPrimaryScenario={handleSetPrimaryScenario}
+      />
+
       {/* Top Action Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
