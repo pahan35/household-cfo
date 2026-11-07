@@ -60,7 +60,7 @@ import { type CategoryComparisonDelta, detectSliceCurrency, type ExpenseSlice } 
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { RenameCategoryDialog } from "./rename-category-dialog";
 import { SectionShell } from "./section-shell";
-import { parsePointDate } from "./yoy-transforms";
+import { normalizeMonthDate, parsePointDate } from "./yoy-transforms";
 
 export type BudgetPeriodMonth = "current" | "previous";
 export type BudgetSortMode = "custom" | "percent";
@@ -117,8 +117,15 @@ export function computeBudgetSummaryItems(
   const points = statData?.selection?.points ?? [];
   if (points.length === 0) return [];
 
-  // Find point matching selected month fromDate or default to latest point (points[0])
-  const activePoint = points.find((p) => p.id === fromDate || parsePointDate(p)?.dateStr === fromDate) ?? points[0];
+  // Strictly match selected month by normalized month start or point id/date without stale-month fallback
+  const normalizedFromDate = normalizeMonthDate(fromDate);
+  const activePoint = points.find(
+    (p) =>
+      p.id === normalizedFromDate ||
+      p.id === fromDate ||
+      parsePointDate(p)?.dateStr === normalizedFromDate ||
+      parsePointDate(p)?.dateStr === fromDate,
+  );
 
   if (!activePoint?.categories) return [];
 

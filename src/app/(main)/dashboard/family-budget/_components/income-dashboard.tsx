@@ -183,8 +183,7 @@ export function IncomeDashboard() {
     const targetMonthStart = `${activeMonthKey}-01`;
     const activePoint =
       points.find((p) => p.id === targetMonthStart || parsePointDate(p)?.dateStr === targetMonthStart) ??
-      points.find((p) => p.id?.startsWith(activeMonthKey) || parsePointDate(p)?.dateStr?.startsWith(activeMonthKey)) ??
-      points[0];
+      points.find((p) => p.id?.startsWith(activeMonthKey) || parsePointDate(p)?.dateStr?.startsWith(activeMonthKey));
 
     let sum = 0;
     for (const cat of activePoint?.categories ?? []) {

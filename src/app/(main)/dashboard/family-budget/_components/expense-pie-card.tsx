@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { cn } from "cn";
 import {
   AlertCircle,
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   Globe,
@@ -26,6 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
   type ExternalProviderCategory,
@@ -43,6 +45,7 @@ import {
   type PeriodComparisonResult,
   transformExpenses,
 } from "./expense-transforms";
+import { getMonthIncompleteDescription, type MonthIncompleteReason } from "./month-completeness";
 import { PresetDialog } from "./preset-dialog";
 import { SectionShell } from "./section-shell";
 import type { useExclusionPresets } from "./use-exclusion-presets";
@@ -60,6 +63,8 @@ interface ExpensePieCardProps {
   presetController: ReturnType<typeof useExclusionPresets>;
   comparison?: PeriodComparisonResult | null;
   onSelectCategory?: (category: ExpenseSlice) => void;
+  isIncomplete?: boolean;
+  incompleteReason?: MonthIncompleteReason | null;
 }
 
 function formatCategoryDelta(
@@ -171,6 +176,8 @@ export function ExpensePieCard({
   presetController,
   comparison = null,
   onSelectCategory,
+  isIncomplete = false,
+  incompleteReason = null,
 }: ExpensePieCardProps) {
   const [sortMode, setSortMode] = useState<CategorySortMode>("spend");
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
@@ -257,7 +264,29 @@ export function ExpensePieCard({
   return (
     <>
       <SectionShell
-        title="Expenses Breakdown"
+        title={
+          <div className="flex items-center gap-2">
+            <span>Expenses Breakdown</span>
+            {isIncomplete && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="outline"
+                      className="border-amber-500/40 text-amber-600 dark:text-amber-400 gap-1 font-normal text-[11px] cursor-help"
+                    >
+                      <AlertTriangle className="size-3" />
+                      Incomplete month
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs text-xs">
+                    {getMonthIncompleteDescription(incompleteReason)}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
+        }
         description={`Active preset: ${activePreset.name} • ${controllableCategories.length} categories`}
         action={
           <div className="flex items-center gap-2">

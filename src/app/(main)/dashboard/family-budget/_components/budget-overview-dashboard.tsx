@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 
 import { BudgetMetricsStrip } from "./budget-metrics-strip";
+import { BudgetOverviewEmptyMonthCard } from "./budget-overview-empty-month-card";
 import {
   applyBudgetOverviewPeriodToParams,
   BUDGET_OVERVIEW_PERIOD_STORAGE_KEY,
@@ -45,9 +46,16 @@ import {
 import { useExternalProviderSync } from "./external-provider-sync-toolbar";
 import { ExpensePieCard } from "./expense-pie-card";
 import { type CompareMode, computePeriodComparison, type ExpenseSlice, transformExpenses } from "./expense-transforms";
+import { evaluateMonthCompleteness } from "./month-completeness";
 import { MonthPeriodPicker } from "./month-period-picker";
 import { useExclusionPresets } from "./use-exclusion-presets";
-import { extractAvailableMonths, parsePointDate, resolveBaselineMonth } from "./yoy-transforms";
+import {
+  extractAvailableMonths,
+  MONTH_LABELS,
+  normalizeMonthDate,
+  parsePointDate,
+  resolveBaselineMonth,
+} from "./yoy-transforms";
 import { type SelectedPeriod, YoYTrendsCard } from "./yoy-trends-card";
 
 export function BudgetOverviewDashboard() {
@@ -233,11 +241,18 @@ export function BudgetOverviewDashboard() {
     }, 0);
   }, [periodTransactions]);
 
-  // Extract statCategories for the active point from the 40-month series in memory
+  // Extract statCategories for the active point from the 40-month series strictly matching normalized month
   const statCategories = useMemo(() => {
     const points = statData?.selection?.points ?? [];
     if (points.length === 0) return [];
-    const activePoint = points.find((p) => p.id === fromDate || parsePointDate(p)?.dateStr === fromDate) ?? points[0];
+    const normalizedFromDate = normalizeMonthDate(fromDate);
+    const activePoint = points.find(
+      (p) =>
+        p.id === normalizedFromDate ||
+        p.id === fromDate ||
+        parsePointDate(p)?.dateStr === normalizedFromDate ||
+        parsePointDate(p)?.dateStr === fromDate,
+    );
     return activePoint?.categories ?? [];
   }, [statData, fromDate]);
 
@@ -489,6 +504,40 @@ export function BudgetOverviewDashboard() {
 
   const isLoadingPeriodData = isLoadingStatData || isLoadingPeriodTx;
 
+  const isMonthEmpty = useMemo(() => {
+    return statCategories.length === 0 && periodTransactions.length === 0;
+  }, [statCategories, periodTransactions]);
+
+  const allKnownTransactions = useMemo(() => {
+    return [...recentTransactions, ...periodTransactions, ...targetedTransactions];
+  }, [recentTransactions, periodTransactions, targetedTransactions]);
+
+  const monthCompleteness = useMemo(() => {
+    return evaluateMonthCompleteness({
+      activeMonthDateStr,
+      transactions: allKnownTransactions,
+      hasActivity: !isMonthEmpty,
+    });
+  }, [activeMonthDateStr, allKnownTransactions, isMonthEmpty]);
+
+  const latestActiveMonth = useMemo(() => {
+    const points = statData?.selection?.points ?? [];
+    const parsedPoints = points
+      .map((p) => parsePointDate(p))
+      .filter((p): p is NonNullable<typeof p> => p !== null)
+      .sort((a, b) => b.dateStr.localeCompare(a.dateStr));
+
+    const candidate = parsedPoints.find((p) => p.dateStr !== activeMonthDateStr) ?? parsedPoints[0];
+    if (candidate) {
+      return {
+        dateStr: candidate.dateStr,
+        label: `${MONTH_LABELS[candidate.monthIndex]} ${candidate.year}`,
+      };
+    }
+    const fallback = availableMonths.find((m) => m.dateStr !== activeMonthDateStr) ?? availableMonths[0];
+    return fallback ? { dateStr: fallback.dateStr, label: fallback.label } : null;
+  }, [statData, activeMonthDateStr, availableMonths]);
+
   return (
     <div className="flex flex-col gap-4">
       {/* Top Header Control Bar */}
@@ -523,32 +572,47 @@ export function BudgetOverviewDashboard() {
         </div>
       )}
 
-      {/* Net Disposable Income & Controllable Expenses Metrics */}
-      <BudgetMetricsStrip
-        grossIncome={transformed.grossIncome}
-        netDisposableIncome={transformed.netDisposableIncome}
-        totalControllableExpense={transformed.totalControllableExpense}
-        totalTaxDeductions={transformed.totalTaxDeductions}
-        excludedExpenseSum={transformed.excludedExpenseSum}
-        netCashFlowMargin={transformed.netCashFlowMargin}
-        availableControllablePool={transformed.availableControllablePool}
-        controllableCashLeft={transformed.controllableCashLeft}
-        currency={defaultCurrency}
-        isLoading={isLoadingPeriodData}
-        comparison={comparison}
-      />
+      {/* Zero-data unified empty state or overview cards */}
+      {isMonthEmpty && !isLoadingPeriodData ? (
+        <BudgetOverviewEmptyMonthCard
+          activeMonthDateStr={activeMonthDateStr}
+          latestActiveMonth={latestActiveMonth}
+          onSelectMonth={setActiveMonthDateStr}
+        />
+      ) : (
+        <>
+          {/* Net Disposable Income & Controllable Expenses Metrics */}
+          <BudgetMetricsStrip
+            grossIncome={transformed.grossIncome}
+            netDisposableIncome={transformed.netDisposableIncome}
+            totalControllableExpense={transformed.totalControllableExpense}
+            totalTaxDeductions={transformed.totalTaxDeductions}
+            excludedExpenseSum={transformed.excludedExpenseSum}
+            netCashFlowMargin={transformed.netCashFlowMargin}
+            availableControllablePool={transformed.availableControllablePool}
+            controllableCashLeft={transformed.controllableCashLeft}
+            currency={defaultCurrency}
+            isLoading={isLoadingPeriodData}
+            comparison={comparison}
+            isIncomplete={monthCompleteness.isIncomplete}
+            incompleteReason={monthCompleteness.reason}
+          />
 
-      {/* Controllable Expense Pie Card */}
-      <ExpensePieCard
-        statCategories={statCategories}
-        categories={categories}
-        defaultCurrency={defaultCurrency}
-        rawGrossIncome={grossIncome}
-        isLoading={isLoadingPeriodData}
-        presetController={presetController}
-        comparison={comparison}
-        onSelectCategory={handleSelectCategory}
-      />
+          {/* Controllable Expense Pie Card */}
+          <ExpensePieCard
+            statCategories={statCategories}
+            categories={categories}
+            defaultCurrency={defaultCurrency}
+            rawGrossIncome={grossIncome}
+            isLoading={isLoadingPeriodData}
+            presetController={presetController}
+            comparison={comparison}
+            onSelectCategory={handleSelectCategory}
+            isIncomplete={monthCompleteness.isIncomplete}
+            incompleteReason={monthCompleteness.reason}
+          />
+        </>
+      )}
 
       {/* Year-over-Year Historical Trends */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
@@ -569,31 +633,33 @@ export function BudgetOverviewDashboard() {
       </div>
 
       {/* Detailed Budget Limits and Spending */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
-        <div className="xl:col-span-12">
-          <BudgetSummaryCard
-            categories={categories}
-            currencies={currencies}
-            periodTransactions={periodTransactions}
-            defaultCurrency={defaultCurrency}
-            activeMonthDateStr={activeMonthDateStr}
-            statData={statData}
-            isLoading={isLoadingStatData}
-            error={statDataError}
-            onRetry={() => void loadStatData(undefined, true)}
-            onReorderCategories={handleReorderCategories}
-            lastTransactionByCategoryId={lastTransactionByCategoryId}
-            categoryDeltaMap={comparison?.categoryDeltaMap}
-            onSelectCategory={handleSelectCategory}
-            onArchiveCategory={handleArchiveCategory}
-            onUnarchiveCategory={handleUnarchiveCategory}
-            onMoveCategoriesAboveArchived={handleMoveCategoriesAboveArchived}
-            onMoveCategoriesToBottom={handleMoveCategoriesToBottom}
-            onOrganizeByCurrencyTier={handleOrganizeByCurrencyTier}
-            onCategoriesUpdated={setCategories}
-          />
+      {(!isMonthEmpty || isLoadingPeriodData) && (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+          <div className="xl:col-span-12">
+            <BudgetSummaryCard
+              categories={categories}
+              currencies={currencies}
+              periodTransactions={periodTransactions}
+              defaultCurrency={defaultCurrency}
+              activeMonthDateStr={activeMonthDateStr}
+              statData={statData}
+              isLoading={isLoadingStatData}
+              error={statDataError}
+              onRetry={() => void loadStatData(undefined, true)}
+              onReorderCategories={handleReorderCategories}
+              lastTransactionByCategoryId={lastTransactionByCategoryId}
+              categoryDeltaMap={comparison?.categoryDeltaMap}
+              onSelectCategory={handleSelectCategory}
+              onArchiveCategory={handleArchiveCategory}
+              onUnarchiveCategory={handleUnarchiveCategory}
+              onMoveCategoriesAboveArchived={handleMoveCategoriesAboveArchived}
+              onMoveCategoriesToBottom={handleMoveCategoriesToBottom}
+              onOrganizeByCurrencyTier={handleOrganizeByCurrencyTier}
+              onCategoriesUpdated={setCategories}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Category Expense Trace Slide-over Sheet */}
       <CategoryExpenseTraceSheet

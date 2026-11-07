@@ -26,6 +26,7 @@ import {
   isTransportOrTaxi,
   transformExpenses,
 } from "./expense-transforms";
+import { evaluateMonthCompleteness, getMonthIncompleteDescription } from "./month-completeness";
 import { BUILT_IN_PRESET_IDS, buildDefaultPresets, findCategoryIdsByPattern } from "./use-exclusion-presets";
 import {
   computeTotalNetWorth,
@@ -33,6 +34,7 @@ import {
   filterChronologicalTrends,
   getNextMonth,
   getPrevMonth,
+  normalizeMonthDate,
   parsePointDate,
   resolveBaselineMonth,
   stepZoomRange,
@@ -515,11 +517,16 @@ describe("computeBudgetSummaryItems (budget-summary-card)", () => {
     expect(pharmacy?.current).toBe(300);
   });
 
-  it("falls back to `points[0]` (most recent period) when exact `fromDate` match is absent", () => {
+  it("matches point by normalized month-start when mid-month date is passed and returns empty array without fallback when month is absent", () => {
+    // 2026-10-24 normalizes to 2026-10-01 and matches October point
     const items = computeBudgetSummaryItems(MOEXT_STAT_PING_DATA, "2026-10-24", categoryNameMap);
     const groceries = items.find((item) => item.id === "cat-groceries");
     expect(groceries).toBeDefined();
     expect(groceries?.current).toBe(2450.75);
+
+    // 2026-11-01 is absent from points and must resolve strictly to empty array without falling back to points[0]
+    const emptyItems = computeBudgetSummaryItems(MOEXT_STAT_PING_DATA, "2026-11-01", categoryNameMap);
+    expect(emptyItems).toEqual([]);
   });
 
   it("prioritizes `value` over static `amount` and resolves point by normalized `parsePointDate(p)?.dateStr === fromDate`", () => {
@@ -1662,6 +1669,95 @@ describe("Multi-category exclusions & available controllable pool macro trends",
       expect(parsed).toHaveLength(result.modifiedCategories.length);
       expect(parsed[0].id).toBeDefined();
       expect(parsed[0].order).toBeDefined();
+    });
+  });
+
+  describe("evaluateMonthCompleteness & normalizeMonthDate", () => {
+    it("normalizes mid-month, month-year, and month-start date strings consistently", () => {
+      expect(normalizeMonthDate("2026-10-24")).toBe("2026-10-01");
+      expect(normalizeMonthDate("2026-10-01")).toBe("2026-10-01");
+      expect(normalizeMonthDate("10-2026")).toBe("2026-10-01");
+      expect(normalizeMonthDate("9-2026")).toBe("2026-09-01");
+      expect(normalizeMonthDate("")).toBe("");
+    });
+
+    it("evaluates current calendar month in progress as incomplete", () => {
+      const refDate = new Date(2026, 10, 7); // Nov 7, 2026
+      const res = evaluateMonthCompleteness({
+        activeMonthDateStr: "2026-11-01",
+        transactions: [
+          {
+            id: "tx-1",
+            dateTimestampISO: "2026-11-03T10:00:00Z",
+          },
+        ],
+        referenceDate: refDate,
+      });
+
+      expect(res.isIncomplete).toBe(true);
+      expect(res.reason).toBe("current_month");
+      expect(getMonthIncompleteDescription(res.reason)).toContain("currently in progress");
+    });
+
+    it("evaluates historical cutoff month with no subsequent transactions as incomplete", () => {
+      const refDate = new Date(2026, 10, 7); // Nov 7, 2026
+      // Active month is October 2026, transactions cease on Oct 24, 2026, no Nov transactions exist
+      const res = evaluateMonthCompleteness({
+        activeMonthDateStr: "2026-10-01",
+        transactions: [
+          {
+            id: "tx-1",
+            dateTimestampISO: "2026-10-24T12:00:00Z",
+          },
+          {
+            id: "tx-deleted-future",
+            dateTimestampISO: "2026-11-02T12:00:00Z",
+            deleted: true, // Deleted transactions must be ignored
+          },
+        ],
+        referenceDate: refDate,
+      });
+
+      expect(res.isIncomplete).toBe(true);
+      expect(res.reason).toBe("no_subsequent_transactions");
+      expect(getMonthIncompleteDescription(res.reason)).toContain(
+        "Transactions ceased before the following calendar month",
+      );
+    });
+
+    it("evaluates complete historical month followed by subsequent transactions as complete", () => {
+      const refDate = new Date(2026, 10, 7); // Nov 7, 2026
+      // Active month is September 2026, and transactions exist in October 2026
+      const res = evaluateMonthCompleteness({
+        activeMonthDateStr: "2026-09-01",
+        transactions: [
+          {
+            id: "tx-sep",
+            dateTimestampISO: "2026-09-15T12:00:00Z",
+          },
+          {
+            id: "tx-oct",
+            dateTimestampISO: "2026-10-05T12:00:00Z",
+          },
+        ],
+        referenceDate: refDate,
+      });
+
+      expect(res.isIncomplete).toBe(false);
+      expect(res.reason).toBeNull();
+    });
+
+    it("returns incomplete false when hasActivity is false (zero-data month)", () => {
+      const refDate = new Date(2026, 10, 7);
+      const res = evaluateMonthCompleteness({
+        activeMonthDateStr: "2026-11-01",
+        transactions: [],
+        hasActivity: false,
+        referenceDate: refDate,
+      });
+
+      expect(res.isIncomplete).toBe(false);
+      expect(res.reason).toBeNull();
     });
   });
 });

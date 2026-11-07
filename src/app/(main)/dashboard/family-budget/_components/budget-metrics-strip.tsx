@@ -1,13 +1,16 @@
 "use client";
 
 import { cn } from "cn";
-import { ArrowDownRight, ArrowUpRight, DollarSign, Receipt, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, DollarSign, Receipt, ShieldCheck } from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { formatMoney } from "./external-provider-data";
 import type { MetricDelta, PeriodComparisonResult } from "./expense-transforms";
+import { getMonthIncompleteDescription, type MonthIncompleteReason } from "./month-completeness";
 
 interface BudgetMetricsStripProps {
   grossIncome: number;
@@ -21,6 +24,8 @@ interface BudgetMetricsStripProps {
   currency: string;
   isLoading?: boolean;
   comparison?: PeriodComparisonResult | null;
+  isIncomplete?: boolean;
+  incompleteReason?: MonthIncompleteReason | null;
 }
 
 function MetricDeltaBadge({
@@ -66,6 +71,8 @@ export function BudgetMetricsStrip({
   currency,
   isLoading = false,
   comparison = null,
+  isIncomplete = false,
+  incompleteReason = null,
 }: BudgetMetricsStripProps) {
   if (isLoading) {
     return (
@@ -130,7 +137,27 @@ export function BudgetMetricsStrip({
       <Card className="border-border/60 bg-card/60 border shadow-xs">
         <CardContent className="flex items-start justify-between p-4">
           <div className="flex flex-col gap-1">
-            <span className="text-muted-foreground text-xs font-normal">Controllable Expenses</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-muted-foreground text-xs font-normal">Controllable Expenses</span>
+              {isIncomplete && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge
+                        variant="outline"
+                        className="border-amber-500/40 text-amber-600 dark:text-amber-400 gap-1 font-normal text-[10px] px-1.5 py-0 h-4 cursor-help"
+                      >
+                        <AlertTriangle className="size-2.5" />
+                        Incomplete month
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs text-xs">
+                      {getMonthIncompleteDescription(incompleteReason)}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
+            </div>
             <div className="flex flex-wrap items-baseline gap-2">
               <span className="text-foreground text-lg font-semibold tabular-nums">
                 {formatMoney(totalControllableExpense, currency)}

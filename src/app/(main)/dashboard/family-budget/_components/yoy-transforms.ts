@@ -85,7 +85,7 @@ interface ParsedStatPoint {
   timestamp: number;
 }
 
-function resolveDateCandidate(raw: string | undefined): Date | null {
+export function resolveDateCandidate(raw: string | undefined): Date | null {
   if (!raw) return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
@@ -114,6 +114,16 @@ function resolveDateCandidate(raw: string | undefined): Date | null {
   }
 
   return null;
+}
+
+/**
+ * Normalizes a date candidate string to the ISO format representing the start of the month (yyyy-MM-dd).
+ */
+export function normalizeMonthDate(raw: string | undefined): string {
+  if (!raw) return "";
+  const d = resolveDateCandidate(raw);
+  if (!d) return raw.trim();
+  return format(startOfMonth(d), "yyyy-MM-dd");
 }
 
 /**
