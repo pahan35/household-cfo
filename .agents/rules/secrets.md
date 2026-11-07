@@ -52,10 +52,10 @@ In production on Vercel, the following environment variables configure the share
 
 - `DATABASE_URL`: Direct or pooled PostgreSQL connection string for Supabase
 - `SUPABASE_URL`: Supabase project URL
-- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service role key (elevated server-side access to bypass RLS)
+- `SUPABASE_SECRET_KEY` / `SUPABASE_SERVICE_ROLE_KEY`: Supabase secret API key (`sb_secret_...`) or legacy service role key (elevated server-side access to bypass RLS)
 - `CRON_SECRET`: Bearer token configured in Vercel project settings to authenticate Vercel Cron invocation of `/api/external-provider/cron/daily-sync`
 
-Never log or expose `DATABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, or `CRON_SECRET`. Never prefix these with `NEXT_PUBLIC_`.
+Never log or expose `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `CRON_SECRET`. Never prefix these with `NEXT_PUBLIC_`.
 
 ## How to work with the upstream API
 

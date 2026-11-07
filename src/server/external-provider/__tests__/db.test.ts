@@ -207,6 +207,27 @@ describe("SupabaseRestExternalProviderStore", () => {
     );
   });
 
+  it("omits Authorization header when using new non-JWT sb_secret API key", async () => {
+    const newStore = new SupabaseRestExternalProviderStore("https://example.supabase.co", "sb_secret_test123");
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: "default", sync_version: 1 }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await newStore.getSyncConfig();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://example.supabase.co/rest/v1/ext_sync_config?id=eq.default&select=*",
+      expect.objectContaining({
+        headers: {
+          apikey: "sb_secret_test123",
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+  });
+
   it("sends merge-duplicates header on categories and transactions upsert", async () => {
     let capturedHeaders: Record<string, string> = {};
     let capturedBody = "";

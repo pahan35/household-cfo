@@ -299,7 +299,7 @@ export class SupabaseRestExternalProviderStore implements ExternalProviderStore 
       ...options,
       headers: {
         apikey: this.key,
-        Authorization: `Bearer ${this.key}`,
+        ...(!this.key.startsWith("sb_") ? { Authorization: `Bearer ${this.key}` } : {}),
         "Content-Type": "application/json",
         ...options?.headers,
       },
@@ -534,7 +534,7 @@ export function getExternalProviderStore(): ExternalProviderStore {
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (supabaseUrl && serviceRoleKey) {
     activeStore = new SupabaseRestExternalProviderStore(supabaseUrl, serviceRoleKey);
