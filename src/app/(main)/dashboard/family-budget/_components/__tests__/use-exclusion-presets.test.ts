@@ -1,3 +1,6 @@
+import React from "react";
+
+import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { CategoryType, type ExternalProviderCategory } from "../external-provider-data";
@@ -10,7 +13,25 @@ import {
   parseStoredPresets,
   resolveActivePreset,
   syncPresetsWithRemote,
+  toggleCategoryExclusionList,
+  updateCategoryExclusionList,
+  useExclusionPresets,
 } from "../use-exclusion-presets";
+
+interface HookHarnessProps {
+  categories?: ExternalProviderCategory[];
+  fetchFn: typeof fetch;
+  onMount: (controller: ReturnType<typeof useExclusionPresets>) => void;
+}
+
+function HookHarness({ categories = [], fetchFn, onMount }: HookHarnessProps) {
+  const controller = useExclusionPresets(categories, {
+    fetchFn,
+    disableAutoSync: false,
+  });
+  onMount(controller);
+  return null;
+}
 
 describe("use-exclusion-presets helpers", () => {
   describe("findCategoryIdsByPattern", () => {
@@ -391,6 +412,130 @@ describe("use-exclusion-presets helpers", () => {
 
       expect(reloadSyncA.activePresetId).toBe("custom-device-b");
       expect(reloadSyncA.presets.some((p) => p.id === "custom-device-b")).toBe(true);
+    });
+  });
+
+  describe("updateCategoryExclusionList & toggleCategoryExclusionList", () => {
+    it("adds category when excluded is true", () => {
+      const initial = ["cat-rent"];
+      const result = updateCategoryExclusionList(initial, "cat-tuition", true);
+      expect(result).toEqual(["cat-rent", "cat-tuition"]);
+    });
+
+    it("does not duplicate category when excluded is true and category already exists", () => {
+      const initial = ["cat-rent", "cat-tuition"];
+      const result = updateCategoryExclusionList(initial, "cat-rent", true);
+      expect(result).toEqual(["cat-rent", "cat-tuition"]);
+    });
+
+    it("removes category when excluded is false (regression test)", () => {
+      const initial = ["cat-rent", "cat-tuition"];
+      const result = updateCategoryExclusionList(initial, "cat-rent", false);
+      expect(result).toEqual(["cat-tuition"]);
+    });
+
+    it("leaves exclusions unchanged when excluded is false and category is not present", () => {
+      const initial = ["cat-tuition"];
+      const result = updateCategoryExclusionList(initial, "cat-rent", false);
+      expect(result).toEqual(["cat-tuition"]);
+    });
+
+    it("toggles category addition when absent and removal when present", () => {
+      const added = toggleCategoryExclusionList(["cat-rent"], "cat-tuition");
+      expect(added).toEqual(["cat-rent", "cat-tuition"]);
+
+      const removed = toggleCategoryExclusionList(added, "cat-rent");
+      expect(removed).toEqual(["cat-tuition"]);
+    });
+  });
+
+  describe("useExclusionPresets hook actions (setCategoryExclusion & toggleCategoryExclusion)", () => {
+    it("correctly removes category exclusion when setCategoryExclusion(id, false) is called", async () => {
+      const ref = { current: null as ReturnType<typeof useExclusionPresets> | null };
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+      });
+
+      const mockCategories: ExternalProviderCategory[] = [
+        { id: "cat-rent-1", name: "Rent & Housing", categoryType: CategoryType.Expense },
+      ];
+
+      renderToString(
+        React.createElement(HookHarness, {
+          categories: mockCategories,
+          fetchFn: fetchSpy as unknown as typeof fetch,
+          onMount: (c) => {
+            ref.current = c;
+          },
+        }),
+      );
+
+      expect(ref.current).not.toBeNull();
+      const controller = ref.current;
+      if (!controller) throw new Error("controller should be initialized");
+
+      // Active preset defaults to CONTROLLABLE_EXPENSES, which includes "cat-rent-1"
+      expect(controller.activePreset.expenseExclusions).toContain("cat-rent-1");
+
+      // Clear initial GET sync call
+      fetchSpy.mockClear();
+
+      // Action: unexclude "cat-rent-1"
+      controller.setCategoryExclusion("cat-rent-1", false);
+
+      // Verify that updatePreset was invoked with "cat-rent-1" removed from exclusions
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/family-budget/presets",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"action":"upsert_preset"'),
+        }),
+      );
+
+      const lastCallBody = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(lastCallBody.preset.id).toBe(BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES);
+      expect(lastCallBody.preset.expenseExclusions).not.toContain("cat-rent-1");
+    });
+
+    it("correctly adds category exclusion when setCategoryExclusion(id, true) is called", async () => {
+      const ref = { current: null as ReturnType<typeof useExclusionPresets> | null };
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+      });
+
+      renderToString(
+        React.createElement(HookHarness, {
+          categories: [],
+          fetchFn: fetchSpy as unknown as typeof fetch,
+          onMount: (c) => {
+            ref.current = c;
+          },
+        }),
+      );
+
+      expect(ref.current).not.toBeNull();
+      const controller = ref.current;
+      if (!controller) throw new Error("controller should be initialized");
+
+      fetchSpy.mockClear();
+
+      // Action: exclude "cat-tuition"
+      controller.setCategoryExclusion("cat-tuition", true);
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/family-budget/presets",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"action":"upsert_preset"'),
+        }),
+      );
+
+      const lastCallBody = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(lastCallBody.preset.expenseExclusions).toContain("cat-tuition");
     });
   });
 });

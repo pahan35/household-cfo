@@ -87,6 +87,36 @@ export function mergePresets(defaultPresets: ExclusionPreset[], customPresets: E
 }
 
 /**
+ * Updates an exclusion list by adding or removing a category ID.
+ */
+export function updateCategoryExclusionList(
+  currentExclusions: string[],
+  categoryId: string,
+  excluded: boolean,
+): string[] {
+  const set = new Set(currentExclusions);
+  if (excluded) {
+    set.add(categoryId);
+  } else {
+    set.delete(categoryId);
+  }
+  return Array.from(set);
+}
+
+/**
+ * Toggles a category ID within an exclusion list.
+ */
+export function toggleCategoryExclusionList(currentExclusions: string[], categoryId: string): string[] {
+  const set = new Set(currentExclusions);
+  if (set.has(categoryId)) {
+    set.delete(categoryId);
+  } else {
+    set.add(categoryId);
+  }
+  return Array.from(set);
+}
+
+/**
  * Resolves the currently active preset object from all available presets.
  */
 export function resolveActivePreset(
@@ -364,15 +394,10 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
   const toggleCategoryExclusion = useCallback(
     (categoryId: string, presetId = activePresetId) => {
       const targetPreset = allPresets.find((p) => p.id === presetId) ?? activePreset;
-      const currentExclusions = new Set(targetPreset.expenseExclusions);
-      if (currentExclusions.has(categoryId)) {
-        currentExclusions.delete(categoryId);
-      } else {
-        currentExclusions.add(categoryId);
-      }
+      const expenseExclusions = toggleCategoryExclusionList(targetPreset.expenseExclusions, categoryId);
       updatePreset({
         ...targetPreset,
-        expenseExclusions: Array.from(currentExclusions),
+        expenseExclusions,
       });
     },
     [activePresetId, allPresets, activePreset, updatePreset],
@@ -381,15 +406,10 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
   const setCategoryExclusion = useCallback(
     (categoryId: string, excluded: boolean, presetId = activePresetId) => {
       const targetPreset = allPresets.find((p) => p.id === presetId) ?? activePreset;
-      const currentExclusions = new Set(targetPreset.expenseExclusions);
-      if (excluded) {
-        currentExclusions.add(categoryId);
-      } else {
-        currentExclusions.add(categoryId);
-      }
+      const expenseExclusions = updateCategoryExclusionList(targetPreset.expenseExclusions, categoryId, excluded);
       updatePreset({
         ...targetPreset,
-        expenseExclusions: Array.from(currentExclusions),
+        expenseExclusions,
       });
     },
     [activePresetId, allPresets, activePreset, updatePreset],
