@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CategoryType, type ExternalProviderCategory } from "../external-provider-data";
 import type { ExclusionPreset } from "../expense-transforms";
@@ -9,6 +9,7 @@ import {
   mergePresets,
   parseStoredPresets,
   resolveActivePreset,
+  syncPresetsWithRemote,
 } from "../use-exclusion-presets";
 
 describe("use-exclusion-presets helpers", () => {
@@ -164,6 +165,232 @@ describe("use-exclusion-presets helpers", () => {
       ];
       const active = resolveActivePreset(singlePreset, "unknown", singlePreset);
       expect(active.id).toBe("custom-only");
+    });
+  });
+
+  describe("syncPresetsWithRemote (Cloud Sync & Auto-Migration)", () => {
+    const defaultPresets = buildDefaultPresets(["cat-tax-1"], ["cat-rent-1"]);
+
+    it("auto-migrates when remote is empty by seeding defaults and local presets", async () => {
+      const localPresets: ExclusionPreset[] = [
+        {
+          id: "custom-local",
+          name: "My Local Custom",
+          expenseExclusions: ["cat-gym"],
+          incomeDeductions: [],
+        },
+      ];
+
+      const fetchSpy = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        if (opts?.method === "POST") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ok: true }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ presets: [], activePresetId: null }),
+        };
+      });
+
+      const res = await syncPresetsWithRemote({
+        localPresets,
+        localActiveId: "custom-local",
+        defaultPresets,
+        fetchFn: fetchSpy as unknown as typeof fetch,
+      });
+
+      expect(res.wasAutoMigrated).toBe(true);
+      expect(res.isOfflineFallback).toBe(false);
+      expect(res.activePresetId).toBe("custom-local");
+      expect(res.presets.some((p) => p.id === "custom-local")).toBe(true);
+      expect(res.presets.some((p) => p.id === BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES)).toBe(true);
+
+      // Verify POST call was made with seed_if_empty
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/family-budget/presets",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"action":"seed_if_empty"'),
+        }),
+      );
+    });
+
+    it("restores remote presets and active selection when remote data exists", async () => {
+      const remotePresets: ExclusionPreset[] = [
+        {
+          id: BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES,
+          name: "Controllable Expenses (Remote)",
+          expenseExclusions: ["remote-rent-id"],
+          incomeDeductions: ["remote-tax-id"],
+        },
+        {
+          id: "custom-spouse",
+          name: "Spouse Preset",
+          expenseExclusions: ["remote-tuition"],
+          incomeDeductions: [],
+        },
+      ];
+
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ presets: remotePresets, activePresetId: "custom-spouse" }),
+      });
+
+      const res = await syncPresetsWithRemote({
+        localPresets: [],
+        localActiveId: BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES,
+        defaultPresets,
+        fetchFn: fetchSpy as unknown as typeof fetch,
+      });
+
+      expect(res.wasAutoMigrated).toBe(false);
+      expect(res.isOfflineFallback).toBe(false);
+      expect(res.presets).toEqual(remotePresets);
+      expect(res.activePresetId).toBe("custom-spouse");
+    });
+
+    it("gracefully falls back to local presets on network failure", async () => {
+      const localPresets: ExclusionPreset[] = [
+        {
+          id: "local-only",
+          name: "Local Cache",
+          expenseExclusions: ["local-car"],
+          incomeDeductions: [],
+        },
+      ];
+
+      const fetchSpy = vi.fn().mockRejectedValue(new Error("Network offline"));
+
+      const res = await syncPresetsWithRemote({
+        localPresets,
+        localActiveId: "local-only",
+        defaultPresets,
+        fetchFn: fetchSpy as unknown as typeof fetch,
+      });
+
+      expect(res.isOfflineFallback).toBe(true);
+      expect(res.wasAutoMigrated).toBe(false);
+      expect(res.presets).toEqual(localPresets);
+      expect(res.activePresetId).toBe("local-only");
+    });
+
+    it("gracefully falls back to local presets when server returns 500", async () => {
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+      });
+
+      const res = await syncPresetsWithRemote({
+        localPresets: defaultPresets,
+        localActiveId: BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES,
+        defaultPresets,
+        fetchFn: fetchSpy as unknown as typeof fetch,
+      });
+
+      expect(res.isOfflineFallback).toBe(true);
+      expect(res.presets).toEqual(defaultPresets);
+    });
+
+    it("verifies multi-device synchronization and persistence across simulated reload", async () => {
+      // Step 1: Device A modifies "Controllable Expenses" to exclude tuition and sets custom preset
+      const customizedControllable: ExclusionPreset = {
+        id: BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES,
+        name: "Controllable Expenses",
+        expenseExclusions: ["cat-rent-1", "cat-tuition-1"],
+        incomeDeductions: ["cat-tax-1"],
+        isBuiltIn: true,
+      };
+
+      // Remote Supabase DB starts empty
+      let remoteDb: ExclusionPreset[] = [];
+      let remoteActivePresetId = BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES;
+
+      const mockFetch = vi.fn().mockImplementation(async (_url: string, opts?: RequestInit) => {
+        if (opts?.method === "POST") {
+          const body = JSON.parse(opts.body as string);
+          if (body.action === "seed_if_empty") {
+            remoteDb = body.presets;
+            remoteActivePresetId = body.activePresetId;
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({ presets: remoteDb, activePresetId: remoteActivePresetId }),
+            };
+          }
+          if (body.action === "upsert_preset") {
+            remoteDb = [...remoteDb.filter((p) => p.id !== body.preset.id), body.preset];
+            if (body.makeActive) remoteActivePresetId = body.preset.id;
+            return { ok: true, status: 200, json: async () => ({ ok: true }) };
+          }
+          if (body.action === "set_active") {
+            remoteActivePresetId = body.activePresetId;
+            return { ok: true, status: 200, json: async () => ({ ok: true }) };
+          }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ presets: remoteDb, activePresetId: remoteActivePresetId }),
+        };
+      });
+
+      // Device A initializes with local customized controllable expenses
+      const syncResultA = await syncPresetsWithRemote({
+        localPresets: [customizedControllable],
+        localActiveId: BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES,
+        defaultPresets,
+        fetchFn: mockFetch as unknown as typeof fetch,
+      });
+
+      expect(syncResultA.wasAutoMigrated).toBe(true);
+      expect(remoteDb.find((p) => p.id === BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES)?.expenseExclusions).toEqual([
+        "cat-rent-1",
+        "cat-tuition-1",
+      ]);
+
+      // Step 2: Device B (e.g. mobile phone with zero localStorage) loads presets
+      const syncResultB = await syncPresetsWithRemote({
+        localPresets: [],
+        localActiveId: BUILT_IN_PRESET_IDS.ALL_ACTIVITY,
+        defaultPresets,
+        fetchFn: mockFetch as unknown as typeof fetch,
+      });
+
+      expect(syncResultB.wasAutoMigrated).toBe(false);
+      expect(
+        syncResultB.presets.find((p) => p.id === BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES)?.expenseExclusions,
+      ).toEqual(["cat-rent-1", "cat-tuition-1"]);
+
+      // Step 3: Device B creates a new custom preset and sets it active
+      await mockFetch("/api/family-budget/presets", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "upsert_preset",
+          preset: {
+            id: "custom-device-b",
+            name: "Device B Preset",
+            expenseExclusions: ["cat-car"],
+            incomeDeductions: [],
+          },
+          makeActive: true,
+        }),
+      });
+
+      // Step 4: Device A reloads browser, and syncs from Supabase
+      const reloadSyncA = await syncPresetsWithRemote({
+        localPresets: syncResultA.presets,
+        localActiveId: syncResultA.activePresetId,
+        defaultPresets,
+        fetchFn: mockFetch as unknown as typeof fetch,
+      });
+
+      expect(reloadSyncA.activePresetId).toBe("custom-device-b");
+      expect(reloadSyncA.presets.some((p) => p.id === "custom-device-b")).toBe(true);
     });
   });
 });
