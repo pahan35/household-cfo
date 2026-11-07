@@ -319,11 +319,17 @@ export function getDefaultStarterTracks(): OfferTrack[] {
 }
 
 // ---------------------------------------------------------------------------
-// Repository Interface & LocalStorage Implementation
+// Repository Interface & LocalStorage / Supabase Implementation
 // ---------------------------------------------------------------------------
 
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
+}
+
 export interface OfferRepository {
-  load(): Promise<{ tracks: OfferTrack[]; globalConfig: ComparatorGlobalConfig }>;
+  load(): Promise<{ tracks: OfferTrack[]; globalConfig: ComparatorGlobalConfig; isOfflineFallback?: boolean }>;
   save(tracks: OfferTrack[], globalConfig: ComparatorGlobalConfig): Promise<void>;
   exportJson(tracks: OfferTrack[], globalConfig: ComparatorGlobalConfig): string;
   importJson(jsonString: string): { tracks: OfferTrack[]; globalConfig: ComparatorGlobalConfig };
@@ -332,31 +338,45 @@ export interface OfferRepository {
 
 export class LocalStorageOfferRepository implements OfferRepository {
   private memoryPayload: OfferComparatorStoragePayload | null = null;
-  private readonly storageKey: string;
+  public readonly storageKey: string;
+  private readonly storage: StorageLike | null = null;
+  private readonly fetchFn: typeof fetch;
 
-  constructor(storageKey = OFFER_STORAGE_KEY) {
+  constructor(storageKey = OFFER_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
     this.storageKey = storageKey;
+    if (customStorage) {
+      this.storage = customStorage;
+    } else if (typeof window !== "undefined" && typeof window.localStorage !== "undefined") {
+      this.storage = window.localStorage;
+    } else {
+      this.storage = null;
+    }
+
+    if (customFetch) {
+      this.fetchFn = customFetch;
+    } else if (typeof window !== "undefined") {
+      this.fetchFn = (...args) => fetch(...args);
+    } else {
+      this.fetchFn = () => Promise.reject(new Error("Fetch requires browser environment or customFetch"));
+    }
   }
 
-  private isLocalStorageAvailable(): boolean {
-    return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
-  }
-
-  public async load(): Promise<{ tracks: OfferTrack[]; globalConfig: ComparatorGlobalConfig }> {
-    if (this.isLocalStorageAvailable()) {
+  public loadLocal(): { tracks: OfferTrack[]; globalConfig: ComparatorGlobalConfig; isExisting: boolean } {
+    if (this.storage) {
       try {
-        const raw = window.localStorage.getItem(this.storageKey);
+        const raw = this.storage.getItem(this.storageKey);
         if (raw) {
           const parsed = JSON.parse(raw) as OfferComparatorStoragePayload;
           if (parsed && parsed.version === 1 && Array.isArray(parsed.tracks)) {
             return {
               tracks: parsed.tracks,
               globalConfig: { ...DEFAULT_COMPARATOR_CONFIG, ...(parsed.globalConfig || {}) },
+              isExisting: true,
             };
           }
         }
       } catch (e) {
-        console.warn("Failed to load offer comparator state from localStorage, initializing defaults", e);
+        console.warn("Failed to load offer comparator state from storage, initializing defaults", e);
       }
     }
 
@@ -364,33 +384,19 @@ export class LocalStorageOfferRepository implements OfferRepository {
       return {
         tracks: this.memoryPayload.tracks,
         globalConfig: this.memoryPayload.globalConfig,
+        isExisting: true,
       };
     }
 
-    // Default seed
     const defaultTracks = getDefaultStarterTracks();
-    const defaultPayload: OfferComparatorStoragePayload = {
-      version: 1,
-      tracks: defaultTracks,
-      globalConfig: DEFAULT_COMPARATOR_CONFIG,
-    };
-
-    if (this.isLocalStorageAvailable()) {
-      try {
-        window.localStorage.setItem(this.storageKey, JSON.stringify(defaultPayload));
-      } catch {
-        // quota exceeded or private mode
-      }
-    }
-    this.memoryPayload = defaultPayload;
-
     return {
       tracks: defaultTracks,
       globalConfig: DEFAULT_COMPARATOR_CONFIG,
+      isExisting: false,
     };
   }
 
-  public async save(tracks: OfferTrack[], globalConfig: ComparatorGlobalConfig): Promise<void> {
+  public saveLocal(tracks: OfferTrack[], globalConfig: ComparatorGlobalConfig): void {
     const payload: OfferComparatorStoragePayload = {
       version: 1,
       tracks,
@@ -399,11 +405,102 @@ export class LocalStorageOfferRepository implements OfferRepository {
 
     this.memoryPayload = payload;
 
-    if (this.isLocalStorageAvailable()) {
+    if (this.storage) {
       try {
-        window.localStorage.setItem(this.storageKey, JSON.stringify(payload));
+        this.storage.setItem(this.storageKey, JSON.stringify(payload));
       } catch (e) {
-        console.error("Failed to save offer comparator state to localStorage", e);
+        console.error("Failed to save offer comparator state to storage", e);
+      }
+    }
+  }
+
+  public async load(): Promise<{
+    tracks: OfferTrack[];
+    globalConfig: ComparatorGlobalConfig;
+    isOfflineFallback?: boolean;
+  }> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/offers", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch offers from server: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const remoteTracks: OfferTrack[] = Array.isArray(data.tracks) ? data.tracks : [];
+      const remoteConfig: ComparatorGlobalConfig = data.globalConfig
+        ? { ...DEFAULT_COMPARATOR_CONFIG, ...data.globalConfig }
+        : DEFAULT_COMPARATOR_CONFIG;
+
+      // Auto-migration (Task 3.2):
+      // If the remote database is empty, seed it with existing localStorage data
+      if (remoteTracks.length === 0) {
+        const local = this.loadLocal();
+        const tracksToSeed = local.tracks.length > 0 ? local.tracks : getDefaultStarterTracks();
+        const configToSeed = local.globalConfig;
+
+        try {
+          await this.fetchFn("/api/family-budget/offers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "save_all",
+              tracks: tracksToSeed,
+              globalConfig: configToSeed,
+            }),
+          });
+        } catch {
+          // Seeding network failure is non-fatal
+        }
+
+        this.saveLocal(tracksToSeed, configToSeed);
+        return {
+          tracks: tracksToSeed,
+          globalConfig: configToSeed,
+          isOfflineFallback: false,
+        };
+      }
+
+      // Remote has data: update local cache
+      this.saveLocal(remoteTracks, remoteConfig);
+      return {
+        tracks: remoteTracks,
+        globalConfig: remoteConfig,
+        isOfflineFallback: false,
+      };
+    } catch {
+      // Offline fallback
+      const local = this.loadLocal();
+      if (!local.isExisting) {
+        this.saveLocal(local.tracks, local.globalConfig);
+      }
+      return {
+        tracks: local.tracks,
+        globalConfig: local.globalConfig,
+        isOfflineFallback: true,
+      };
+    }
+  }
+
+  public async save(tracks: OfferTrack[], globalConfig: ComparatorGlobalConfig): Promise<void> {
+    this.saveLocal(tracks, globalConfig);
+
+    try {
+      await this.fetchFn("/api/family-budget/offers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_all",
+          tracks,
+          globalConfig,
+        }),
+      });
+    } catch (e) {
+      if (typeof window !== "undefined") {
+        console.warn("Failed to sync offer comparator changes to Supabase (offline fallback active):", e);
       }
     }
   }
