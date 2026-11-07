@@ -15,6 +15,8 @@ export interface ExclusionPreset {
   incomeDeductions: string[]; // Category IDs deducted from Gross Income (e.g. Tax)
   expenseExclusions: string[]; // Category IDs omitted from Expense Pie/Totals (e.g. Rent)
   isBuiltIn?: boolean;
+  updatedAt?: string;
+  createdAt?: string;
 }
 
 export type CompareMode = "none" | "prev_month" | "prev_year" | "custom";

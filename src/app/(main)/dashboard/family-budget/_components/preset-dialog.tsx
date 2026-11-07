@@ -4,6 +4,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 
 import { Archive, Check, FolderEdit, Plus, Search, Settings2, Trash2 } from "lucide-react";
 
+import { CloudSyncBadge } from "@/components/cloud-sync-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -26,6 +27,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { CloudSyncStatus, ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
 import {
   CategoryType,
@@ -120,6 +122,42 @@ export function sanitizePresetCategoryName(
   return { displayName, isArchived };
 }
 
+export function PresetDialogHeader({
+  syncStatus = "synced",
+  conflicts = [],
+  activeConflict,
+  onResolveConflict,
+  lastSyncedAt,
+}: {
+  syncStatus?: CloudSyncStatus;
+  conflicts?: ConflictRecord<ExclusionPreset>[];
+  activeConflict?: ConflictRecord<ExclusionPreset> | null;
+  onResolveConflict?: (entityId: string, choice: ConflictResolutionChoice) => Promise<void> | void;
+  lastSyncedAt?: Date | null;
+}) {
+  return (
+    <DialogHeader className="gap-1 border-b pb-3">
+      <div className="flex items-center justify-between gap-2 pr-6">
+        <div className="flex items-center gap-2">
+          <Settings2 className="size-4.5 text-primary" />
+          <DialogTitle className="text-base font-semibold">Exclusion Presets & Fixed Obligations</DialogTitle>
+        </div>
+        <CloudSyncBadge
+          status={syncStatus}
+          conflicts={conflicts}
+          activeConflict={activeConflict}
+          onResolveConflict={onResolveConflict}
+          lastSyncedAt={lastSyncedAt}
+        />
+      </div>
+      <DialogDescription className="text-muted-foreground text-xs">
+        Exclude non-controllable obligations (Rent, Insurance PLN, tuition, loans) from living expenses. Excluded
+        categories are omitted from controllable spending and deducted from the income pool.
+      </DialogDescription>
+    </DialogHeader>
+  );
+}
+
 export function PresetDialog({
   open,
   onOpenChange,
@@ -137,6 +175,11 @@ export function PresetDialog({
     createPreset,
     deletePreset,
     renamePreset,
+    syncStatus = "synced",
+    lastSyncedAt,
+    conflicts = [],
+    activeConflict,
+    resolveConflict,
   } = presetController;
 
   const [selectedPresetId, setSelectedPresetId] = useState<string>(activePresetId);
@@ -302,16 +345,13 @@ export function PresetDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88vh] w-full max-w-xl flex-col gap-4 p-5 sm:max-w-xl">
-        <DialogHeader className="gap-1 border-b pb-3">
-          <div className="flex items-center gap-2">
-            <Settings2 className="size-4.5 text-primary" />
-            <DialogTitle className="text-base font-semibold">Exclusion Presets & Fixed Obligations</DialogTitle>
-          </div>
-          <DialogDescription className="text-muted-foreground text-xs">
-            Exclude non-controllable obligations (Rent, Insurance PLN, tuition, loans) from living expenses. Excluded
-            categories are omitted from controllable spending and deducted from the income pool.
-          </DialogDescription>
-        </DialogHeader>
+        <PresetDialogHeader
+          syncStatus={syncStatus}
+          conflicts={conflicts}
+          activeConflict={activeConflict}
+          onResolveConflict={resolveConflict}
+          lastSyncedAt={lastSyncedAt}
+        />
 
         {/* Preset Management Strip */}
         <div className="bg-muted/40 flex flex-col gap-2.5 rounded-lg border p-3">

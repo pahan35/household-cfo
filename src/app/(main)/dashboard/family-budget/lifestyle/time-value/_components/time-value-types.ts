@@ -174,12 +174,14 @@ export interface TimeValueMotivatorConfig {
   personalGoals: PersonalGoal[];
   weeklyLogs: WeeklyCheckInEntry[];
   learningProjectedRateGrowthPct: number; // Projected career hourly rate lift from active skill study (e.g. 5%)
+  updatedAt?: string;
 }
 
 export interface TimeValueStoragePayload {
   version: 1;
   config: TimeValueMotivatorConfig;
   exportedAt?: string;
+  updatedAt?: string;
 }
 
 // ---------------------------------------------------------------------------

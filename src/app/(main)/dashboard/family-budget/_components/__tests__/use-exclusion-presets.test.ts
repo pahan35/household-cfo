@@ -538,4 +538,100 @@ describe("use-exclusion-presets helpers", () => {
       expect(lastCallBody.preset.expenseExclusions).toContain("cat-tuition");
     });
   });
+
+  describe("syncPresetsWithRemote & Reconciler Integration", () => {
+    it("auto-replays offline-created presets without overwriting local custom changes", async () => {
+      const defaultPresets = buildDefaultPresets();
+      const offlinePreset: ExclusionPreset = {
+        id: "offline-preset-777",
+        name: "Offline Draft Budget",
+        expenseExclusions: ["cat-1", "cat-2"],
+        incomeDeductions: [],
+        createdAt: "2026-03-01T10:00:00.000Z",
+        updatedAt: "2026-03-01T10:00:00.000Z",
+      };
+
+      const mockFetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "GET") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              presets: defaultPresets,
+              activePresetId: defaultPresets[0].id,
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true }),
+        };
+      });
+
+      const res = await syncPresetsWithRemote({
+        localPresets: [offlinePreset],
+        localActiveId: "offline-preset-777",
+        defaultPresets,
+        fetchFn: mockFetch as unknown as typeof fetch,
+        hasLocalStore: true,
+      });
+
+      expect(res.status).toBe("synced");
+      expect(res.conflicts).toHaveLength(0);
+
+      // Verify that offline preset was replayed with a non-offline ID and retained
+      const replayed = res.presets.find((p) => p.name === "Offline Draft Budget");
+      expect(replayed).toBeDefined();
+      expect(replayed?.id.startsWith("offline-")).toBe(false);
+      expect(replayed?.expenseExclusions).toEqual(["cat-1", "cat-2"]);
+    });
+
+    it("detects concurrent conflict between local and remote preset edits without wiping cache", async () => {
+      const defaultPresets = buildDefaultPresets();
+      const localPreset: ExclusionPreset = {
+        id: "preset-custom-1",
+        name: "Custom Family Plan (Local Edit)",
+        expenseExclusions: ["cat-dining", "cat-travel"],
+        incomeDeductions: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T14:00:00.000Z",
+      };
+
+      const remotePreset: ExclusionPreset = {
+        id: "preset-custom-1",
+        name: "Custom Family Plan (Remote Edit)",
+        expenseExclusions: ["cat-dining", "cat-entertainment"],
+        incomeDeductions: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T15:00:00.000Z",
+      };
+
+      const mockFetch = vi.fn().mockImplementation(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          presets: [...defaultPresets, remotePreset],
+          activePresetId: "preset-custom-1",
+        }),
+      }));
+
+      const res = await syncPresetsWithRemote({
+        localPresets: [localPreset],
+        localActiveId: "preset-custom-1",
+        defaultPresets,
+        fetchFn: mockFetch as unknown as typeof fetch,
+        lastSyncedAt: "2026-03-01T12:00:00.000Z",
+        hasLocalStore: true,
+      });
+
+      expect(res.status).toBe("conflict");
+      expect(res.conflicts).toHaveLength(1);
+      expect(res.conflicts[0].entityId).toBe("preset-custom-1");
+
+      // Verify local version was preserved in presets list (no silent overwrite!)
+      const preserved = res.presets.find((p) => p.id === "preset-custom-1");
+      expect(preserved?.name).toBe("Custom Family Plan (Local Edit)");
+    });
+  });
 });

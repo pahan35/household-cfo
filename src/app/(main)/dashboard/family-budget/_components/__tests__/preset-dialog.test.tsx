@@ -1,7 +1,15 @@
+import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { Dialog } from "@/components/ui/dialog";
+
 import { CategoryType, type ExternalProviderCategory, type StatCategoryPoint } from "../external-provider-data";
-import { filterExpenseCategories, isPresetCategoryActive, sanitizePresetCategoryName } from "../preset-dialog";
+import {
+  filterExpenseCategories,
+  isPresetCategoryActive,
+  PresetDialogHeader,
+  sanitizePresetCategoryName,
+} from "../preset-dialog";
 
 describe("preset-dialog helpers", () => {
   describe("filterExpenseCategories", () => {
@@ -105,6 +113,29 @@ describe("preset-dialog helpers", () => {
       const result = sanitizePresetCategoryName("Underground Parking", "PLN");
       expect(result.isArchived).toBe(false);
       expect(result.displayName).toBe("Underground Parking");
+    });
+  });
+
+  describe("PresetDialog Cloud Sync Badge", () => {
+    it("renders Cloud Synced badge in the dialog header", () => {
+      const html = renderToString(
+        <Dialog open={true}>
+          <PresetDialogHeader syncStatus="synced" lastSyncedAt={new Date("2026-03-01T12:00:00Z")} />
+        </Dialog>,
+      );
+
+      expect(html).toContain("Exclusion Presets &amp; Fixed Obligations");
+      expect(html).toContain("Cloud Synced");
+    });
+
+    it("renders Offline indicator when offline fallback is active", () => {
+      const html = renderToString(
+        <Dialog open={true}>
+          <PresetDialogHeader syncStatus="offline" />
+        </Dialog>,
+      );
+
+      expect(html).toContain("Local Cache");
     });
   });
 });

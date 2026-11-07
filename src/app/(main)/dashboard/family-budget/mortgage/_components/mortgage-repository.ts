@@ -1,4 +1,11 @@
 import {
+  type CloudSyncStatus,
+  type ConflictRecord,
+  type ConflictResolutionChoice,
+  reconcileEntities,
+} from "@/lib/cloud-sync-reconciler";
+
+import {
   DEFAULT_HOME_GOAL_TRACKING_CONFIG,
   DEFAULT_MORTGAGE_FINANCING_CONFIG,
   DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
@@ -216,15 +223,36 @@ export class MortgageRepository {
   // Asynchronous Cloud Synchronization & Auto-Migration (Supabase)
   // =========================================================================
 
+  public getLastSyncedAt(): string | null {
+    if (!this.storage) return null;
+    try {
+      return this.storage.getItem(`${this.storageKey}:lastSyncedAt`);
+    } catch {
+      return null;
+    }
+  }
+
+  public setLastSyncedAt(timestamp: string): void {
+    if (!this.storage) return;
+    try {
+      this.storage.setItem(`${this.storageKey}:lastSyncedAt`, timestamp);
+    } catch {
+      // Ignore storage write error
+    }
+  }
+
   /**
-   * Fetches scenarios from Supabase.
-   * If remote is empty, automatically seeds it with existing localStorage settings (Task 3.2).
-   * Gracefully falls back to local cache if offline or on network error.
+   * Fetches scenarios from Supabase and applies reconciliation:
+   * - Auto-replays offline-created scenarios (`offline-*` IDs).
+   * - Detects concurrent conflicting edits and halts silent local overwrites.
+   * - Cleanly updates local cache and persists synchronized state.
    */
   public async fetchRemoteScenarios(signal?: AbortSignal): Promise<{
     scenarios: MortgageScenario[];
     activeScenarioId: string;
     isOfflineFallback?: boolean;
+    conflicts?: ConflictRecord<MortgageScenario>[];
+    status?: CloudSyncStatus;
   }> {
     try {
       const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
@@ -239,8 +267,9 @@ export class MortgageRepository {
 
       const data = await res.json();
       const remoteScenarios: MortgageScenario[] = data.scenarios ?? [];
+      const local = this.loadLocalScenarios();
 
-      // Auto-migration: if remote database is empty, seed it with the current local scenario
+      // Auto-migration: if remote database is empty, seed it with current local scenario
       if (remoteScenarios.length === 0) {
         const localConfig = this.loadConfig();
         const seeded = await this.createRemoteScenario({
@@ -250,24 +279,64 @@ export class MortgageRepository {
         });
 
         this.saveLocalScenarios([seeded], seeded.id);
+        this.setLastSyncedAt(new Date().toISOString());
         return {
           scenarios: [seeded],
           activeScenarioId: seeded.id,
+          isOfflineFallback: false,
+          conflicts: [],
+          status: "synced",
         };
       }
 
-      // Reconcile active scenario
-      const { activeScenarioId: currentActiveId } = this.loadLocalScenarios();
-      const activeId =
-        currentActiveId && remoteScenarios.some((s) => s.id === currentActiveId)
-          ? currentActiveId
-          : (remoteScenarios.find((s) => s.isPrimary)?.id ?? remoteScenarios[0].id);
+      // Reconcile local scenarios with remote scenarios
+      const reconcileResult = await reconcileEntities<MortgageScenario>({
+        localEntities: local.scenarios,
+        remoteEntities: remoteScenarios,
+        lastSyncedAt: this.getLastSyncedAt(),
+        uploadOfflineEntity: async (item) => {
+          return await this.createRemoteScenarioWithoutCacheUpdate({
+            name: item.name,
+            isPrimary: item.isPrimary,
+            config: item.config,
+          });
+        },
+        uploadModifiedEntity: async (item) => {
+          return await this.updateRemoteScenarioWithoutCacheUpdate(item.id, {
+            name: item.name,
+            isPrimary: item.isPrimary,
+            config: item.config,
+          });
+        },
+        getEntityName: (item) => item.name,
+      });
 
-      this.saveLocalScenarios(remoteScenarios, activeId);
+      // Map replayed offline ID to server ID for active scenario selection
+      let activeId = local.activeScenarioId;
+      if (activeId && reconcileResult.replayedIds[activeId]) {
+        activeId = reconcileResult.replayedIds[activeId];
+      }
+
+      if (!activeId || !reconcileResult.mergedEntities.some((s) => s.id === activeId)) {
+        activeId =
+          reconcileResult.mergedEntities.find((s) => s.id === activeId)?.id ??
+          reconcileResult.mergedEntities.find((s) => s.isPrimary)?.id ??
+          reconcileResult.mergedEntities[0]?.id ??
+          "";
+      }
+
+      this.saveLocalScenarios(reconcileResult.mergedEntities, activeId);
+
+      if (reconcileResult.conflicts.length === 0) {
+        this.setLastSyncedAt(new Date().toISOString());
+      }
 
       return {
-        scenarios: remoteScenarios,
+        scenarios: reconcileResult.mergedEntities,
         activeScenarioId: activeId,
+        isOfflineFallback: false,
+        conflicts: reconcileResult.conflicts,
+        status: reconcileResult.status,
       };
     } catch (_err) {
       // Offline fallback: load from localStorage
@@ -277,8 +346,76 @@ export class MortgageRepository {
         scenarios,
         activeScenarioId: local.activeScenarioId ?? scenarios[0].id,
         isOfflineFallback: true,
+        conflicts: [],
+        status: "offline",
       };
     }
+  }
+
+  /**
+   * Resolves a synchronization conflict by either pushing local draft to remote or accepting cloud version.
+   */
+  public async resolveConflict(
+    conflict: ConflictRecord<MortgageScenario>,
+    choice: ConflictResolutionChoice,
+  ): Promise<MortgageScenario[]> {
+    const { scenarios, activeScenarioId } = this.loadLocalScenarios();
+
+    if (choice === "keep_local") {
+      await this.updateRemoteScenario(conflict.entityId, {
+        name: conflict.localVersion.name,
+        isPrimary: conflict.localVersion.isPrimary,
+        config: conflict.localVersion.config,
+      });
+      this.setLastSyncedAt(new Date().toISOString());
+      return this.loadLocalScenarios().scenarios;
+    }
+
+    const updated = scenarios.map((s) => (s.id === conflict.entityId ? conflict.remoteVersion : s));
+    this.saveLocalScenarios(updated, activeScenarioId ?? undefined);
+    this.setLastSyncedAt(new Date().toISOString());
+    return updated;
+  }
+
+  public async createRemoteScenarioWithoutCacheUpdate(input: {
+    name: string;
+    isPrimary?: boolean;
+    config?: Partial<MortgageSimulatorConfig>;
+  }): Promise<MortgageScenario> {
+    const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to create scenario remotely: HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return data.scenario;
+  }
+
+  public async updateRemoteScenarioWithoutCacheUpdate(
+    id: string,
+    updates: {
+      name?: string;
+      isPrimary?: boolean;
+      config?: Partial<MortgageSimulatorConfig>;
+    },
+  ): Promise<MortgageScenario> {
+    const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, ...updates }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to update scenario remotely: HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return data.scenario;
   }
 
   /**

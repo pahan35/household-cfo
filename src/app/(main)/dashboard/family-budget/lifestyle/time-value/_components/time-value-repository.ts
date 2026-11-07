@@ -7,6 +7,14 @@
  */
 
 import {
+  type CloudSyncStatus,
+  type ConflictRecord,
+  type ConflictResolutionChoice,
+  reconcileEntities,
+  reconcileSingleRecord,
+} from "@/lib/cloud-sync-reconciler";
+
+import {
   type PersonalGoal,
   TIME_VALUE_STORAGE_KEY,
   type TimeValueMotivatorConfig,
@@ -194,6 +202,7 @@ export class TimeValueRepository {
   private readonly storage: StorageLike | null = null;
   private readonly fetchFn: typeof fetch;
   private memoryConfig: TimeValueMotivatorConfig | null = null;
+  private pendingConflict: ConflictRecord<TimeValueMotivatorConfig> | null = null;
 
   constructor(storageKey = TIME_VALUE_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
     this.storageKey = storageKey;
@@ -266,13 +275,18 @@ export class TimeValueRepository {
   }
 
   public saveConfig(config: TimeValueMotivatorConfig): void {
-    this.memoryConfig = config;
+    const preparedConfig: TimeValueMotivatorConfig = {
+      ...config,
+      updatedAt: config.updatedAt ?? new Date().toISOString(),
+    };
+    this.memoryConfig = preparedConfig;
     if (this.storage) {
       try {
         const payload: TimeValueStoragePayload = {
           version: 1,
-          config,
+          config: preparedConfig,
           exportedAt: new Date().toISOString(),
+          updatedAt: preparedConfig.updatedAt,
         };
         this.storage.setItem(this.storageKey, JSON.stringify(payload));
       } catch (err) {
@@ -281,13 +295,44 @@ export class TimeValueRepository {
     }
   }
 
+  public hasLocalData(): boolean {
+    if (!this.storage) return false;
+    try {
+      return this.storage.getItem(this.storageKey) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  public getLastSyncedAt(): string | null {
+    if (!this.storage) return null;
+    try {
+      return this.storage.getItem(`${this.storageKey}:lastSyncedAt`);
+    } catch {
+      return null;
+    }
+  }
+
+  public setLastSyncedAt(timestamp: string): void {
+    if (!this.storage) return;
+    try {
+      this.storage.setItem(`${this.storageKey}:lastSyncedAt`, timestamp);
+    } catch {
+      // Ignore
+    }
+  }
+
+  public getPendingConflict(): ConflictRecord<TimeValueMotivatorConfig> | null {
+    return this.pendingConflict;
+  }
+
   public addWeeklyCheckIn(entry: WeeklyCheckInEntry): TimeValueMotivatorConfig {
     const current = this.loadConfig();
     const updatedLogs = [
       entry,
       ...current.weeklyLogs.filter((log) => log.id !== entry.id && log.weekStartDate !== entry.weekStartDate),
     ];
-    const updated = { ...current, weeklyLogs: updatedLogs };
+    const updated = { ...current, weeklyLogs: updatedLogs, updatedAt: new Date().toISOString() };
     this.saveConfig(updated);
     return updated;
   }
@@ -297,6 +342,7 @@ export class TimeValueRepository {
       version: 1,
       config,
       exportedAt: new Date().toISOString(),
+      updatedAt: config.updatedAt ?? new Date().toISOString(),
     };
     return JSON.stringify(payload, null, 2);
   }
@@ -321,6 +367,7 @@ export class TimeValueRepository {
       petProjects: Array.isArray(parsed.config.petProjects) ? parsed.config.petProjects : defaults.petProjects,
       personalGoals: Array.isArray(parsed.config.personalGoals) ? parsed.config.personalGoals : defaults.personalGoals,
       weeklyLogs: Array.isArray(parsed.config.weeklyLogs) ? parsed.config.weeklyLogs : defaults.weeklyLogs,
+      updatedAt: new Date().toISOString(),
     };
     this.saveConfig(merged);
     return merged;
@@ -337,14 +384,17 @@ export class TimeValueRepository {
   // =========================================================================
 
   /**
-   * Fetches configuration from Supabase.
-   * If remote is unseeded/empty, automatically seeds it with existing localStorage data (Task 3.2).
-   * Gracefully falls back to local cache if offline or on network error.
+   * Fetches configuration from Supabase and applies reconciliation:
+   * - Auto-replays offline check-in logs and personal goals.
+   * - Detects concurrent conflicting edits and halts silent local overwrites.
+   * - Gracefully falls back to local cache if offline or on network error.
    */
   public async fetchRemoteConfig(signal?: AbortSignal): Promise<{
     config: TimeValueMotivatorConfig;
     isOfflineFallback?: boolean;
     wasAutoMigrated?: boolean;
+    conflicts?: ConflictRecord<any>[];
+    status?: CloudSyncStatus;
   }> {
     try {
       const res = await this.fetchFn("/api/family-budget/time-value", {
@@ -364,17 +414,123 @@ export class TimeValueRepository {
       if (!remoteConfig) {
         const localConfig = this.loadConfig();
         await this.saveRemoteConfig(localConfig);
+        this.setLastSyncedAt(new Date().toISOString());
         return {
           config: localConfig,
           wasAutoMigrated: true,
+          conflicts: [],
+          status: "synced",
         };
       }
 
-      // Reconcile and cache remotely retrieved config locally
-      this.saveConfig(remoteConfig);
+      // If local storage has no existing data (first load on this device), adopt remote
+      if (!this.hasLocalData()) {
+        this.saveConfig(remoteConfig);
+        this.setLastSyncedAt(new Date().toISOString());
+        return {
+          config: remoteConfig,
+          isOfflineFallback: false,
+          conflicts: [],
+          status: "synced",
+        };
+      }
+
+      const localConfig = this.loadConfig();
+
+      // 1. Reconcile weekly check-in logs with auto-replay for offline-* entries
+      const logsReconcile = await reconcileEntities<WeeklyCheckInEntry>({
+        localEntities: localConfig.weeklyLogs,
+        remoteEntities: remoteConfig.weeklyLogs,
+        lastSyncedAt: this.getLastSyncedAt(),
+        uploadOfflineEntity: async (entry) => {
+          const serverId = `log-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const prepared = { ...entry, id: serverId };
+          await this.fetchFn("/api/family-budget/time-value", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "upsert_log", entry: prepared }),
+          });
+          return prepared;
+        },
+        getEntityName: (entry) => `Week ${entry.weekNumber ?? ""} (${entry.weekStartDate})`,
+      });
+
+      // 2. Reconcile personal goals with auto-replay for offline-* entries
+      const goalsReconcile = await reconcileEntities<PersonalGoal>({
+        localEntities: localConfig.personalGoals,
+        remoteEntities: remoteConfig.personalGoals,
+        lastSyncedAt: this.getLastSyncedAt(),
+        uploadOfflineEntity: async (goal) => {
+          const serverId = `goal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const prepared = { ...goal, id: serverId };
+          await this.fetchFn("/api/family-budget/time-value", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "upsert_goal", goal: prepared }),
+          });
+          return prepared;
+        },
+        getEntityName: (goal) => goal.title,
+      });
+
+      // 3. Reconcile profile & monetization configuration
+      const configReconcile = await reconcileSingleRecord<TimeValueMotivatorConfig>({
+        entityId: "time-value-config",
+        entityName: "Time & Opportunity Motivator Configuration",
+        localRecord: localConfig,
+        remoteRecord: remoteConfig,
+        localUpdatedAt: localConfig.updatedAt,
+        remoteUpdatedAt: remoteConfig.updatedAt,
+        lastSyncedAt: this.getLastSyncedAt(),
+        ignoreEqualityKeys: ["weeklyLogs", "personalGoals", "updatedAt", "exportedAt"],
+      });
+
+      const allConflicts = [
+        ...logsReconcile.conflicts,
+        ...goalsReconcile.conflicts,
+        ...(configReconcile.conflict ? [configReconcile.conflict] : []),
+      ];
+
+      if (allConflicts.length > 0) {
+        this.pendingConflict =
+          configReconcile.conflict ?? (allConflicts[0] as unknown as ConflictRecord<TimeValueMotivatorConfig>);
+        return {
+          config: localConfig,
+          isOfflineFallback: false,
+          conflicts: allConflicts,
+          status: "conflict",
+        };
+      }
+
+      const mergedConfig: TimeValueMotivatorConfig = {
+        ...configReconcile.resolvedRecord,
+        weeklyLogs: logsReconcile.mergedEntities,
+        personalGoals: goalsReconcile.mergedEntities,
+        updatedAt: new Date().toISOString(),
+      };
+
+      this.saveConfig(mergedConfig);
+      this.setLastSyncedAt(new Date().toISOString());
+      this.pendingConflict = null;
+
+      // If offline items were replayed, push updated complete config to remote
+      if (Object.keys(logsReconcile.replayedIds).length > 0 || Object.keys(goalsReconcile.replayedIds).length > 0) {
+        try {
+          await this.fetchFn("/api/family-budget/time-value", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "save_config", config: mergedConfig }),
+          });
+        } catch {
+          // Non-fatal
+        }
+      }
+
       return {
-        config: remoteConfig,
+        config: mergedConfig,
         isOfflineFallback: false,
+        conflicts: [],
+        status: "synced",
       };
     } catch (_err) {
       // Offline fallback: load from localStorage
@@ -382,6 +538,8 @@ export class TimeValueRepository {
       return {
         config: local,
         isOfflineFallback: true,
+        conflicts: [],
+        status: "offline",
       };
     }
   }
@@ -390,12 +548,16 @@ export class TimeValueRepository {
    * Saves configuration remotely to Supabase, updating local storage cache.
    */
   public async saveRemoteConfig(config: TimeValueMotivatorConfig): Promise<TimeValueMotivatorConfig> {
-    this.saveConfig(config);
+    const preparedConfig: TimeValueMotivatorConfig = {
+      ...config,
+      updatedAt: new Date().toISOString(),
+    };
+    this.saveConfig(preparedConfig);
     try {
       const res = await this.fetchFn("/api/family-budget/time-value", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save_config", config }),
+        body: JSON.stringify({ action: "save_config", config: preparedConfig }),
       });
 
       if (!res.ok) {
@@ -403,13 +565,54 @@ export class TimeValueRepository {
       }
 
       const data = await res.json();
-      const saved: TimeValueMotivatorConfig = data.config ?? config;
+      const saved: TimeValueMotivatorConfig = data.config ?? preparedConfig;
       this.saveConfig(saved);
+      this.setLastSyncedAt(new Date().toISOString());
+      this.pendingConflict = null;
       return saved;
     } catch (err) {
       console.warn("Could not sync time value config remotely, cached locally:", err);
-      return config;
+      return preparedConfig;
     }
+  }
+
+  /**
+   * Resolves a conflict between local and remote versions.
+   */
+  public async resolveConflict(
+    conflict: ConflictRecord<any>,
+    choice: ConflictResolutionChoice,
+  ): Promise<TimeValueMotivatorConfig> {
+    const current = this.loadConfig();
+    let resolved: TimeValueMotivatorConfig;
+
+    if (conflict.entityId === "time-value-config") {
+      resolved = choice === "keep_local" ? conflict.localVersion : conflict.remoteVersion;
+    } else if (current.weeklyLogs.some((l) => l.id === conflict.entityId)) {
+      const chosenLog = choice === "keep_local" ? conflict.localVersion : conflict.remoteVersion;
+      resolved = {
+        ...current,
+        weeklyLogs: current.weeklyLogs.map((l) => (l.id === conflict.entityId ? chosenLog : l)),
+      };
+    } else if (current.personalGoals.some((g) => g.id === conflict.entityId)) {
+      const chosenGoal = choice === "keep_local" ? conflict.localVersion : conflict.remoteVersion;
+      resolved = {
+        ...current,
+        personalGoals: current.personalGoals.map((g) => (g.id === conflict.entityId ? chosenGoal : g)),
+      };
+    } else {
+      resolved = choice === "keep_local" ? conflict.localVersion : conflict.remoteVersion;
+    }
+
+    resolved.updatedAt = new Date().toISOString();
+    if (choice === "keep_local") {
+      await this.saveRemoteConfig(resolved);
+    } else {
+      this.saveConfig(resolved);
+    }
+    this.setLastSyncedAt(new Date().toISOString());
+    this.pendingConflict = null;
+    return resolved;
   }
 
   /**

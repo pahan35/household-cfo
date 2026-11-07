@@ -2,11 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import {
+  type CloudSyncStatus,
+  type ConflictRecord,
+  type ConflictResolutionChoice,
+  reconcileEntities,
+} from "@/lib/cloud-sync-reconciler";
+
 import type { ExternalProviderCategory } from "./external-provider-data";
 import type { ExclusionPreset } from "./expense-transforms";
 
 export const PRESETS_STORAGE_KEY = "family-budget:presets:v1";
 export const ACTIVE_PRESET_STORAGE_KEY = "family-budget:active-preset:v1";
+export const PRESETS_LAST_SYNCED_STORAGE_KEY = "family-budget:presets:lastSyncedAt:v1";
 
 export const BUILT_IN_PRESET_IDS = {
   ALL_ACTIVITY: "all-activity",
@@ -136,6 +144,8 @@ export interface SyncPresetsOptions {
   localActiveId: string;
   defaultPresets: ExclusionPreset[];
   fetchFn?: typeof fetch;
+  lastSyncedAt?: string | null;
+  hasLocalStore?: boolean;
 }
 
 export interface SyncPresetsResult {
@@ -143,16 +153,22 @@ export interface SyncPresetsResult {
   activePresetId: string;
   isOfflineFallback: boolean;
   wasAutoMigrated: boolean;
+  conflicts: ConflictRecord<ExclusionPreset>[];
+  status: CloudSyncStatus;
+  lastSyncedAt?: string;
 }
 
 /**
- * Synchronizes presets with the Supabase API route, handling auto-migration and offline fallback.
+ * Synchronizes presets with the Supabase API route, handling auto-migration,
+ * offline auto-replay, conflict detection, and offline fallback.
  */
 export async function syncPresetsWithRemote({
   localPresets,
   localActiveId,
   defaultPresets,
   fetchFn = fetch,
+  lastSyncedAt,
+  hasLocalStore = false,
 }: SyncPresetsOptions): Promise<SyncPresetsResult> {
   try {
     const res = await fetchFn("/api/family-budget/presets", {
@@ -172,6 +188,7 @@ export async function syncPresetsWithRemote({
     if (remotePresets.length === 0) {
       const presetsToSeed = mergePresets(defaultPresets, localPresets);
       const seedActiveId = localActiveId || BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES;
+      const now = new Date().toISOString();
 
       await fetchFn("/api/family-budget/presets", {
         method: "POST",
@@ -188,14 +205,69 @@ export async function syncPresetsWithRemote({
         activePresetId: seedActiveId,
         isOfflineFallback: false,
         wasAutoMigrated: true,
+        conflicts: [],
+        status: "synced",
+        lastSyncedAt: now,
       };
     }
 
+    // If local has no data yet (first load on this device and no local presets), adopt remote
+    if (!hasLocalStore && localPresets.length === 0) {
+      const now = new Date().toISOString();
+      return {
+        presets: remotePresets,
+        activePresetId: remoteActiveId,
+        isOfflineFallback: false,
+        wasAutoMigrated: false,
+        conflicts: [],
+        status: "synced",
+        lastSyncedAt: now,
+      };
+    }
+
+    // Reconcile presets with auto-replay for offline-* entities and conflict detection
+    const reconcileResult = await reconcileEntities<ExclusionPreset>({
+      localEntities: localPresets,
+      remoteEntities: remotePresets,
+      lastSyncedAt,
+      uploadOfflineEntity: async (preset) => {
+        const serverId = `preset-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const prepared = { ...preset, id: serverId, updatedAt: new Date().toISOString() };
+        await fetchFn("/api/family-budget/presets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "upsert_preset", preset: prepared }),
+        });
+        return prepared;
+      },
+      getEntityName: (p) => p.name,
+    });
+
+    // If offline presets were replayed, push full updated list to remote
+    if (Object.keys(reconcileResult.replayedIds).length > 0) {
+      try {
+        await fetchFn("/api/family-budget/presets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "seed_if_empty",
+            presets: reconcileResult.mergedEntities,
+            activePresetId: remoteActiveId,
+          }),
+        });
+      } catch {
+        // Non-fatal
+      }
+    }
+
     return {
-      presets: remotePresets,
+      presets: reconcileResult.mergedEntities,
       activePresetId: remoteActiveId,
       isOfflineFallback: false,
       wasAutoMigrated: false,
+      conflicts: reconcileResult.conflicts,
+      status: reconcileResult.status,
+      lastSyncedAt: reconcileResult.conflicts.length === 0 ? new Date().toISOString() : undefined,
     };
   } catch {
     // Offline fallback (Task 3.1 & 3.3): return locally cached data
@@ -204,6 +276,8 @@ export async function syncPresetsWithRemote({
       activePresetId: localActiveId,
       isOfflineFallback: true,
       wasAutoMigrated: false,
+      conflicts: [],
+      status: "offline",
     };
   }
 }
@@ -235,6 +309,21 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
   const [activePresetId, setActivePresetIdState] = useState<string>(BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [isOfflineFallback, setIsOfflineFallback] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>(options?.disableAutoSync ? "synced" : "syncing");
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const stored = window.localStorage.getItem(PRESETS_LAST_SYNCED_STORAGE_KEY);
+        return stored ? new Date(stored) : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  });
+  const [conflicts, setConflicts] = useState<ConflictRecord<ExclusionPreset>[]>([]);
+  const [activeConflict, setActiveConflict] = useState<ConflictRecord<ExclusionPreset> | null>(null);
+  const [isConflictModalOpen, setIsConflictModalOpen] = useState(false);
 
   // Initialize from localStorage synchronously on mount, then trigger background Supabase synchronization
   useEffect(() => {
@@ -242,12 +331,15 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
 
     let localPresets: ExclusionPreset[] = [];
     let localActiveId: string = BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES;
+    let hasLocalStore = false;
+    let storedLastSyncedAt: string | null = null;
 
     try {
       const storedPresetsJson = window.localStorage.getItem(PRESETS_STORAGE_KEY);
       if (storedPresetsJson) {
         localPresets = parseStoredPresets(storedPresetsJson);
         setCustomPresets(localPresets);
+        hasLocalStore = true;
       }
 
       const storedActiveId = window.localStorage.getItem(ACTIVE_PRESET_STORAGE_KEY);
@@ -255,14 +347,23 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
         localActiveId = storedActiveId;
         setActivePresetIdState(storedActiveId);
       }
+
+      storedLastSyncedAt = window.localStorage.getItem(PRESETS_LAST_SYNCED_STORAGE_KEY);
+      if (storedLastSyncedAt) {
+        setLastSyncedAt(new Date(storedLastSyncedAt));
+      }
     } catch {
       // Ignore localStorage read failures
     }
 
-    if (options?.disableAutoSync) return;
+    if (options?.disableAutoSync) {
+      setSyncStatus("synced");
+      return;
+    }
 
     let isCancelled = false;
     setIsSyncing(true);
+    setSyncStatus("syncing");
 
     const fetchImpl = options?.fetchFn ?? (typeof window !== "undefined" ? window.fetch.bind(window) : fetch);
 
@@ -271,10 +372,25 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
       localActiveId,
       defaultPresets,
       fetchFn: fetchImpl,
+      lastSyncedAt: storedLastSyncedAt,
+      hasLocalStore,
     })
       .then((res) => {
         if (isCancelled) return;
         setIsOfflineFallback(res.isOfflineFallback);
+        setSyncStatus(res.status);
+        setConflicts(res.conflicts);
+        if (res.conflicts.length > 0) {
+          setActiveConflict(res.conflicts[0]);
+        }
+        if (res.lastSyncedAt) {
+          setLastSyncedAt(new Date(res.lastSyncedAt));
+          try {
+            window.localStorage.setItem(PRESETS_LAST_SYNCED_STORAGE_KEY, res.lastSyncedAt);
+          } catch {
+            // Ignore
+          }
+        }
         if (!res.isOfflineFallback) {
           setCustomPresets(res.presets);
           setActivePresetIdState(res.activePresetId);
@@ -332,8 +448,12 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
 
   const updatePreset = useCallback(
     (presetToUpdate: ExclusionPreset) => {
+      const prepared: ExclusionPreset = {
+        ...presetToUpdate,
+        updatedAt: new Date().toISOString(),
+      };
       setCustomPresets((prev) => {
-        const next = [...prev.filter((p) => p.id !== presetToUpdate.id), presetToUpdate];
+        const next = [...prev.filter((p) => p.id !== prepared.id), prepared];
         if (typeof window !== "undefined") {
           try {
             window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(next));
@@ -349,10 +469,23 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
         fetchImpl("/api/family-budget/presets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "upsert_preset", preset: presetToUpdate }),
-        }).catch(() => {
-          // Ignore network errors in background sync
-        });
+          body: JSON.stringify({ action: "upsert_preset", preset: prepared }),
+        })
+          .then(() => {
+            const now = new Date().toISOString();
+            setLastSyncedAt(new Date(now));
+            setSyncStatus("synced");
+            if (typeof window !== "undefined") {
+              try {
+                window.localStorage.setItem(PRESETS_LAST_SYNCED_STORAGE_KEY, now);
+              } catch {
+                // Ignore
+              }
+            }
+          })
+          .catch(() => {
+            setSyncStatus("offline");
+          });
       }
     },
     [options?.disableAutoSync, options?.fetchFn],
@@ -375,6 +508,8 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
         expenseExclusions,
         incomeDeductions,
         isBuiltIn: false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
       savePreset(newPreset);
       return newPreset;
@@ -447,6 +582,54 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
     [activePresetId, setActivePresetId, options?.disableAutoSync, options?.fetchFn],
   );
 
+  const resolveConflict = useCallback(
+    async (entityId: string, choice: ConflictResolutionChoice) => {
+      const targetConflict = conflicts.find((c) => c.entityId === entityId) || activeConflict;
+      if (!targetConflict) return;
+
+      const chosenPreset = choice === "keep_local" ? targetConflict.localVersion : targetConflict.remoteVersion;
+      const updatedPresets = customPresets.map((p) => (p.id === entityId ? chosenPreset : p));
+      setCustomPresets(updatedPresets);
+
+      const now = new Date().toISOString();
+      setLastSyncedAt(new Date(now));
+
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(updatedPresets));
+          window.localStorage.setItem(PRESETS_LAST_SYNCED_STORAGE_KEY, now);
+        } catch {
+          // Ignore
+        }
+      }
+
+      if (choice === "keep_local" && !options?.disableAutoSync) {
+        const fetchImpl = options?.fetchFn ?? (typeof window !== "undefined" ? window.fetch.bind(window) : fetch);
+        try {
+          await fetchImpl("/api/family-budget/presets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "upsert_preset", preset: chosenPreset }),
+          });
+        } catch {
+          // Ignore
+        }
+      }
+
+      const remaining = conflicts.filter((c) => c.entityId !== entityId);
+      setConflicts(remaining);
+      if (remaining.length > 0) {
+        setActiveConflict(remaining[0]);
+        setSyncStatus("conflict");
+      } else {
+        setActiveConflict(null);
+        setSyncStatus("synced");
+        setIsConflictModalOpen(false);
+      }
+    },
+    [conflicts, activeConflict, customPresets, options?.disableAutoSync, options?.fetchFn],
+  );
+
   return {
     presets: allPresets,
     activePreset,
@@ -463,5 +646,12 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
     detectedRentCategoryIds,
     isSyncing,
     isOfflineFallback,
+    syncStatus,
+    lastSyncedAt,
+    conflicts,
+    activeConflict,
+    resolveConflict,
+    isConflictModalOpen,
+    setIsConflictModalOpen,
   };
 }

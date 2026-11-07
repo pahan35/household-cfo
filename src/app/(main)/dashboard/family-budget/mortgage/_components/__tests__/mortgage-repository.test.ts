@@ -248,4 +248,122 @@ describe("MortgageRepository Remote Synchronization & Auto-Migration", () => {
     expect(deleteResult).toBe(true);
     expect(client.loadLocalScenarios().scenarios).toHaveLength(0);
   });
+
+  it("auto-replays offline-* created scenarios on reconnect and maps local ID", async () => {
+    const storage = new MemoryStorage();
+    const client = new MortgageRepository("test-key", storage);
+
+    // 1. User created a scenario while offline
+    const offlineScenario = await client.createRemoteScenario({
+      name: "Offline Terrace Flat",
+      config: { property: { ...DEFAULT_PROPERTY_ACQUISITION_CONFIG, areaSqm: 75 } },
+    });
+    expect(offlineScenario.id).toMatch(/^offline-/);
+
+    // 2. Reconnect with remote DB containing another scenario
+    const serverUuid = "server-uuid-terrace-123";
+    const mockRemoteScenarios: MortgageScenario[] = [
+      {
+        id: "server-existing-1",
+        name: "Existing Cloud Plan",
+        isPrimary: true,
+        config: DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    const mockFetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(init.body as string);
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            scenario: {
+              ...offlineScenario,
+              id: serverUuid,
+              name: body.name,
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ scenarios: mockRemoteScenarios }),
+      };
+    });
+
+    const syncedClient = new MortgageRepository("test-key", storage, mockFetch as unknown as typeof fetch);
+    const result = await syncedClient.fetchRemoteScenarios();
+
+    expect(result.status).toBe("synced");
+    expect(result.conflicts).toHaveLength(0);
+    // Offline scenario must be replaced with server UUID in local cache
+    const loadedLocal = syncedClient.loadLocalScenarios();
+    expect(loadedLocal.scenarios.some((s) => s.id === serverUuid)).toBe(true);
+    expect(loadedLocal.scenarios.some((s) => s.id.startsWith("offline-"))).toBe(false);
+  });
+
+  it("detects conflict and halts silent local overwrites when concurrent edits occur", async () => {
+    const storage = new MemoryStorage();
+    const client = new MortgageRepository("test-key", storage);
+
+    // Baseline synced scenario
+    const baseline: MortgageScenario = {
+      id: "scen-shared-1",
+      name: "Shared Plan",
+      isPrimary: true,
+      config: {
+        ...DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
+        property: { ...DEFAULT_PROPERTY_ACQUISITION_CONFIG, areaSqm: 60 },
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    };
+    client.saveLocalScenarios([baseline], baseline.id);
+    client.setLastSyncedAt("2026-01-01T00:00:00Z");
+
+    // Local user edits offline
+    await client.updateRemoteScenario("scen-shared-1", {
+      name: "Shared Plan - Local 70m²",
+      config: { property: { ...DEFAULT_PROPERTY_ACQUISITION_CONFIG, areaSqm: 70 } },
+    });
+
+    // Remote database was also edited concurrently
+    const remoteConflicting: MortgageScenario = {
+      ...baseline,
+      name: "Shared Plan - Remote 80m²",
+      config: {
+        ...DEFAULT_MORTGAGE_SIMULATOR_CONFIG,
+        property: { ...DEFAULT_PROPERTY_ACQUISITION_CONFIG, areaSqm: 80 },
+      },
+      updatedAt: "2026-01-02T12:00:00Z",
+    };
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ scenarios: [remoteConflicting] }),
+    });
+
+    const syncedClient = new MortgageRepository("test-key", storage, mockFetch as unknown as typeof fetch);
+    const result = await syncedClient.fetchRemoteScenarios();
+
+    expect(result.status).toBe("conflict");
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts?.[0].entityId).toBe("scen-shared-1");
+    // Local cache MUST NOT be overwritten with remote 80m²
+    const localAfter = syncedClient.loadLocalScenarios().scenarios[0];
+    expect(localAfter.name).toBe("Shared Plan - Local 70m²");
+    expect(localAfter.config.property.areaSqm).toBe(70);
+
+    // Resolving conflict with "use_cloud" adopts remote
+    await syncedClient.resolveConflict(result.conflicts![0], "use_cloud");
+    const localResolved = syncedClient.loadLocalScenarios().scenarios[0];
+    expect(localResolved.name).toBe("Shared Plan - Remote 80m²");
+    expect(localResolved.config.property.areaSqm).toBe(80);
+  });
 });

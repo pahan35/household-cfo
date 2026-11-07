@@ -4,16 +4,18 @@ import { useState } from "react";
 
 import { ArrowDownUp, Coins, Download, Info, RotateCcw, Sliders, Sparkles, TrendingUp, Upload } from "lucide-react";
 
+import { CloudSyncBadge } from "@/components/cloud-sync-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import type { CloudSyncStatus, ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
 import { formatMoney } from "../../_components/external-provider-data";
 import { resolveEffectiveFxRate } from "./compensation-engine";
-import type { ComparatorGlobalConfig } from "./offer-types";
+import type { ComparatorGlobalConfig, OfferTrack } from "./offer-types";
 
 export interface GlobalAssumptionsBarProps {
   config: ComparatorGlobalConfig;
@@ -22,6 +24,11 @@ export interface GlobalAssumptionsBarProps {
   onExportJson?: () => void;
   onImportJson?: () => void;
   onResetDefaults?: () => void;
+  syncStatus?: CloudSyncStatus;
+  conflicts?: ConflictRecord<OfferTrack>[];
+  activeConflict?: ConflictRecord<OfferTrack> | null;
+  onResolveConflict?: (entityId: string, choice: ConflictResolutionChoice) => Promise<void> | void;
+  lastSyncedAt?: Date | null;
 }
 
 export function GlobalAssumptionsBar({
@@ -31,6 +38,11 @@ export function GlobalAssumptionsBar({
   onExportJson,
   onImportJson,
   onResetDefaults,
+  syncStatus,
+  conflicts = [],
+  activeConflict,
+  onResolveConflict,
+  lastSyncedAt,
 }: GlobalAssumptionsBarProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -161,8 +173,16 @@ export function GlobalAssumptionsBar({
               </div>
             </div>
 
-            {/* Quick Actions (Backup, Advanced Toggle) */}
+            {/* Quick Actions (Backup, Advanced Toggle, Cloud Sync) */}
             <div className="flex items-center gap-2">
+              <CloudSyncBadge
+                status={syncStatus ?? "synced"}
+                conflicts={conflicts}
+                activeConflict={activeConflict}
+                onResolveConflict={onResolveConflict}
+                lastSyncedAt={lastSyncedAt}
+              />
+
               <Button
                 variant="outline"
                 size="sm"

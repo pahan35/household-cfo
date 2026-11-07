@@ -217,4 +217,128 @@ describe("TimeValueRepository", () => {
     const afterDel = await repo.deleteRemoteGoal("g-remote-1");
     expect(afterDel.personalGoals.some((g) => g.id === "g-remote-1")).toBe(false);
   });
+
+  it("auto-replays offline-created weekly logs and goals upon reconnecting to Supabase", async () => {
+    const storage = new MockStorage();
+    const customFetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "GET") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            config: {
+              ...getDefaultTimeValueConfig(),
+              weeklyLogs: [],
+              personalGoals: [],
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true }),
+      };
+    });
+
+    const repo = new TimeValueRepository("test-key", storage, customFetch as unknown as typeof fetch);
+
+    // Seed local storage with offline entities
+    const localConfig = getDefaultTimeValueConfig();
+    localConfig.weeklyLogs = [
+      {
+        id: "offline-log-12345",
+        weekStartDate: "2026-11-15",
+        weekNumber: 46,
+        loggedAt: "2026-11-15T18:00:00.000Z",
+        me: {
+          careHours: 6,
+          gamingTotalHours: 7,
+          gamingJoyHours: 5,
+          socialTotalHours: 3,
+          socialJoyHours: 2,
+          actualSideHustleHours: 3,
+          actualLearningHours: 1,
+          actualRelaxHours: 1,
+        },
+        wife: {
+          careHours: 25,
+          gamingTotalHours: 6,
+          gamingJoyHours: 4,
+          socialTotalHours: 5,
+          socialJoyHours: 3,
+          actualSideHustleHours: 4,
+          actualLearningHours: 2,
+          actualRelaxHours: 1,
+        },
+        totalHouseholdDriftReclaimedHours: 7,
+        totalHouseholdExtraCashflowPln: 2100,
+      },
+    ];
+    localConfig.personalGoals = [
+      {
+        id: "offline-goal-999",
+        title: "Espresso Grinder Upgrade",
+        category: "tech",
+        targetAmountPln: 1200,
+        currentSavedPln: 400,
+        owner: "shared",
+        createdAt: "2026-11-15T18:30:00.000Z",
+      },
+    ];
+    repo.saveConfig(localConfig);
+
+    const result = await repo.fetchRemoteConfig();
+    expect(result.status).toBe("synced");
+    expect(result.conflicts).toHaveLength(0);
+
+    // Verified that offline IDs were replayed and assigned server IDs
+    const replayedLog = result.config.weeklyLogs.find((l) => l.weekStartDate === "2026-11-15");
+    expect(replayedLog).toBeDefined();
+    expect(replayedLog?.id.startsWith("offline-")).toBe(false);
+
+    const replayedGoal = result.config.personalGoals.find((g) => g.title === "Espresso Grinder Upgrade");
+    expect(replayedGoal).toBeDefined();
+    expect(replayedGoal?.id.startsWith("offline-")).toBe(false);
+  });
+
+  it("detects concurrent conflict when local and remote both changed since last sync", async () => {
+    const storage = new MockStorage();
+    const customFetch = vi.fn().mockImplementation(async () => {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          config: {
+            ...getDefaultTimeValueConfig(),
+            learningProjectedRateGrowthPct: 10,
+            updatedAt: "2026-03-01T15:00:00.000Z",
+          },
+        }),
+      };
+    });
+
+    const repo = new TimeValueRepository("test-key", storage, customFetch as unknown as typeof fetch);
+
+    // Established previous sync
+    repo.setLastSyncedAt("2026-03-01T12:00:00.000Z");
+
+    // Local change after sync
+    const local = getDefaultTimeValueConfig();
+    local.learningProjectedRateGrowthPct = 8;
+    local.updatedAt = "2026-03-01T14:00:00.000Z";
+    repo.saveConfig(local);
+
+    const result = await repo.fetchRemoteConfig();
+    expect(result.status).toBe("conflict");
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.config.learningProjectedRateGrowthPct).toBe(8); // Did not silently overwrite local!
+    expect(repo.getPendingConflict()).toBeDefined();
+
+    // Resolve conflict with Keep Local
+    const resolvedLocal = await repo.resolveConflict(result.conflicts![0], "keep_local");
+    expect(resolvedLocal.learningProjectedRateGrowthPct).toBe(8);
+    expect(repo.getPendingConflict()).toBeNull();
+  });
 });

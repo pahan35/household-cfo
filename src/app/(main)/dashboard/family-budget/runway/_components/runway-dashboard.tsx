@@ -26,6 +26,7 @@ import type { OfferRevision } from "@/app/(main)/dashboard/family-budget/offer-c
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
 
 import { CapitalPoolCard } from "./capital-pool-card";
 import { CategoryAusterityMatrix } from "./category-austerity-matrix";
@@ -41,7 +42,7 @@ import {
   projectRunwayScenario,
 } from "./runway-engine";
 import { RunwayKpiStrip } from "./runway-kpi-strip";
-import { runwayRepository } from "./runway-repository";
+import { RUNWAY_STORAGE_KEY, runwayRepository } from "./runway-repository";
 import { RunwayScenarioToolbar } from "./runway-scenario-toolbar";
 import { RunwayTrajectoryCard } from "./runway-trajectory-card";
 import type {
@@ -67,9 +68,26 @@ export function RunwayDashboard() {
   // Multi-Scenario Cloud State
   const [scenarios, setScenarios] = useState<RunwayScenario[]>([]);
   const [activeScenarioId, setActiveScenarioId] = useState<string>("");
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
   const [linkedOffer, setLinkedOffer] = useState<OfferRevision | null>(null);
+
+  const syncState = useCloudSyncState<RunwayScenario>({
+    initialStatus: "syncing",
+    storageSyncKey: `${RUNWAY_STORAGE_KEY}:lastSyncedAt`,
+    onConflictResolved: async (_entityId, choice, record) => {
+      const updated = await runwayRepository.resolveConflict(record, choice);
+      setScenarios(updated);
+      const active = updated.find((s) => s.id === activeScenarioId) ?? updated[0];
+      if (active) {
+        setJdgConfig(active.jdgConfig);
+        setCapitalPoolConfig(active.capitalPoolConfig);
+        setLookbackWindow(active.lookbackWindow);
+        setActivePresetId(active.activePresetId);
+        setCustomPresets(active.customPresets || []);
+        setCategoryWeights(active.categoryCuts || {});
+      }
+      toast.success("Conflict resolved");
+    },
+  });
 
   // Active Configuration State (projected from active scenario)
   const [jdgConfig, setJdgConfig] = useState<JdgRunwayConfig>(DEFAULT_JDG_RUNWAY_CONFIG);
@@ -83,61 +101,74 @@ export function RunwayDashboard() {
   const defaultCurrency = settings?.defaultCurrency ?? "PLN";
 
   // 1. Initial Load of ExternalProvider Data and Stored Runway Configuration
-  const loadData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
-    setIsLoading(true);
-    setError(null);
+  const loadData = useCallback(
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      setIsLoading(true);
+      setError(null);
+      syncState.setSyncing();
 
-    try {
-      const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
+      try {
+        const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
 
-      const [settingsRes, categoriesRes, currenciesRes, transactionsRes, statRes, scenariosRes] =
-        await Promise.allSettled([
-          getSettings({ signal, forceRefresh }),
-          getCategories({ signal, forceRefresh }),
-          getCurrencies({ signal, forceRefresh }),
-          getTransactionPage({ skip: 0, take: 500, signal, forceRefresh }),
-          getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
-          runwayRepository.fetchRemoteScenarios(signal),
-        ]);
+        const [settingsRes, categoriesRes, currenciesRes, transactionsRes, statRes, scenariosRes] =
+          await Promise.allSettled([
+            getSettings({ signal, forceRefresh }),
+            getCategories({ signal, forceRefresh }),
+            getCurrencies({ signal, forceRefresh }),
+            getTransactionPage({ skip: 0, take: 500, signal, forceRefresh }),
+            getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
+            runwayRepository.fetchRemoteScenarios(signal),
+          ]);
 
-      if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
-      if (categoriesRes.status === "fulfilled") setCategories(categoriesRes.value);
-      if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
-      if (transactionsRes.status === "fulfilled") setTransactions(transactionsRes.value.transactions ?? []);
-      if (statRes.status === "fulfilled") setStatData(statRes.value);
+        if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
+        if (categoriesRes.status === "fulfilled") setCategories(categoriesRes.value);
+        if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
+        if (transactionsRes.status === "fulfilled") setTransactions(transactionsRes.value.transactions ?? []);
+        if (statRes.status === "fulfilled") setStatData(statRes.value);
 
-      if (scenariosRes.status === "fulfilled") {
-        const {
-          scenarios: loadedScenarios,
-          activeScenarioId: loadedActiveId,
-          isOfflineFallback: offline,
-        } = scenariosRes.value;
+        if (scenariosRes.status === "fulfilled") {
+          const {
+            scenarios: loadedScenarios,
+            activeScenarioId: loadedActiveId,
+            isOfflineFallback: offline,
+            conflicts,
+          } = scenariosRes.value;
 
-        setScenarios(loadedScenarios);
-        setActiveScenarioId(loadedActiveId);
-        setIsOfflineFallback(Boolean(offline));
+          setScenarios(loadedScenarios);
+          setActiveScenarioId(loadedActiveId);
 
-        const active =
-          loadedScenarios.find((s) => s.id === loadedActiveId) ??
-          loadedScenarios.find((s) => s.isPrimary) ??
-          loadedScenarios[0];
+          if (conflicts && conflicts.length > 0) {
+            syncState.setConflictDetected(conflicts);
+          } else if (offline) {
+            syncState.setOffline();
+          } else {
+            syncState.setSynced();
+          }
 
-        if (active) {
-          setJdgConfig(active.jdgConfig);
-          setCapitalPoolConfig(active.capitalPoolConfig);
-          setLookbackWindow(active.lookbackWindow);
-          setActivePresetId(active.activePresetId);
-          setCustomPresets(active.customPresets || []);
-          setCategoryWeights(active.categoryCuts || {});
+          const active =
+            loadedScenarios.find((s) => s.id === loadedActiveId) ??
+            loadedScenarios.find((s) => s.isPrimary) ??
+            loadedScenarios[0];
+
+          if (active) {
+            setJdgConfig(active.jdgConfig);
+            setCapitalPoolConfig(active.capitalPoolConfig);
+            setLookbackWindow(active.lookbackWindow);
+            setActivePresetId(active.activePresetId);
+            setCustomPresets(active.customPresets || []);
+            setCategoryWeights(active.categoryCuts || {});
+          }
         }
+      } catch (err) {
+        console.error("Failed to load runway dashboard data:", err);
+        syncState.setOffline();
+        setError(err instanceof Error ? err : new Error("Failed to load data"));
+      } finally {
+        setIsLoading(false);
       }
-    } catch (err) {
-      console.error("Failed to load runway dashboard data:", err);
-      setError(err instanceof Error ? err : new Error("Failed to load data"));
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    [syncState],
+  );
 
   useEffect(() => {
     if (syncVersion < 0) return;
@@ -284,7 +315,7 @@ export function RunwayDashboard() {
 
   const handleCreateScenario = async (name: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const created = await runwayRepository.createRemoteScenario({
         name,
         isPrimary: false,
@@ -303,17 +334,17 @@ export function RunwayDashboard() {
       setActivePresetId(created.activePresetId);
       setCustomPresets(created.customPresets);
       setCategoryWeights(created.categoryCuts);
+      syncState.setSynced();
       toast.success(`Created scenario: ${created.name}`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to create scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleDuplicateScenario = async (id: string, name?: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const duplicated = await runwayRepository.duplicateRemoteScenario(id, name);
       setScenarios((prev) => [...prev, duplicated]);
       setActiveScenarioId(duplicated.id);
@@ -323,30 +354,30 @@ export function RunwayDashboard() {
       setActivePresetId(duplicated.activePresetId);
       setCustomPresets(duplicated.customPresets);
       setCategoryWeights(duplicated.categoryCuts);
+      syncState.setSynced();
       toast.success(`Duplicated scenario: ${duplicated.name}`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to duplicate scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleRenameScenario = async (id: string, newName: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const updated = await runwayRepository.updateRemoteScenario(id, { name: newName });
       setScenarios((prev) => prev.map((s) => (s.id === id ? updated : s)));
+      syncState.setSynced();
       toast.success(`Renamed scenario to: ${updated.name}`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to rename scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleDeleteScenario = async (id: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       await runwayRepository.deleteRemoteScenario(id);
       const nextList = scenarios.filter((s) => s.id !== id);
       setScenarios(nextList);
@@ -363,24 +394,24 @@ export function RunwayDashboard() {
           setCategoryWeights(nextActive.categoryCuts);
         }
       }
+      syncState.setSynced();
       toast.success("Deleted scenario");
     } catch {
+      syncState.setOffline();
       toast.error("Failed to delete scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleSetPrimaryScenario = async (id: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const updated = await runwayRepository.setPrimaryRemoteScenario(id);
       setScenarios((prev) => prev.map((s) => (s.id === id ? updated : { ...s, isPrimary: false })));
+      syncState.setSynced();
       toast.success(`Designated "${updated.name}" as primary household plan`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to update primary scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
@@ -514,8 +545,10 @@ export function RunwayDashboard() {
       <RunwayScenarioToolbar
         scenarios={scenarios}
         activeScenarioId={activeScenarioId}
-        isSyncing={isSyncing}
-        isOfflineFallback={isOfflineFallback}
+        syncStatus={syncState.status}
+        conflicts={syncState.conflicts}
+        activeConflict={syncState.activeConflict}
+        onResolveConflict={syncState.resolveConflict}
         linkedOfferTitle={linkedOffer?.title ?? null}
         onSelectScenario={handleSelectScenario}
         onCreateScenario={handleCreateScenario}
@@ -529,7 +562,7 @@ export function RunwayDashboard() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="size-4 text-emerald-500" />
-          <span className="text-xs text-muted-foreground">
+          <span className="text-muted-foreground text-xs">
             Zero-revenue simulation across <strong>{capitalItems.length} accounts</strong> and{" "}
             <strong>{historicalBurnItems.length} living categories</strong>
           </span>
@@ -540,7 +573,7 @@ export function RunwayDashboard() {
             type="button"
             variant="ghost"
             size="sm"
-            className="h-8 gap-1.5 text-xs text-muted-foreground"
+            className="text-muted-foreground h-8 gap-1.5 text-xs"
             onClick={handleResetToDefaults}
           >
             <RotateCcw className="size-3.5" />

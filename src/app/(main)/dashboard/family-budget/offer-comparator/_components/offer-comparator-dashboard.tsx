@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { toast } from "sonner";
 
+import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
+import type { ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
+
 import { getCategories, getCurrencies, getSettings, getTransactionPage } from "../../_components/external-provider-client";
 import type {
   ExternalProviderCategory,
@@ -17,7 +20,7 @@ import { BudgetImpactView } from "./budget-impact-view";
 import { DEFAULT_COMPARATOR_CONFIG } from "./compensation-engine";
 import { GlobalAssumptionsBar } from "./global-assumptions-bar";
 import { OfferComparisonMatrix } from "./offer-comparison-matrix";
-import { LocalStorageOfferRepository } from "./offer-repository";
+import { LocalStorageOfferRepository, OFFER_STORAGE_KEY } from "./offer-repository";
 import { OfferRevisionSheet } from "./offer-revision-sheet";
 import type { ComparatorGlobalConfig, OfferRevision, OfferTrack } from "./offer-types";
 import { ReverseRecruiterCard } from "./reverse-recruiter-card";
@@ -30,6 +33,17 @@ export function OfferComparatorDashboard() {
   const [tracks, setTracks] = useState<OfferTrack[]>([]);
   const [config, setConfig] = useState<ComparatorGlobalConfig>(DEFAULT_COMPARATOR_CONFIG);
   const [isRepoLoaded, setIsRepoLoaded] = useState(false);
+
+  const syncState = useCloudSyncState<OfferTrack>({
+    initialStatus: "syncing",
+    storageSyncKey: `${OFFER_STORAGE_KEY}:lastSyncedAt`,
+    onConflictResolved: async (_entityId, choice, record) => {
+      const result = await repository.resolveConflict(record, choice);
+      setTracks(result.tracks);
+      setConfig(result.globalConfig);
+      toast.success(choice === "keep_local" ? "Kept local changes and updated cloud" : "Adopted cloud changes");
+    },
+  });
 
   // ExternalProvider live data
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
@@ -46,18 +60,27 @@ export function OfferComparatorDashboard() {
   // 1. Load repository tracks and config
   useEffect(() => {
     async function initRepo() {
+      syncState.setSyncing();
       try {
         const data = await repository.load();
         setTracks(data.tracks);
         setConfig(data.globalConfig);
+        if (data.conflicts && data.conflicts.length > 0) {
+          syncState.setConflictDetected(data.conflicts);
+        } else if (data.status === "offline" || data.isOfflineFallback) {
+          syncState.setOffline();
+        } else {
+          syncState.setSynced(repository.getLastSyncedAt() ?? undefined);
+        }
       } catch (e) {
         console.error("Failed to initialize offer comparator repository", e);
+        syncState.setOffline();
       } finally {
         setIsRepoLoaded(true);
       }
     }
     void initRepo();
-  }, []);
+  }, [syncState]);
 
   // 2. Fetch ExternalProvider live data
   useEffect(() => {
@@ -261,6 +284,11 @@ export function OfferComparatorDashboard() {
         onExportJson={handleExportJson}
         onImportJson={handleImportJson}
         onResetDefaults={handleResetDefaults}
+        syncStatus={syncState.status}
+        conflicts={syncState.conflicts}
+        activeConflict={syncState.activeConflict}
+        onResolveConflict={syncState.resolveConflict}
+        lastSyncedAt={syncState.lastSyncedAt ? new Date(syncState.lastSyncedAt) : null}
       />
 
       {/* 2. Reverse Recruiter Quick-Quote Matrix Card */}

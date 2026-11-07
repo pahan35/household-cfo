@@ -24,12 +24,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
 
 import { BudgetImpactCard } from "./budget-impact-card";
 import { HomeGoalTrackerCard } from "./home-goal-tracker-card";
 import { calculateAmortization, calculatePropertyAcquisition } from "./mortgage-engine";
 import { MortgageFinancingCard } from "./mortgage-financing-card";
-import { MortgageRepository } from "./mortgage-repository";
+import { MORTGAGE_STORAGE_KEY, MortgageRepository } from "./mortgage-repository";
 import { MortgageScenarioComparisonDialog } from "./mortgage-scenario-comparison-dialog";
 import { MortgageScenarioToolbar } from "./mortgage-scenario-toolbar";
 import type {
@@ -62,8 +63,6 @@ export function MortgageDashboard() {
     const local = repository.loadLocalScenarios();
     return local.activeScenarioId ?? local.scenarios[0]?.id ?? "local-primary";
   });
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
 
   // Simulator scenario configuration
@@ -71,47 +70,68 @@ export function MortgageDashboard() {
     return repository.loadConfig();
   });
 
-  const loadData = useCallback(async (signal?: AbortSignal, forceRefresh = false) => {
-    setIsLoading(true);
-    try {
-      const currentMonthAnchor = format(new Date(), "yyyy-MM-01");
+  const syncState = useCloudSyncState<MortgageScenario>({
+    initialStatus: "syncing",
+    storageSyncKey: `${MORTGAGE_STORAGE_KEY}:lastSyncedAt`,
+    onConflictResolved: async (_entityId, choice, record) => {
+      const updated = await repository.resolveConflict(record, choice);
+      setScenarios(updated);
+      const active = updated.find((s) => s.id === activeScenarioId) ?? updated[0];
+      if (active) setConfig(active.config);
+      toast.success("Conflict resolved");
+    },
+  });
 
-      const [settingsRes, categoriesRes, currenciesRes, statRes] = await Promise.allSettled([
-        getSettings({ signal, forceRefresh }),
-        getCategories({ signal, forceRefresh }),
-        getCurrencies({ signal, forceRefresh }),
-        getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
-      ]);
-
-      if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
-      if (categoriesRes.status === "fulfilled") setCategories(categoriesRes.value);
-      if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
-      if (statRes.status === "fulfilled") setStatPoints(statRes.value?.selection?.points ?? []);
-
-      // Synchronize scenarios from Supabase
-      setIsSyncing(true);
+  const loadData = useCallback(
+    async (signal?: AbortSignal, forceRefresh = false) => {
+      setIsLoading(true);
       try {
-        const remote = await repository.fetchRemoteScenarios(signal);
-        setScenarios(remote.scenarios);
-        setActiveScenarioId(remote.activeScenarioId);
-        setIsOfflineFallback(Boolean(remote.isOfflineFallback));
+        const currentMonthAnchor = format(new Date(), "yyyy-MM-01");
 
-        const active = remote.scenarios.find((s) => s.id === remote.activeScenarioId) ?? remote.scenarios[0];
-        if (active) {
-          setConfig(active.config);
+        const [settingsRes, categoriesRes, currenciesRes, statRes] = await Promise.allSettled([
+          getSettings({ signal, forceRefresh }),
+          getCategories({ signal, forceRefresh }),
+          getCurrencies({ signal, forceRefresh }),
+          getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
+        ]);
+
+        if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
+        if (categoriesRes.status === "fulfilled") setCategories(categoriesRes.value);
+        if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
+        if (statRes.status === "fulfilled") setStatPoints(statRes.value?.selection?.points ?? []);
+
+        // Synchronize scenarios from Supabase
+        syncState.setSyncing();
+        try {
+          const remote = await repository.fetchRemoteScenarios(signal);
+          setScenarios(remote.scenarios);
+          setActiveScenarioId(remote.activeScenarioId);
+
+          if (remote.conflicts && remote.conflicts.length > 0) {
+            syncState.setConflictDetected(remote.conflicts);
+          } else if (remote.isOfflineFallback) {
+            syncState.setOffline();
+          } else {
+            syncState.setSynced();
+          }
+
+          const active = remote.scenarios.find((s) => s.id === remote.activeScenarioId) ?? remote.scenarios[0];
+          if (active) {
+            setConfig(active.config);
+          }
+        } catch (err) {
+          syncState.setOffline();
+          console.error("Failed to sync scenarios with Supabase:", err);
         }
       } catch (err) {
-        console.error("Failed to sync scenarios with Supabase:", err);
+        console.error("Failed to load mortgage dashboard data:", err);
+        toast.error("Failed to load live ExternalProvider data");
       } finally {
-        setIsSyncing(false);
+        setIsLoading(false);
       }
-    } catch (err) {
-      console.error("Failed to load mortgage dashboard data:", err);
-      toast.error("Failed to load live ExternalProvider data");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    [syncState],
+  );
 
   useEffect(() => {
     if (syncVersion < 0) return;
@@ -183,7 +203,7 @@ export function MortgageDashboard() {
 
   const handleCreateScenario = async (name: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const created = await repository.createRemoteScenario({
         name,
         isPrimary: false,
@@ -192,45 +212,45 @@ export function MortgageDashboard() {
       setScenarios((prev) => [...prev, created]);
       setActiveScenarioId(created.id);
       setConfig(created.config);
+      syncState.setSynced();
       toast.success(`Created scenario: ${created.name}`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to create scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleDuplicateScenario = async (id: string, name?: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const duplicated = await repository.duplicateRemoteScenario(id, name);
       setScenarios((prev) => [...prev, duplicated]);
       setActiveScenarioId(duplicated.id);
       setConfig(duplicated.config);
+      syncState.setSynced();
       toast.success(`Duplicated scenario: ${duplicated.name}`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to duplicate scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleRenameScenario = async (id: string, newName: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const updated = await repository.updateRemoteScenario(id, { name: newName });
       setScenarios((prev) => prev.map((s) => (s.id === id ? updated : s)));
+      syncState.setSynced();
       toast.success(`Renamed scenario to: ${updated.name}`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to rename scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleDeleteScenario = async (id: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       await repository.deleteRemoteScenario(id);
       const nextList = scenarios.filter((s) => s.id !== id);
       setScenarios(nextList);
@@ -242,24 +262,24 @@ export function MortgageDashboard() {
           setConfig(nextActive.config);
         }
       }
+      syncState.setSynced();
       toast.success("Deleted scenario");
     } catch {
+      syncState.setOffline();
       toast.error("Failed to delete scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
   const handleSetPrimaryScenario = async (id: string) => {
     try {
-      setIsSyncing(true);
+      syncState.setSyncing();
       const updated = await repository.setRemotePrimary(id);
       setScenarios((prev) => prev.map((s) => (s.id === id ? updated : { ...s, isPrimary: false })));
+      syncState.setSynced();
       toast.success(`Designated "${updated.name}" as primary household plan`);
     } catch {
+      syncState.setOffline();
       toast.error("Failed to update primary scenario");
-    } finally {
-      setIsSyncing(false);
     }
   };
 
@@ -285,8 +305,10 @@ export function MortgageDashboard() {
       <MortgageScenarioToolbar
         scenarios={scenarios}
         activeScenarioId={activeScenarioId}
-        isSyncing={isSyncing}
-        isOfflineFallback={isOfflineFallback}
+        syncStatus={syncState.status}
+        conflicts={syncState.conflicts}
+        activeConflict={syncState.activeConflict}
+        onResolveConflict={syncState.resolveConflict}
         onSelectScenario={handleSelectScenario}
         onCreateScenario={handleCreateScenario}
         onDuplicateScenario={handleDuplicateScenario}

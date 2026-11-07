@@ -445,5 +445,127 @@ describe("runway-repository", () => {
       expect(offerRev?.id).toBe("rev-123");
       expect(offerRev?.title).toBe("Active Offer");
     });
+
+    it("auto-replays offline-* created runway scenarios on reconnect and maps local ID", async () => {
+      const client = new RunwayRepository("test-runway-key", memoryStorage);
+
+      // Create scenario offline
+      const offlineScen = await client.createRemoteScenario({
+        name: "Offline Austerity Freeze",
+        lookbackWindow: "6m",
+      });
+      expect(offlineScen.id).toMatch(/^offline-/);
+
+      const serverUuid = "server-uuid-runway-999";
+      const mockRemote: RunwayScenario[] = [
+        {
+          id: "server-existing-1",
+          name: "Existing Plan",
+          isPrimary: true,
+          jdgConfig: DEFAULT_JDG_RUNWAY_CONFIG,
+          capitalPoolConfig: DEFAULT_CAPITAL_POOL_CONFIG,
+          lookbackWindow: "3m",
+          activePresetId: "preset-normal",
+          customPresets: [],
+          categoryCuts: {},
+          baselineOfferRevisionId: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ];
+
+      const mockFetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          const body = JSON.parse(init.body as string);
+          return {
+            ok: true,
+            status: 201,
+            json: async () => ({
+              scenario: {
+                ...offlineScen,
+                id: serverUuid,
+                name: body.name,
+                updatedAt: new Date().toISOString(),
+              },
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ scenarios: mockRemote }),
+        };
+      });
+
+      const syncedClient = new RunwayRepository("test-runway-key", memoryStorage, mockFetch as unknown as typeof fetch);
+      const result = await syncedClient.fetchRemoteScenarios();
+
+      expect(result.status).toBe("synced");
+      expect(result.conflicts).toHaveLength(0);
+      const loaded = syncedClient.loadLocalScenarios();
+      expect(loaded.scenarios.some((s) => s.id === serverUuid)).toBe(true);
+      expect(loaded.scenarios.some((s) => s.id.startsWith("offline-"))).toBe(false);
+    });
+
+    it("detects conflict and halts silent local overwrites when concurrent edits occur", async () => {
+      const client = new RunwayRepository("test-runway-key", memoryStorage);
+
+      const baseline: RunwayScenario = {
+        id: "scen-runway-shared",
+        name: "Shared Plan",
+        isPrimary: true,
+        jdgConfig: DEFAULT_JDG_RUNWAY_CONFIG,
+        capitalPoolConfig: DEFAULT_CAPITAL_POOL_CONFIG,
+        lookbackWindow: "3m",
+        activePresetId: "preset-normal",
+        customPresets: [],
+        categoryCuts: {},
+        baselineOfferRevisionId: null,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      };
+      client.saveLocalScenarios([baseline], baseline.id);
+      client.setLastSyncedAt("2026-01-01T00:00:00Z");
+
+      // Local user edits offline
+      await client.updateRemoteScenario("scen-runway-shared", {
+        name: "Shared Plan - Local 6m Window",
+        lookbackWindow: "6m",
+      });
+
+      // Remote DB has concurrent edit
+      const remoteConflicting: RunwayScenario = {
+        ...baseline,
+        name: "Shared Plan - Remote 12m Window",
+        lookbackWindow: "12m",
+        updatedAt: "2026-01-02T12:00:00Z",
+      };
+
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ scenarios: [remoteConflicting] }),
+      });
+
+      const syncedClient = new RunwayRepository("test-runway-key", memoryStorage, mockFetch as unknown as typeof fetch);
+      const result = await syncedClient.fetchRemoteScenarios();
+
+      expect(result.status).toBe("conflict");
+      expect(result.conflicts).toHaveLength(1);
+      expect(result.conflicts?.[0].entityId).toBe("scen-runway-shared");
+
+      // Local draft is preserved
+      const localAfter = syncedClient.loadLocalScenarios().scenarios[0];
+      expect(localAfter.name).toBe("Shared Plan - Local 6m Window");
+      expect(localAfter.lookbackWindow).toBe("6m");
+
+      // Resolve conflict via "use_cloud"
+      if (result.conflicts?.[0]) {
+        await syncedClient.resolveConflict(result.conflicts[0], "use_cloud");
+      }
+      const localResolved = syncedClient.loadLocalScenarios().scenarios[0];
+      expect(localResolved.name).toBe("Shared Plan - Remote 12m Window");
+      expect(localResolved.lookbackWindow).toBe("12m");
+    });
   });
 });

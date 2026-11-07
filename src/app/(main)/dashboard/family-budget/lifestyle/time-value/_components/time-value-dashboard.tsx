@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   Banknote,
@@ -16,6 +16,7 @@ import {
   Timer,
   TrendingUp,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { useLifestyleData } from "@/app/(main)/dashboard/family-budget/lifestyle/use-lifestyle-data";
 import {
@@ -29,8 +30,11 @@ import type {
   OfferRevision,
   OfferTrack,
 } from "@/app/(main)/dashboard/family-budget/offer-comparator/_components/offer-types";
+import { CloudSyncBadge } from "@/components/cloud-sync-badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
+import type { ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
 import { DualPlayerReflectionCards } from "./dual-player-reflection-cards";
 import { GoalAcceleratorsGrid } from "./goal-accelerators-grid";
@@ -38,7 +42,7 @@ import { LearningRelaxRoiCard } from "./learning-relax-roi-card";
 import { OpportunityMonetizationStudio } from "./opportunity-monetization-studio";
 import { computeComprehensiveTimeValueSummary } from "./time-value-engine";
 import { TimeValueRepository } from "./time-value-repository";
-import type { TimeValueMotivatorConfig, WeeklyCheckInEntry } from "./time-value-types";
+import { TIME_VALUE_STORAGE_KEY, type TimeValueMotivatorConfig, type WeeklyCheckInEntry } from "./time-value-types";
 import { WeeklyCheckInLogCard } from "./weekly-checkin-log-card";
 
 export function TimeValueDashboard() {
@@ -53,18 +57,37 @@ export function TimeValueDashboard() {
   const [activeOfferTitle, setActiveOfferTitle] = useState<string | undefined>();
   const [activeTab, setActiveTab] = useState("reflection");
 
+  const syncState = useCloudSyncState<TimeValueMotivatorConfig>({
+    initialStatus: "syncing",
+    storageSyncKey: `${TIME_VALUE_STORAGE_KEY}:lastSyncedAt`,
+    onConflictResolved: async (_entityId, choice, record) => {
+      const resolved = await timeValueRepo.resolveConflict(record, choice);
+      setConfig(resolved);
+      toast.success(choice === "keep_local" ? "Kept local changes and updated cloud" : "Adopted cloud changes");
+    },
+  });
+
   // Load offer comparator active revision on mount & listen for storage updates
   useEffect(() => {
     let isMounted = true;
 
     const syncCloud = async () => {
+      syncState.setSyncing();
       try {
         const result = await timeValueRepo.fetchRemoteConfig();
         if (isMounted && result.config) {
           setConfig(result.config);
+          if (result.conflicts && result.conflicts.length > 0) {
+            syncState.setConflictDetected(result.conflicts);
+          } else if (result.status === "offline" || result.isOfflineFallback) {
+            syncState.setOffline();
+          } else {
+            syncState.setSynced(timeValueRepo.getLastSyncedAt() ?? undefined);
+          }
         }
       } catch (err) {
         console.warn("Failed to sync time value config from cloud:", err);
+        syncState.setOffline();
       }
     };
 
@@ -102,7 +125,7 @@ export function TimeValueDashboard() {
       isMounted = false;
       window.removeEventListener("storage", handleStorage);
     };
-  }, [offerRepo, timeValueRepo]);
+  }, [offerRepo, syncState, timeValueRepo]);
 
   // Compute mortgage gap & baseline savings margin
   const mortgageMetrics = useMemo(() => {
@@ -201,6 +224,25 @@ export function TimeValueDashboard() {
 
   return (
     <div className="space-y-6">
+      {/* 0. HEADER & CLOUD SYNC STATUS */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight text-foreground">Time &amp; Opportunity Motivator</h2>
+          <p className="text-xs text-muted-foreground">
+            Dual-player screen-time reflection, foundational care recognition &amp; goal acceleration
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <CloudSyncBadge
+            status={syncState.status}
+            conflicts={syncState.conflicts}
+            activeConflict={syncState.activeConflict}
+            onResolveConflict={syncState.resolveConflict}
+            lastSyncedAt={syncState.lastSyncedAt}
+          />
+        </div>
+      </div>
+
       {/* 1. TOP KPI SUMMARY STRIP */}
       <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
         {/* KPI 1: Reclaimed Weekly Drift */}

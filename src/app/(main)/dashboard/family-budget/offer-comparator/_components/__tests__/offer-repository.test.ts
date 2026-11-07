@@ -222,4 +222,113 @@ describe("Offer Comparator Remote Synchronization & Auto-Migration", () => {
     expect(result.globalConfig.targetMonthlySavingsPln).toBe(6500);
     expect(result.isOfflineFallback).toBe(true);
   });
+
+  it("auto-replays offline-* created tracks on reconnect and pushes updated tracks to remote", async () => {
+    const storage = new MemoryStorage();
+    const offlineTrack: OfferTrack = {
+      id: "offline-track-starlink",
+      companyName: "Starlink B2B",
+      roleTitle: "Network Engineer",
+      status: "negotiating",
+      activeRevisionId: "rev-s1",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      revisions: [],
+    };
+
+    const preRepo = new LocalStorageOfferRepository("test-cloud-key-4", storage);
+    preRepo.saveLocal([offlineTrack], DEFAULT_COMPARATOR_CONFIG);
+
+    const remoteTracks: OfferTrack[] = [
+      {
+        id: "server-track-1",
+        companyName: "Existing Remote Corp",
+        roleTitle: "Staff",
+        status: "current",
+        activeRevisionId: "rev-1",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+        revisions: [],
+      },
+    ];
+
+    let postCallBody: string | undefined;
+    const mockFetch = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        postCallBody = init.body as string;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ tracks: remoteTracks, globalConfig: DEFAULT_COMPARATOR_CONFIG }),
+      };
+    });
+
+    const repo = new LocalStorageOfferRepository("test-cloud-key-4", storage, mockFetch as unknown as typeof fetch);
+    const result = await repo.load();
+
+    expect(result.status).toBe("synced");
+    expect(result.conflicts).toHaveLength(0);
+    expect(result.tracks).toHaveLength(2);
+    expect(result.tracks.some((t) => t.id.startsWith("offline-"))).toBe(false);
+    expect(postCallBody).toBeDefined();
+    expect(postCallBody).toContain("Starlink B2B");
+  });
+
+  it("detects conflict and halts silent local overwrites when concurrent edits occur", async () => {
+    const storage = new MemoryStorage();
+
+    const baselineTrack: OfferTrack = {
+      id: "track-shared-1",
+      companyName: "Shared Company",
+      roleTitle: "Staff",
+      status: "current",
+      activeRevisionId: "rev-1",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+      revisions: [],
+    };
+
+    const preRepo = new LocalStorageOfferRepository("test-cloud-key-5", storage);
+    preRepo.saveLocal(
+      [{ ...baselineTrack, companyName: "Shared Company (Local Edit)", updatedAt: "2026-01-02T10:00:00Z" }],
+      DEFAULT_COMPARATOR_CONFIG,
+    );
+    preRepo.setLastSyncedAt("2026-01-01T00:00:00Z");
+
+    const remoteConflicting: OfferTrack = {
+      ...baselineTrack,
+      companyName: "Shared Company (Remote Edit)",
+      updatedAt: "2026-01-02T12:00:00Z",
+    };
+
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ tracks: [remoteConflicting], globalConfig: DEFAULT_COMPARATOR_CONFIG }),
+    });
+
+    const repo = new LocalStorageOfferRepository("test-cloud-key-5", storage, mockFetch as unknown as typeof fetch);
+    const result = await repo.load();
+
+    expect(result.status).toBe("conflict");
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts?.[0].entityId).toBe("track-shared-1");
+
+    // Local edit preserved
+    const local = repo.loadLocal();
+    expect(local.tracks[0].companyName).toBe("Shared Company (Local Edit)");
+
+    // Resolve conflict via "use_cloud"
+    if (result.conflicts?.[0]) {
+      await repo.resolveConflict(result.conflicts[0], "use_cloud");
+    }
+    const resolved = repo.loadLocal();
+    expect(resolved.tracks[0].companyName).toBe("Shared Company (Remote Edit)");
+  });
 });

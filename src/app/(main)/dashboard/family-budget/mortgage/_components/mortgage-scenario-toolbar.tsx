@@ -2,19 +2,9 @@
 
 import { useState } from "react";
 
-import {
-  ArrowRightLeft,
-  Cloud,
-  CloudOff,
-  Copy,
-  FolderPlus,
-  MoreVertical,
-  Pencil,
-  RotateCw,
-  Star,
-  Trash2,
-} from "lucide-react";
+import { ArrowRightLeft, Copy, FolderPlus, MoreVertical, Pencil, Star, Trash2 } from "lucide-react";
 
+import { CloudSyncBadge } from "@/components/cloud-sync-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +25,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import type { CloudSyncStatus, ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
 import type { MortgageScenario } from "./mortgage-types";
 
@@ -43,6 +34,10 @@ export interface MortgageScenarioToolbarProps {
   activeScenarioId: string;
   isSyncing?: boolean;
   isOfflineFallback?: boolean;
+  syncStatus?: CloudSyncStatus;
+  conflicts?: ConflictRecord<MortgageScenario>[];
+  activeConflict?: ConflictRecord<MortgageScenario> | null;
+  onResolveConflict?: (entityId: string, choice: ConflictResolutionChoice) => Promise<void> | void;
   onSelectScenario: (id: string) => void;
   onCreateScenario: (name: string) => Promise<void>;
   onDuplicateScenario: (id: string, name?: string) => Promise<void>;
@@ -57,6 +52,10 @@ export function MortgageScenarioToolbar({
   activeScenarioId,
   isSyncing = false,
   isOfflineFallback = false,
+  syncStatus,
+  conflicts = [],
+  activeConflict,
+  onResolveConflict,
   onSelectScenario,
   onCreateScenario,
   onDuplicateScenario,
@@ -75,6 +74,15 @@ export function MortgageScenarioToolbar({
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  let effectiveStatus: CloudSyncStatus = "synced";
+  if (syncStatus) {
+    effectiveStatus = syncStatus;
+  } else if (isOfflineFallback) {
+    effectiveStatus = "offline";
+  } else if (isSyncing) {
+    effectiveStatus = "syncing";
+  }
 
   const activeScenario = scenarios.find((s) => s.id === activeScenarioId) ?? scenarios[0];
 
@@ -165,32 +173,12 @@ export function MortgageScenarioToolbar({
         )}
 
         {/* Sync & Cloud Status */}
-        {isOfflineFallback && (
-          <Badge
-            variant="outline"
-            className="border-muted-foreground/30 text-muted-foreground h-6 gap-1 text-[11px]"
-            title="Operating with locally cached scenarios"
-          >
-            <CloudOff className="size-3" />
-            Local Cache
-          </Badge>
-        )}
-        {!isOfflineFallback && isSyncing && (
-          <Badge variant="outline" className="border-primary/30 text-primary h-6 gap-1 text-[11px]">
-            <RotateCw className="size-3 animate-spin" />
-            Syncing...
-          </Badge>
-        )}
-        {!isOfflineFallback && !isSyncing && (
-          <Badge
-            variant="ghost"
-            className="text-muted-foreground h-6 gap-1 text-[11px]"
-            title="Synced with Supabase Cloud"
-          >
-            <Cloud className="size-3 text-emerald-600 dark:text-emerald-400" />
-            Cloud Synced
-          </Badge>
-        )}
+        <CloudSyncBadge
+          status={effectiveStatus}
+          conflicts={conflicts}
+          activeConflict={activeConflict}
+          onResolveConflict={onResolveConflict}
+        />
       </div>
 
       {/* Scenario Action Buttons */}

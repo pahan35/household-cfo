@@ -7,8 +7,15 @@
  * and validated JSON Export/Import helpers.
  */
 
+import {
+  type CloudSyncStatus,
+  type ConflictRecord,
+  type ConflictResolutionChoice,
+  reconcileEntities,
+} from "@/lib/cloud-sync-reconciler";
+
 import { DEFAULT_COMPARATOR_CONFIG } from "./compensation-engine";
-import type { ComparatorGlobalConfig, OfferRevision, OfferTrack } from "./offer-types";
+import type { ComparatorGlobalConfig, OfferTrack } from "./offer-types";
 
 export const OFFER_STORAGE_KEY = "family-budget:offer-comparator:v1";
 
@@ -414,10 +421,30 @@ export class LocalStorageOfferRepository implements OfferRepository {
     }
   }
 
+  public getLastSyncedAt(): string | null {
+    if (!this.storage) return null;
+    try {
+      return this.storage.getItem(`${this.storageKey}:lastSyncedAt`);
+    } catch {
+      return null;
+    }
+  }
+
+  public setLastSyncedAt(timestamp: string): void {
+    if (!this.storage) return;
+    try {
+      this.storage.setItem(`${this.storageKey}:lastSyncedAt`, timestamp);
+    } catch {
+      // Ignore
+    }
+  }
+
   public async load(): Promise<{
     tracks: OfferTrack[];
     globalConfig: ComparatorGlobalConfig;
     isOfflineFallback?: boolean;
+    conflicts?: ConflictRecord<OfferTrack>[];
+    status?: CloudSyncStatus;
   }> {
     try {
       const res = await this.fetchFn("/api/family-budget/offers", {
@@ -435,10 +462,11 @@ export class LocalStorageOfferRepository implements OfferRepository {
         ? { ...DEFAULT_COMPARATOR_CONFIG, ...data.globalConfig }
         : DEFAULT_COMPARATOR_CONFIG;
 
+      const local = this.loadLocal();
+
       // Auto-migration (Task 3.2):
       // If the remote database is empty, seed it with existing localStorage data
       if (remoteTracks.length === 0) {
-        const local = this.loadLocal();
         const tracksToSeed = local.tracks.length > 0 ? local.tracks : getDefaultStarterTracks();
         const configToSeed = local.globalConfig;
 
@@ -457,19 +485,74 @@ export class LocalStorageOfferRepository implements OfferRepository {
         }
 
         this.saveLocal(tracksToSeed, configToSeed);
+        this.setLastSyncedAt(new Date().toISOString());
         return {
           tracks: tracksToSeed,
           globalConfig: configToSeed,
           isOfflineFallback: false,
+          conflicts: [],
+          status: "synced",
         };
       }
 
-      // Remote has data: update local cache
-      this.saveLocal(remoteTracks, remoteConfig);
+      // If local storage had no existing data (first load on this browser), adopt remote
+      if (!local.isExisting) {
+        this.saveLocal(remoteTracks, remoteConfig);
+        this.setLastSyncedAt(new Date().toISOString());
+        return {
+          tracks: remoteTracks,
+          globalConfig: remoteConfig,
+          isOfflineFallback: false,
+          conflicts: [],
+          status: "synced",
+        };
+      }
+
+      // Reconcile local tracks with remote tracks
+      const reconcileResult = await reconcileEntities<OfferTrack>({
+        localEntities: local.tracks,
+        remoteEntities: remoteTracks,
+        lastSyncedAt: this.getLastSyncedAt(),
+        uploadOfflineEntity: async (item) => {
+          const serverId = `track-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          return {
+            ...item,
+            id: serverId,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+        getEntityName: (item) => `${item.companyName} (${item.roleTitle})`,
+      });
+
+      // If offline tracks were replayed, push updated tracklist to server
+      if (Object.keys(reconcileResult.replayedIds).length > 0) {
+        try {
+          await this.fetchFn("/api/family-budget/offers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "save_all",
+              tracks: reconcileResult.mergedEntities,
+              globalConfig: remoteConfig,
+            }),
+          });
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      this.saveLocal(reconcileResult.mergedEntities, remoteConfig);
+
+      if (reconcileResult.conflicts.length === 0) {
+        this.setLastSyncedAt(new Date().toISOString());
+      }
+
       return {
-        tracks: remoteTracks,
+        tracks: reconcileResult.mergedEntities,
         globalConfig: remoteConfig,
         isOfflineFallback: false,
+        conflicts: reconcileResult.conflicts,
+        status: reconcileResult.status,
       };
     } catch {
       // Offline fallback
@@ -481,8 +564,32 @@ export class LocalStorageOfferRepository implements OfferRepository {
         tracks: local.tracks,
         globalConfig: local.globalConfig,
         isOfflineFallback: true,
+        conflicts: [],
+        status: "offline",
       };
     }
+  }
+
+  public async resolveConflict(
+    conflict: ConflictRecord<OfferTrack>,
+    choice: ConflictResolutionChoice,
+  ): Promise<{ tracks: OfferTrack[]; globalConfig: ComparatorGlobalConfig }> {
+    const local = this.loadLocal();
+    let updatedTracks: OfferTrack[];
+
+    if (choice === "keep_local") {
+      updatedTracks = local.tracks.map((t) => (t.id === conflict.entityId ? conflict.localVersion : t));
+      await this.save(updatedTracks, local.globalConfig);
+    } else {
+      updatedTracks = local.tracks.map((t) => (t.id === conflict.entityId ? conflict.remoteVersion : t));
+      this.saveLocal(updatedTracks, local.globalConfig);
+    }
+
+    this.setLastSyncedAt(new Date().toISOString());
+    return {
+      tracks: updatedTracks,
+      globalConfig: local.globalConfig,
+    };
   }
 
   public async save(tracks: OfferTrack[], globalConfig: ComparatorGlobalConfig): Promise<void> {

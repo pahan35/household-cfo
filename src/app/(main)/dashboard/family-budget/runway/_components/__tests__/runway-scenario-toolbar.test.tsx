@@ -82,6 +82,32 @@ describe("RunwayScenarioToolbar & Multi-scenario Switching", () => {
     expect(html).toContain("Local Cache");
   });
 
+  it("displays conflict badge when syncStatus is conflict", () => {
+    const html = renderToString(
+      <RunwayScenarioToolbar
+        scenarios={mockScenarios}
+        activeScenarioId="scen-1"
+        syncStatus="conflict"
+        conflicts={[
+          {
+            entityId: "scen-1",
+            entityName: "Baseline Austerity",
+            localVersion: mockScenarios[0],
+            remoteVersion: mockScenarios[1],
+          },
+        ]}
+        onSelectScenario={vi.fn()}
+        onCreateScenario={vi.fn()}
+        onDuplicateScenario={vi.fn()}
+        onRenameScenario={vi.fn()}
+        onDeleteScenario={vi.fn()}
+        onSetPrimaryScenario={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain("Conflict Detected");
+  });
+
   it("simulates switching between scenarios and restoring customized cuts across reload", () => {
     // 1. Initial active scenario has 50% dining retention
     let activeId = "scen-1";
