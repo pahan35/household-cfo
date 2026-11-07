@@ -4,6 +4,7 @@ import { isAuthBypassActive } from "@/server/auth/config";
 import { getSessionFromRequest } from "@/server/auth/session";
 import { getExternalProviderStore } from "@/server/external-provider/db";
 import { runExternalProviderSync, type SyncTier } from "@/server/external-provider/sync";
+import { serverLogger } from "@/server/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -77,6 +78,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     tier,
     force: body.force ?? true,
   });
+
+  if (!syncResult.success) {
+    serverLogger.error("Manual sync execution failed", {
+      tier,
+      error: syncResult.error,
+    });
+  }
 
   const store = getExternalProviderStore();
   const snapshot = await store.getFullSnapshot();

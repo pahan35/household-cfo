@@ -15,6 +15,7 @@ import {
   type TransactionPageResponse,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
 
+import { serverLogger } from "../logger";
 import { UPSTREAM_ORIGIN } from "./config";
 import { getExternalProviderStore, type StatPointInput } from "./db";
 import { injectUserId } from "./http";
@@ -139,10 +140,27 @@ async function executeSync(options?: RunSyncOptions): Promise<ExternalProviderSy
     const categories: ExternalProviderCategory[] = parseExchangeEntities<ExternalProviderCategory>(catItem?.entityJson);
     const currencies: ExternalProviderCurrency[] = parseExchangeEntities<ExternalProviderCurrency>(curItem?.entityJson);
 
-    // 2. Settings & Stats in parallel
+    // 2. Settings & Stats in parallel (ExternalProvider /stat/ping requires selection payload in `data` query param)
+    const statAnchor = new Date().toISOString().slice(0, 10);
+    const statPayload = {
+      echo: '{"selfSufficientRequest":true}',
+      selection: {
+        periodtype: 0,
+        statisticType: 0,
+        period: {
+          from: statAnchor,
+          to: null,
+          Before: 40,
+          After: null,
+        },
+        filter: null,
+      },
+    };
+    const statUrl = `/stat/ping?${new URLSearchParams({ data: JSON.stringify(statPayload) }).toString()}`;
+
     const [settingsResponse, statResponse] = await Promise.all([
       fetchFromExternalProvider<SettingsResponseEnvelope>("/settings/get"),
-      fetchFromExternalProvider<StatPingResponseEnvelope>("/stat/ping"),
+      fetchFromExternalProvider<StatPingResponseEnvelope>(statUrl),
     ]);
 
     const settings: ExternalProviderSettings = settingsResponse.data ?? {};
@@ -329,6 +347,11 @@ async function executeSync(options?: RunSyncOptions): Promise<ExternalProviderSy
     };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
+    serverLogger.error("ExternalProvider sync execution failed", {
+      tier: targetTier,
+      syncVersion: config.sync_version,
+      error: err instanceof Error ? { message: err.message, name: err.name, stack: err.stack } : errorMsg,
+    });
     await store.updateSyncConfig({
       sync_status: "error",
       last_error: errorMsg,

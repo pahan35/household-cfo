@@ -87,7 +87,12 @@ describe("runExternalProviderSync", () => {
         );
       }
 
-      if (urlStr.endsWith("/stat/ping")) {
+      if (urlStr.includes("/stat/ping")) {
+        const url = new URL(urlStr);
+        const dataParam = url.searchParams.get("data");
+        if (!dataParam) {
+          return new Response("Missing required data parameter", { status: 500 });
+        }
         return new Response(
           JSON.stringify({
             isSuccess: true,
@@ -191,5 +196,37 @@ describe("runExternalProviderSync", () => {
     const config = await store.getSyncConfig();
     expect(config.sync_status).toBe("error");
     expect(config.last_error).toContain("Network connection dropped");
+  });
+
+  it("invokes /stat/ping with required selection payload in data query parameter", async () => {
+    let capturedStatUrl: string | null = null;
+    const baseMock = createMockFetch();
+
+    globalThis.fetch = vi.fn().mockImplementation((req: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = typeof req === "string" ? req : req.toString();
+      if (urlStr.includes("/stat/ping")) {
+        capturedStatUrl = urlStr;
+      }
+      return baseMock(req, init);
+    });
+
+    const result = await runExternalProviderSync({ tier: "hot" });
+    expect(result.success).toBe(true);
+    expect(capturedStatUrl).not.toBeNull();
+    if (!capturedStatUrl) {
+      throw new Error("Expected capturedStatUrl to be defined");
+    }
+
+    const url = new URL(capturedStatUrl);
+    const dataParam = url.searchParams.get("data");
+    expect(dataParam).not.toBeNull();
+    if (!dataParam) {
+      throw new Error("Expected dataParam to be defined");
+    }
+
+    const parsed = JSON.parse(dataParam);
+    expect(parsed.echo).toBe('{"selfSufficientRequest":true}');
+    expect(parsed.selection.period.Before).toBe(40);
+    expect(parsed.selection.period.from).toBeDefined();
   });
 });

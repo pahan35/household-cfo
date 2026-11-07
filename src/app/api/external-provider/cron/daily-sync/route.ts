@@ -4,6 +4,7 @@ import { isAuthBypassActive } from "@/server/auth/config";
 import { getSessionFromRequest } from "@/server/auth/session";
 import { getExternalProviderStore } from "@/server/external-provider/db";
 import { runExternalProviderSync } from "@/server/external-provider/sync";
+import { serverLogger } from "@/server/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -54,6 +55,10 @@ async function handleCron(request: NextRequest): Promise<NextResponse> {
   });
 
   if (!syncResult.success) {
+    serverLogger.error("Vercel Cron daily sync failed", {
+      tier: syncResult.tier,
+      error: syncResult.error,
+    });
     return NextResponse.json(
       {
         error: {
