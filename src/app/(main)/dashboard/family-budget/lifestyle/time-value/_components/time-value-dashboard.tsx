@@ -56,6 +56,20 @@ export function TimeValueDashboard() {
   // Load offer comparator active revision on mount & listen for storage updates
   useEffect(() => {
     let isMounted = true;
+
+    const syncCloud = async () => {
+      try {
+        const result = await timeValueRepo.fetchRemoteConfig();
+        if (isMounted && result.config) {
+          setConfig(result.config);
+        }
+      } catch (err) {
+        console.warn("Failed to sync time value config from cloud:", err);
+      }
+    };
+
+    void syncCloud();
+
     const loadOffer = async () => {
       try {
         const { tracks } = await offerRepo.load();
@@ -149,12 +163,13 @@ export function TimeValueDashboard() {
 
   const handleUpdateConfig = (updated: TimeValueMotivatorConfig) => {
     setConfig(updated);
-    timeValueRepo.saveConfig(updated);
+    void timeValueRepo.saveRemoteConfig(updated);
   };
 
   const handleAddLog = (entry: WeeklyCheckInEntry) => {
     const updated = timeValueRepo.addWeeklyCheckIn(entry);
     setConfig(updated);
+    void timeValueRepo.addRemoteWeeklyCheckIn(entry);
   };
 
   const handleExportJson = () => {
@@ -173,12 +188,14 @@ export function TimeValueDashboard() {
   const handleImportJson = (jsonStr: string) => {
     const imported = timeValueRepo.importJson(jsonStr);
     setConfig(imported);
+    void timeValueRepo.saveRemoteConfig(imported);
   };
 
   const handleResetDefaults = () => {
     if (window.confirm("Reset Time & Opportunity Motivator to default configuration?")) {
       const reset = timeValueRepo.resetToDefaults();
       setConfig(reset);
+      void timeValueRepo.saveRemoteConfig(reset);
     }
   };
 

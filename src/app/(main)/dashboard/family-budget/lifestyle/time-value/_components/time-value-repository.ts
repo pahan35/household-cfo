@@ -1,11 +1,13 @@
 /**
- * Time & Opportunity Motivator LocalStorage Repository
+ * Time & Opportunity Motivator LocalStorage & Supabase Repository
  *
  * Persists dual-player profiles, screen time reflections, pet projects,
- * personal goals, and weekly logs under `family-budget:time-value-motivator:v1`.
+ * personal goals, and weekly logs under `family-budget:time-value-motivator:v1`,
+ * with asynchronous cloud sync and auto-migration to Supabase PostgreSQL.
  */
 
 import {
+  type PersonalGoal,
   TIME_VALUE_STORAGE_KEY,
   type TimeValueMotivatorConfig,
   type TimeValueStoragePayload,
@@ -190,9 +192,10 @@ export function getDefaultTimeValueConfig(): TimeValueMotivatorConfig {
 export class TimeValueRepository {
   private readonly storageKey: string;
   private readonly storage: StorageLike | null = null;
+  private readonly fetchFn: typeof fetch;
   private memoryConfig: TimeValueMotivatorConfig | null = null;
 
-  constructor(storageKey = TIME_VALUE_STORAGE_KEY, customStorage?: StorageLike) {
+  constructor(storageKey = TIME_VALUE_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
     this.storageKey = storageKey;
     if (customStorage) {
       this.storage = customStorage;
@@ -201,6 +204,7 @@ export class TimeValueRepository {
     } else {
       this.storage = null;
     }
+    this.fetchFn = customFetch ?? ((...args) => fetch(...args));
   }
 
   public loadConfig(): TimeValueMotivatorConfig {
@@ -279,7 +283,10 @@ export class TimeValueRepository {
 
   public addWeeklyCheckIn(entry: WeeklyCheckInEntry): TimeValueMotivatorConfig {
     const current = this.loadConfig();
-    const updatedLogs = [entry, ...current.weeklyLogs.filter((log) => log.id !== entry.id)];
+    const updatedLogs = [
+      entry,
+      ...current.weeklyLogs.filter((log) => log.id !== entry.id && log.weekStartDate !== entry.weekStartDate),
+    ];
     const updated = { ...current, weeklyLogs: updatedLogs };
     this.saveConfig(updated);
     return updated;
@@ -323,5 +330,161 @@ export class TimeValueRepository {
     const defaults = getDefaultTimeValueConfig();
     this.saveConfig(defaults);
     return defaults;
+  }
+
+  // =========================================================================
+  // Asynchronous Cloud Synchronization & Auto-Migration (Supabase)
+  // =========================================================================
+
+  /**
+   * Fetches configuration from Supabase.
+   * If remote is unseeded/empty, automatically seeds it with existing localStorage data (Task 3.2).
+   * Gracefully falls back to local cache if offline or on network error.
+   */
+  public async fetchRemoteConfig(signal?: AbortSignal): Promise<{
+    config: TimeValueMotivatorConfig;
+    isOfflineFallback?: boolean;
+    wasAutoMigrated?: boolean;
+  }> {
+    try {
+      const res = await this.fetchFn("/api/family-budget/time-value", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to fetch time value config: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const remoteConfig: TimeValueMotivatorConfig | null = data.config ?? null;
+
+      // Auto-migration: if remote database is empty, seed it with the current local config
+      if (!remoteConfig) {
+        const localConfig = this.loadConfig();
+        await this.saveRemoteConfig(localConfig);
+        return {
+          config: localConfig,
+          wasAutoMigrated: true,
+        };
+      }
+
+      // Reconcile and cache remotely retrieved config locally
+      this.saveConfig(remoteConfig);
+      return {
+        config: remoteConfig,
+        isOfflineFallback: false,
+      };
+    } catch (_err) {
+      // Offline fallback: load from localStorage
+      const local = this.loadConfig();
+      return {
+        config: local,
+        isOfflineFallback: true,
+      };
+    }
+  }
+
+  /**
+   * Saves configuration remotely to Supabase, updating local storage cache.
+   */
+  public async saveRemoteConfig(config: TimeValueMotivatorConfig): Promise<TimeValueMotivatorConfig> {
+    this.saveConfig(config);
+    try {
+      const res = await this.fetchFn("/api/family-budget/time-value", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save_config", config }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to save config remotely: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const saved: TimeValueMotivatorConfig = data.config ?? config;
+      this.saveConfig(saved);
+      return saved;
+    } catch (err) {
+      console.warn("Could not sync time value config remotely, cached locally:", err);
+      return config;
+    }
+  }
+
+  /**
+   * Adds or updates a weekly check-in entry remotely and locally.
+   */
+  public async addRemoteWeeklyCheckIn(entry: WeeklyCheckInEntry): Promise<TimeValueMotivatorConfig> {
+    const updatedLocal = this.addWeeklyCheckIn(entry);
+    try {
+      const res = await this.fetchFn("/api/family-budget/time-value", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "upsert_log", entry }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to upsert weekly log remotely: HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn("Could not sync weekly log remotely, cached locally:", err);
+    }
+    return updatedLocal;
+  }
+
+  /**
+   * Upserts a personal goal remotely and locally.
+   */
+  public async saveRemoteGoal(goal: PersonalGoal): Promise<TimeValueMotivatorConfig> {
+    const current = this.loadConfig();
+    const existingIndex = current.personalGoals.findIndex((g) => g.id === goal.id);
+    const updatedGoals =
+      existingIndex >= 0
+        ? current.personalGoals.map((g) => (g.id === goal.id ? goal : g))
+        : [...current.personalGoals, goal];
+
+    const updatedConfig = { ...current, personalGoals: updatedGoals };
+    this.saveConfig(updatedConfig);
+
+    try {
+      const res = await this.fetchFn("/api/family-budget/time-value", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "upsert_goal", goal }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to upsert goal remotely: HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn("Could not sync goal remotely, cached locally:", err);
+    }
+
+    return updatedConfig;
+  }
+
+  /**
+   * Deletes a personal goal remotely and locally.
+   */
+  public async deleteRemoteGoal(goalId: string): Promise<TimeValueMotivatorConfig> {
+    const current = this.loadConfig();
+    const updatedGoals = current.personalGoals.filter((g) => g.id !== goalId);
+    const updatedConfig = { ...current, personalGoals: updatedGoals };
+    this.saveConfig(updatedConfig);
+
+    try {
+      const res = await this.fetchFn(`/api/family-budget/time-value?goalId=${encodeURIComponent(goalId)}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to delete goal remotely: HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn("Could not delete goal remotely, removed locally:", err);
+    }
+
+    return updatedConfig;
   }
 }
