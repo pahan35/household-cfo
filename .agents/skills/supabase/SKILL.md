@@ -85,6 +85,32 @@ supabase <group> --help            # Subcommands (e.g., supabase db --help)
 supabase <group> <command> --help  # Flags for a specific command
 ```
 
+### Invocation & Agent Sandbox
+In agent environments where `supabase` is not pre-installed globally or in `node_modules`, execute via `npx supabase` outside the sandbox (`BypassSandbox: true`):
+
+```bash
+npx supabase <subcommand>
+```
+
+Running in standard sandboxed mode will fail with `npm error 403 Forbidden` because sandbox network isolation blocks downloading the package from the registry.
+
+### Remote Project Queries
+When the workspace is linked to a Supabase project (e.g., via `supabase/.temp/linked-project.json` or `supabase/config.toml`):
+
+1. **Read-only queries**:
+   Always append `--remote --read-only` to avoid hosted mutation consent errors:
+   ```bash
+   npx supabase db query "SELECT * FROM <table_name> LIMIT 10;" --remote --read-only
+   ```
+
+2. **Mutations**:
+   Supabase CLI blocks hosted mutations in agent mode with `HostedMutationConsentRequiredError`.
+   - Always confirm with the user before executing data or schema changes on remote instances.
+   - Once confirmed, provide the `--yes` flag:
+   ```bash
+   npx supabase db query "<MUTATING_SQL>" --remote --yes
+   ```
+
 **Supabase CLI Known gotchas:**
 
 - `supabase db query` requires **CLI v2.79.0+** → use MCP `execute_sql` or `psql` as fallback

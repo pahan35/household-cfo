@@ -141,6 +141,10 @@ In sandboxed agent environments (such as Antigravity):
    - The sandbox blocks creating `.git/index.lock` and writing to `.git/` (failing with exit code `128: Operation not permitted`).
    - Run mutating `git` commands (`git add`, `git commit`, `git stash`, `git rm`, `git mv`) directly with `BypassSandbox: true` as standalone, prefix-matchable commands (never chained with `&&`).
    - Keep read-only `git` commands (`git status`, `git diff`, `git log`, `git show`) inside the sandbox (`BypassSandbox: false`).
+3. **Execute Supabase CLI commands outside the sandbox (`BypassSandbox: true`)**:
+   - `supabase` is invoked via `npx supabase` and is not installed in local `node_modules`. Package retrieval from registry and remote database interaction (`--remote`) require external network access.
+   - Standard sandbox mode blocks network calls with `npm error 403 Forbidden`.
+   - Always run `npx supabase ...` with `BypassSandbox: true`.
 
 ## Session Start & Context Recovery
 
