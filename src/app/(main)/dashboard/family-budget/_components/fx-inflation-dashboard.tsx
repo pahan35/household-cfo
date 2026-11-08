@@ -10,21 +10,26 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { getBudgetSelection, getCategories, getSettings } from "./external-provider-client";
-import type { ExternalProviderCategory, ExternalProviderSettings, StatPingData, StatPoint } from "./external-provider-data";
+import type { ExternalProviderCategory, StatPingData, StatPoint } from "./external-provider-data";
 import { useExternalProviderSync } from "./external-provider-sync-toolbar";
 import { CpiInflationCard } from "./cpi-inflation-card";
 import { transformExpenses } from "./expense-transforms";
 import { FxSimulatorCard } from "./fx-simulator-card";
 import type { ReportingCurrency } from "./macro-transforms";
+import { useCategoriesQuery, useSettingsQuery } from "./use-external-provider-queries";
 import { useExclusionPresets } from "./use-exclusion-presets";
 import { parsePointDate } from "./yoy-transforms";
 
 export function FxInflationDashboard() {
   const { syncVersion } = useExternalProviderSync();
-  const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
-  const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
-  const [isLoadingBaseData, setIsLoadingBaseData] = useState(true);
-  const [baseDataError, setBaseDataError] = useState<Error | null>(null);
+  const settingsQuery = useSettingsQuery();
+  const categoriesQuery = useCategoriesQuery();
+  const settings = settingsQuery.data ?? null;
+  const categories = useMemo<ExternalProviderCategory[]>(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
+  const isLoadingBaseData = settingsQuery.isLoading || categoriesQuery.isLoading;
+  const baseDataError = settingsQuery.error ?? categoriesQuery.error ?? null;
+  const { mutate: mutateSettings } = settingsQuery;
+  const { mutate: mutateCategories } = categoriesQuery;
 
   const [statData, setStatData] = useState<StatPingData | null>(null);
   const [isLoadingStatData, setIsLoadingStatData] = useState(true);
@@ -37,35 +42,10 @@ export function FxInflationDashboard() {
   // 40-month statistics series anchor
   const currentMonthAnchor = useMemo(() => format(startOfMonth(new Date()), "yyyy-MM-dd"), []);
 
-  const loadBaseData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
-    setIsLoadingBaseData(true);
-    setBaseDataError(null);
-    try {
-      const [settingsRes, categoriesRes] = await Promise.allSettled([
-        getSettings({ signal, forceRefresh }),
-        getCategories({ signal, forceRefresh }),
-      ]);
-      if (settingsRes.status === "fulfilled") {
-        setSettings(settingsRes.value);
-      } else if (!signal?.aborted) {
-        setBaseDataError(
-          settingsRes.reason instanceof Error ? settingsRes.reason : new Error("Failed to load settings"),
-        );
-      }
-      if (categoriesRes.status === "fulfilled") {
-        setCategories(categoriesRes.value);
-      } else if (!signal?.aborted && settingsRes.status === "fulfilled") {
-        setBaseDataError(
-          categoriesRes.reason instanceof Error ? categoriesRes.reason : new Error("Failed to load categories"),
-        );
-      }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") return;
-      setBaseDataError(err instanceof Error ? err : new Error("Failed to load base data"));
-    } finally {
-      setIsLoadingBaseData(false);
-    }
-  }, []);
+  const reloadBaseData = useCallback(() => {
+    void mutateSettings(getSettings({ forceRefresh: true }));
+    void mutateCategories(getCategories({ forceRefresh: true }));
+  }, [mutateSettings, mutateCategories]);
 
   const loadStatData = useCallback(
     async (signal?: AbortSignal, forceRefresh?: boolean) => {
@@ -91,10 +71,9 @@ export function FxInflationDashboard() {
   useEffect(() => {
     if (syncVersion < 0) return;
     const controller = new AbortController();
-    void loadBaseData(controller.signal);
     void loadStatData(controller.signal);
     return () => controller.abort();
-  }, [loadBaseData, loadStatData, syncVersion]);
+  }, [loadStatData, syncVersion]);
 
   // Compute latest month's controllable expense run rate to pre-populate the forward simulator
   const latestControllableExpense = useMemo(() => {
@@ -168,7 +147,7 @@ export function FxInflationDashboard() {
           isLoading={isLoadingStatData || isLoadingBaseData}
           error={baseDataError ?? statDataError}
           onRetry={() => {
-            void loadBaseData(undefined, true);
+            reloadBaseData();
             void loadStatData(undefined, true);
           }}
         />

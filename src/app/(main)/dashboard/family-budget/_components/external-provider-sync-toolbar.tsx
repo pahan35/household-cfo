@@ -29,6 +29,7 @@ import {
 
 import { getClientSnapshot, hydrateClientFromIDB, syncClientWithServer } from "./external-provider-client";
 import type { ExternalProviderSnapshot, ExternalProviderSyncConfig } from "./external-provider-idb";
+import { revalidateExternalProviderQueries } from "./external-provider-query-cache";
 
 export interface ExternalProviderSyncContextValue {
   snapshot: ExternalProviderSnapshot | null;
@@ -96,6 +97,7 @@ export function ExternalProviderSyncProvider({ children }: { children: ReactNode
           setSyncStatus("idle");
           setLastSyncedAt(new Date());
         }
+        void revalidateExternalProviderQueries();
 
         const tierLabel =
           options?.tier === "cold" ? "Full Rebuild" : options?.tier === "warm" ? "Warm Reconcile" : "Hot Pull";
@@ -160,6 +162,7 @@ export function ExternalProviderSyncProvider({ children }: { children: ReactNode
             setSnapshot(fresh);
             applyConfig(fresh.syncConfig);
           }
+          void revalidateExternalProviderQueries();
         }
       } catch {
         // Fallback gracefully to offline/local snapshot

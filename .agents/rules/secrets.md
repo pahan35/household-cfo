@@ -59,6 +59,10 @@ In production on Vercel, the following environment variables configure the share
 
 Never log or expose `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `CRON_SECRET`. Never prefix these with `NEXT_PUBLIC_`.
 
+## Mobile API Secrets
+
+- `MOBILE_API_TOKENS`: Comma-separated `label:token` pairs (or bare tokens) accepted as `Authorization: Bearer <token>` by `/api/v1/*` routes (resolved in `src/server/auth/mobile.ts`). Never log, echo, return, or `NEXT_PUBLIC_`-prefix it.
+
 ## How to work with the upstream API
 
 - Call the local proxy at `/api/external-provider/...` from client code. It runs server-side and attaches the credential for you.

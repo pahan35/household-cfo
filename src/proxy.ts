@@ -38,6 +38,12 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     return NextResponse.next();
   }
 
+  // Mobile/external clients authenticate with a Bearer token; `/api/v1/` route handlers verify
+  // the token themselves (see `resolveRequestAuth`) and reject invalid ones with 401.
+  if (pathname.startsWith("/api/v1/") && /^Bearer\s+\S+/i.test(request.headers.get("authorization") ?? "")) {
+    return NextResponse.next();
+  }
+
   // Check authorization (either local bypass or valid session token)
   const isAuthorized = isAuthBypassActive() || Boolean(await getSessionFromRequest(request));
 

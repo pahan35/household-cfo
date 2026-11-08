@@ -7,7 +7,7 @@ import { toast } from "sonner";
 import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
 import type { ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
-import { getCategories, getCurrencies, getSettings, getTransactionPage } from "../../_components/external-provider-client";
+import { getSettings, getTransactionPage } from "../../_components/external-provider-client";
 import type {
   ExternalProviderCategory,
   ExternalProviderCurrency,
@@ -15,6 +15,7 @@ import type {
   ExternalProviderTransaction,
 } from "../../_components/external-provider-data";
 import { useExternalProviderSync } from "../../_components/external-provider-sync-toolbar";
+import { useCategoriesQuery, useCurrenciesQuery } from "../../_components/use-external-provider-queries";
 import { type BenefitCeilingsSummary, computeBenefitSpendCeilings } from "./benefit-matcher";
 import { BudgetImpactView } from "./budget-impact-view";
 import { DEFAULT_COMPARATOR_CONFIG } from "./compensation-engine";
@@ -48,10 +49,20 @@ export function OfferComparatorDashboard() {
   const { setSyncing, setSynced, setOffline, setConflictDetected } = syncState;
 
   // ExternalProvider live data
-  const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
-  const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
+  const categoriesQuery = useCategoriesQuery();
+  const currenciesQuery = useCurrenciesQuery();
+  const categories = useMemo<ExternalProviderCategory[]>(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
+  const currencies = useMemo<ExternalProviderCurrency[]>(() => currenciesQuery.data ?? [], [currenciesQuery.data]);
   const [transactions, setTransactions] = useState<ExternalProviderTransaction[]>([]);
-  const [liveRates, setLiveRates] = useState<Record<string, number>>({});
+  const liveRates = useMemo(() => {
+    const rateMap: Record<string, number> = {};
+    for (const c of currencies) {
+      if (c.id && c.rate) {
+        rateMap[c.id.toUpperCase()] = c.rate;
+      }
+    }
+    return rateMap;
+  }, [currencies]);
 
   // Editor sheet state
   const [isSheetOpen, setIsSheetOpen] = useState(false);
@@ -85,39 +96,19 @@ export function OfferComparatorDashboard() {
     void onInitRepo();
   }, []);
 
-  const onLoadExternalProvider = useEffectEvent(async () => {
+  const onLoadTransactions = useEffectEvent(async () => {
     try {
-      const [catRes, curRes, txRes] = await Promise.allSettled([
-        getCategories(),
-        getCurrencies(),
-        getTransactionPage({ skip: 0, take: 500 }),
-      ]);
-
-      if (catRes.status === "fulfilled") {
-        setCategories(catRes.value);
-      }
-      if (curRes.status === "fulfilled") {
-        setCurrencies(curRes.value);
-        const rateMap: Record<string, number> = {};
-        for (const c of curRes.value) {
-          if (c.id && c.rate) {
-            rateMap[c.id.toUpperCase()] = c.rate;
-          }
-        }
-        setLiveRates(rateMap);
-      }
-      if (txRes.status === "fulfilled") {
-        setTransactions(txRes.value.transactions || []);
-      }
+      const txRes = await getTransactionPage({ skip: 0, take: 500 });
+      setTransactions(txRes.transactions ?? []);
     } catch {
       // ExternalProvider may not be configured; comparator operates in standalone mode
     }
   });
 
-  // 2. Fetch ExternalProvider live data when syncVersion updates
+  // 2. Fetch transactions when syncVersion updates (categories/currencies revalidate through SWR)
   useEffect(() => {
     if (syncVersion < 0) return;
-    void onLoadExternalProvider();
+    void onLoadTransactions();
   }, [syncVersion]);
 
   // 3. Compute live benefit spend ceilings

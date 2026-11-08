@@ -102,6 +102,7 @@ Keep a component inside its route until it is reused by another feature. Do not 
 - Avoid unnecessary dependencies.
 - Keep changes focused and do not refactor unrelated files.
 - Adhere to modern React 19 patterns (`.agents/rules/react-modern-patterns.md`): use `useEffectEvent` to decouple effect side-effects from reactive triggers, never write redundant `typeof window === "undefined"` checks inside `useEffect`, and memoize composite custom hook returns.
+- Follow the layered backend architecture (`.agents/rules/api-architecture.md`, skill `.agents/skills/backend-architecture/SKILL.md`): business logic in `src/server/services/`, web mutations as `next-safe-action` Server Actions in `src/server/actions/`, mobile/external endpoints under `/api/v1/`, shared Zod DTOs in `src/lib/schemas/`, and client reads through SWR hooks.
 
 ## Operational guardrails & workflow
 
