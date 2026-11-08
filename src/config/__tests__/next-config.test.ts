@@ -51,15 +51,15 @@ describe("next.config auth validation", () => {
   it("allows Vercel deployment when bypass is unset or false", () => {
     expect(() => validateNextConfigAuth({ VERCEL: "1" })).not.toThrow();
     expect(() => validateNextConfigAuth({ VERCEL: "1", AUTH_BYPASS_LOCAL: "false" })).not.toThrow();
-    expect(() => validateNextConfigAuth({ VERCEL_ENV: "production" })).not.toThrow();
+    expect(() => validateNextConfigAuth({ VERCEL_ENV: "production", AUTH_SECRET: "a".repeat(32) })).not.toThrow();
   });
 
   it("throws fatal build error when AUTH_BYPASS_LOCAL is true on Vercel", () => {
     expect(() => validateNextConfigAuth({ VERCEL: "1", AUTH_BYPASS_LOCAL: "true" })).toThrow(
-      "FATAL BUILD ERROR: AUTH_BYPASS_LOCAL cannot be set to 'true' in a Vercel environment.",
+      /AUTH_BYPASS_LOCAL cannot be enabled on Vercel or in production/,
     );
     expect(() => validateNextConfigAuth({ VERCEL_ENV: "preview", AUTH_BYPASS_LOCAL: "true" })).toThrow(
-      "FATAL BUILD ERROR: AUTH_BYPASS_LOCAL cannot be set to 'true' in a Vercel environment.",
+      /AUTH_BYPASS_LOCAL cannot be enabled on Vercel or in production/,
     );
   });
 });

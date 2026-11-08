@@ -1,13 +1,13 @@
+import { validateServerEnv } from "./src/config/env.server.ts";
+
 /**
- * Build-time security validation:
- * Ensures AUTH_BYPASS_LOCAL cannot be enabled when deploying or building on Vercel.
+ * Build-time security & environment validation:
+ * Validates complete server environment and ensures guards (blast-radius, auth bypass,
+ * production secret lengths, and adapter modes) fail closed during next build.
  * @param {Record<string, string | undefined>} [env=process.env]
  */
 export function validateNextConfigAuth(env = process.env) {
-  const isVercel = env.VERCEL === "1" || Boolean(env.VERCEL_ENV);
-  if (isVercel && env.AUTH_BYPASS_LOCAL?.toLowerCase() === "true") {
-    throw new Error("FATAL BUILD ERROR: AUTH_BYPASS_LOCAL cannot be set to 'true' in a Vercel environment.");
-  }
+  validateServerEnv(env);
 }
 
 validateNextConfigAuth();

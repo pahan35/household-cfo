@@ -11,8 +11,8 @@ export class InvalidAdapterModeError extends Error {
   }
 }
 
-export function getExternalProviderAdapterMode(): ExternalProviderAdapterMode {
-  const raw = process.env.EXTERNAL_API_ADAPTER?.trim().toLowerCase();
+export function getExternalProviderAdapterMode(env: Record<string, string | undefined> = process.env): ExternalProviderAdapterMode {
+  const raw = env.EXTERNAL_API_ADAPTER?.trim().toLowerCase();
   if (!raw) {
     return "external-provider";
   }
@@ -22,11 +22,11 @@ export function getExternalProviderAdapterMode(): ExternalProviderAdapterMode {
   if (raw === "mock") {
     return "mock";
   }
-  throw new InvalidAdapterModeError(process.env.EXTERNAL_API_ADAPTER ?? "");
+  throw new InvalidAdapterModeError(env.EXTERNAL_API_ADAPTER ?? "");
 }
 
-export function isMockAdapterMode(): boolean {
-  return getExternalProviderAdapterMode() === "mock";
+export function isMockAdapterMode(env: Record<string, string | undefined> = process.env): boolean {
+  return getExternalProviderAdapterMode(env) === "mock";
 }
 
 export interface SupabaseCredentials {
@@ -40,12 +40,14 @@ export interface SupabaseCredentials {
  * - In "mock" mode: strictly reads SUPABASE_MOCK_URL and SUPABASE_MOCK_SECRET_KEY / SUPABASE_MOCK_SERVICE_ROLE_KEY,
  *   never touching production SUPABASE_URL or production secret keys.
  */
-export function resolveSupabaseCredentials(): SupabaseCredentials | null {
-  const mode = getExternalProviderAdapterMode();
+export function resolveSupabaseCredentials(
+  env: Record<string, string | undefined> = process.env,
+): SupabaseCredentials | null {
+  const mode = getExternalProviderAdapterMode(env);
 
   if (mode === "mock") {
-    const url = process.env.SUPABASE_MOCK_URL?.trim();
-    const key = (process.env.SUPABASE_MOCK_SECRET_KEY ?? process.env.SUPABASE_MOCK_SERVICE_ROLE_KEY)?.trim();
+    const url = env.SUPABASE_MOCK_URL?.trim();
+    const key = (env.SUPABASE_MOCK_SECRET_KEY ?? env.SUPABASE_MOCK_SERVICE_ROLE_KEY)?.trim();
     if (url && key) {
       return { url, key };
     }
@@ -53,8 +55,8 @@ export function resolveSupabaseCredentials(): SupabaseCredentials | null {
   }
 
   // "external-provider" mode (default)
-  const url = process.env.SUPABASE_URL?.trim();
-  const key = (process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY)?.trim();
+  const url = env.SUPABASE_URL?.trim();
+  const key = (env.SUPABASE_SECRET_KEY ?? env.SUPABASE_SERVICE_ROLE_KEY)?.trim();
   if (url && key) {
     return { url, key };
   }
