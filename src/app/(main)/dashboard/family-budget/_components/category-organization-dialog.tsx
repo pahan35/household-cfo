@@ -24,9 +24,9 @@ import {
   type CategoryActivityLookbackScope,
   type CategoryCurrencyTier,
   type CategoryOrderDiffItem,
+  computeCategoryActivityScores,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
-  computeCategoryActivityScores,
   isExpenseCategory,
   optimizeCategoryOrderByActivity,
   organizeExpenseCategoriesByCurrencyTier,
@@ -186,8 +186,8 @@ export function CategoryOrganizationDialog({
             <DialogTitle className="text-base font-semibold">Organize Expense Categories</DialogTitle>
           </div>
           <DialogDescription className="text-muted-foreground text-xs leading-relaxed">
-            Preview and verify order changes before persisting to ExternalProvider. Choose an organization strategy below to
-            optimize category sequence.
+            Preview and verify order changes before persisting to ExternalProvider. Choose an organization strategy
+            below to optimize category sequence.
           </DialogDescription>
         </DialogHeader>
 

@@ -2,12 +2,12 @@ import "server-only";
 
 import {
   CategoryType,
+  ExchangeKey,
+  type ExchangePingResponseEnvelope,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
-  ExchangeKey,
-  type ExchangePingResponseEnvelope,
   isAccountType,
   type SettingsResponseEnvelope,
   type StatPingResponseEnvelope,
@@ -84,7 +84,9 @@ export interface ExternalProviderUpstreamAdapter {
 
 let liveSyncRunner: ((options?: RunSyncOptions) => Promise<ExternalProviderSyncResult>) | null = null;
 
-export function registerLiveSyncRunner(runner: (options?: RunSyncOptions) => Promise<ExternalProviderSyncResult>): void {
+export function registerLiveSyncRunner(
+  runner: (options?: RunSyncOptions) => Promise<ExternalProviderSyncResult>,
+): void {
   liveSyncRunner = runner;
 }
 
@@ -159,10 +161,13 @@ export class LiveExternalProviderAdapter implements ExternalProviderUpstreamAdap
   }
 
   async createTransactions(transactions: ExternalProviderTransaction[]): Promise<ExternalProviderTransaction[]> {
-    const res = await this.fetchLive<ExternalProviderTransaction[] | ExternalProviderTransaction>("/api/transaction/create", {
-      method: "POST",
-      body: transactions,
-    });
+    const res = await this.fetchLive<ExternalProviderTransaction[] | ExternalProviderTransaction>(
+      "/api/transaction/create",
+      {
+        method: "POST",
+        body: transactions,
+      },
+    );
     const list = Array.isArray(res) ? res : [res];
     const store = getExternalProviderStore();
     await store.upsertTransactions(list);

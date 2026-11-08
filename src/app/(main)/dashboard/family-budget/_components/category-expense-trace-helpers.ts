@@ -1,8 +1,8 @@
 import {
+  convertCurrencyAmount,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderTransaction,
-  convertCurrencyAmount,
 } from "./external-provider-data";
 
 function toCategoryMap(
@@ -160,7 +160,9 @@ export function getTransactionTimestamp(tx: ExternalProviderTransaction): number
 /**
  * Sorts transactions in reverse-chronological order (newest first).
  */
-export function sortTransactionsReverseChronological(transactions: ExternalProviderTransaction[]): ExternalProviderTransaction[] {
+export function sortTransactionsReverseChronological(
+  transactions: ExternalProviderTransaction[],
+): ExternalProviderTransaction[] {
   return [...transactions]
     .filter((tx) => !tx.deleted)
     .sort((a, b) => {

@@ -3,7 +3,11 @@
 import useSWR, { type SWRResponse } from "swr";
 
 import { getCategories, getCurrencies, getSettings } from "./external-provider-client";
-import type { ExternalProviderCategory, ExternalProviderCurrency, ExternalProviderSettings } from "./external-provider-data";
+import type {
+  ExternalProviderCategory,
+  ExternalProviderCurrency,
+  ExternalProviderSettings,
+} from "./external-provider-data";
 import { EXTERNAL_PROVIDER_QUERY_KEY } from "./external-provider-query-cache";
 
 /**

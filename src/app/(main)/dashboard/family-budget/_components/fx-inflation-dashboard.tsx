@@ -9,15 +9,15 @@ import { Filter } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
+import { CpiInflationCard } from "./cpi-inflation-card";
+import { transformExpenses } from "./expense-transforms";
 import { getBudgetSelection, getCategories, getSettings } from "./external-provider-client";
 import type { ExternalProviderCategory, StatPingData, StatPoint } from "./external-provider-data";
 import { useExternalProviderSync } from "./external-provider-sync-toolbar";
-import { CpiInflationCard } from "./cpi-inflation-card";
-import { transformExpenses } from "./expense-transforms";
 import { FxSimulatorCard } from "./fx-simulator-card";
 import type { ReportingCurrency } from "./macro-transforms";
-import { useCategoriesQuery, useSettingsQuery } from "./use-external-provider-queries";
 import { useExclusionPresets } from "./use-exclusion-presets";
+import { useCategoriesQuery, useSettingsQuery } from "./use-external-provider-queries";
 import { parsePointDate } from "./yoy-transforms";
 
 export function FxInflationDashboard() {

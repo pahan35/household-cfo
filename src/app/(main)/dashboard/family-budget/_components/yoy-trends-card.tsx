@@ -21,8 +21,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type ChartConfig, ChartContainer, ChartTooltip } from "@/components/ui/chart";
 
-import { type ExternalProviderCategory, type ExternalProviderCurrency, formatMoney, type StatPoint } from "./external-provider-data";
 import type { ExclusionPreset } from "./expense-transforms";
+import {
+  type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  formatMoney,
+  type StatPoint,
+} from "./external-provider-data";
 import { SectionShell } from "./section-shell";
 import {
   type ChronologicalTrendPoint,

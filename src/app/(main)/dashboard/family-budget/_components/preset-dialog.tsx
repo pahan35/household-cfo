@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import type { CloudSyncStatus, ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
+import type { ExclusionPreset } from "./expense-transforms";
 import {
   CategoryType,
   type ExternalProviderCategory,
@@ -39,7 +40,6 @@ import {
   type StatCategoryPoint,
 } from "./external-provider-data";
 import { resolveCategoryCurrency } from "./external-provider-money";
-import type { ExclusionPreset } from "./expense-transforms";
 import type { useExclusionPresets } from "./use-exclusion-presets";
 
 export interface PresetDialogProps {

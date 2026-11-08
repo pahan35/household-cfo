@@ -119,7 +119,9 @@ export function CapitalPoolCard({ items, config, summary, onChange }: CapitalPoo
           <div className="flex items-center justify-between rounded-md border border-border/60 p-3">
             <div className="space-y-0.5">
               <Label className="text-xs font-medium">Include Off-Balance Savings</Label>
-              <p className="text-[11px] text-muted-foreground">Accounts tagged 'exceptFromBalance' in ExternalProvider</p>
+              <p className="text-[11px] text-muted-foreground">
+                Accounts tagged 'exceptFromBalance' in ExternalProvider
+              </p>
             </div>
             <Switch
               checked={config.includeOffBalanceAccounts}

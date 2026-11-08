@@ -9,8 +9,8 @@ import {
   reconcileEntities,
 } from "@/lib/cloud-sync-reconciler";
 
-import type { ExternalProviderCategory } from "./external-provider-data";
 import type { ExclusionPreset } from "./expense-transforms";
+import type { ExternalProviderCategory } from "./external-provider-data";
 
 export const PRESETS_STORAGE_KEY = "family-budget:presets:v1";
 export const ACTIVE_PRESET_STORAGE_KEY = "family-budget:active-preset:v1";

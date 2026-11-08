@@ -95,8 +95,8 @@ export function BudgetImpactView({ tracks, config, liveRates = {} }: BudgetImpac
             <CardTitle className="text-base font-semibold">Family Budget Impact &amp; Expense Coverage</CardTitle>
           </div>
           <CardDescription className="text-xs">
-            Benchmarked against your ExternalProvider living expenses ({formatMoney(targetExpenses, "PLN")}/mo) and savings
-            goal ({formatMoney(targetSavings, "PLN")}/mo).
+            Benchmarked against your ExternalProvider living expenses ({formatMoney(targetExpenses, "PLN")}/mo) and
+            savings goal ({formatMoney(targetSavings, "PLN")}/mo).
           </CardDescription>
         </CardHeader>
 

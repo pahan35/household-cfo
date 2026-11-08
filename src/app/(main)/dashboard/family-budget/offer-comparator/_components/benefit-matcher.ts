@@ -10,7 +10,11 @@
  * Provides suggested budget offsets for Individual vs. Family benefit tiers.
  */
 
-import type { ExternalProviderCategory, ExternalProviderCurrency, ExternalProviderTransaction } from "../../_components/external-provider-data";
+import type {
+  ExternalProviderCategory,
+  ExternalProviderCurrency,
+  ExternalProviderTransaction,
+} from "../../_components/external-provider-data";
 import {
   getConvertedTransactionAmount,
   getTransactionDate,

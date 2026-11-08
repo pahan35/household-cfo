@@ -15,8 +15,8 @@ import {
   filterTransactionsLocally,
   getBudgetSelection,
   getCategories,
-  getExternalProviderClientCacheEntry,
   getCurrencies,
+  getExternalProviderClientCacheEntry,
   getSettings,
   getTransactionPage,
   hydrateClientFromIDB,
@@ -31,8 +31,18 @@ import {
   updateTransaction,
   updateTransactionTags,
 } from "../external-provider-client";
-import { CategoryType, type ExternalProviderCategory, type ExternalProviderTransaction, ExchangeKey } from "../external-provider-data";
-import { type ExternalProviderSnapshot, clearIDB, loadSnapshotFromIDB, saveSnapshotToIDB } from "../external-provider-idb";
+import {
+  CategoryType,
+  ExchangeKey,
+  type ExternalProviderCategory,
+  type ExternalProviderTransaction,
+} from "../external-provider-data";
+import {
+  clearIDB,
+  type ExternalProviderSnapshot,
+  loadSnapshotFromIDB,
+  saveSnapshotToIDB,
+} from "../external-provider-idb";
 
 describe("Proxy Cache Invalidation (invalidateProxyCacheByPathPrefix)", () => {
   beforeEach(() => {

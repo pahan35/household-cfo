@@ -449,7 +449,11 @@ export function TravelBookendAssistant({ className, defaultDestinationTag = "" }
                 <div key={tx.id} className="flex flex-col justify-between gap-3 py-3 sm:flex-row sm:items-center">
                   <div className="flex min-w-0 items-start gap-3">
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                      <ExternalProviderIcon icon={destCat?.icon} fallbackType={destCat?.categoryType} className="size-4" />
+                      <ExternalProviderIcon
+                        icon={destCat?.icon}
+                        fallbackType={destCat?.categoryType}
+                        className="size-4"
+                      />
                     </div>
 
                     <div className="flex flex-col gap-1">

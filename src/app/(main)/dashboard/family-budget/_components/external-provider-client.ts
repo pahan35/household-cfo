@@ -1,11 +1,11 @@
 import {
   archiveIncomeCategory,
+  ExchangeKey,
+  type ExchangePingResponseEnvelope,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
-  ExchangeKey,
-  type ExchangePingResponseEnvelope,
   extractExchangeEntities,
   reorderCategoriesSubset,
   type SettingsResponseEnvelope,
@@ -84,7 +84,11 @@ export function getExternalProviderClientCacheEntry<T = unknown>(key: string): T
   return entry.data as T;
 }
 
-export function setExternalProviderClientCacheEntry<T = unknown>(key: string, data: T, ttlMs = CLIENT_CACHE_TTL_MS): void {
+export function setExternalProviderClientCacheEntry<T = unknown>(
+  key: string,
+  data: T,
+  ttlMs = CLIENT_CACHE_TTL_MS,
+): void {
   clientCacheState.entries.set(key, {
     data,
     expiresAt: Date.now() + ttlMs,

@@ -157,7 +157,10 @@ describe("runExternalProviderSync", () => {
     const fetchSpy = createMockFetch();
     globalThis.fetch = fetchSpy;
 
-    const [res1, res2] = await Promise.all([runExternalProviderSync({ tier: "hot" }), runExternalProviderSync({ tier: "hot" })]);
+    const [res1, res2] = await Promise.all([
+      runExternalProviderSync({ tier: "hot" }),
+      runExternalProviderSync({ tier: "hot" }),
+    ]);
 
     expect(res1).toBe(res2); // Exactly same result promise
     expect(res1.success).toBe(true);

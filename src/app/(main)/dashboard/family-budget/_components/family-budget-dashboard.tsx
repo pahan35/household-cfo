@@ -12,6 +12,8 @@ import { Button } from "@/components/ui/button";
 import { AccountLiquidityStrip } from "./account-liquidity-strip";
 import { AccountsCard } from "./accounts-card";
 import { parseLedgerCategoryIds } from "./category-expense-trace-helpers";
+import { DebtAccountInitDialog } from "./debt-account-init-dialog";
+import { DebtClearingPanel } from "./debt-clearing-panel";
 import {
   createTransaction,
   getCategories,
@@ -24,11 +26,11 @@ import {
   archiveAccountCategory,
   buildLastTransactionMap,
   buildNewDebtAccountCategory,
+  computeAccountLiquiditySummary,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderSettings,
   type ExternalProviderTransaction,
-  computeAccountLiquiditySummary,
   isThrowawayDebtAccount,
   moveAccountsAboveArchived,
   type NewDebtAccountInput,
@@ -36,8 +38,6 @@ import {
   unarchiveAccountCategory,
 } from "./external-provider-data";
 import { useExternalProviderSync } from "./external-provider-sync-toolbar";
-import { DebtAccountInitDialog } from "./debt-account-init-dialog";
-import { DebtClearingPanel } from "./debt-clearing-panel";
 import { RecentTransactionsCard } from "./recent-transactions-card";
 
 export function FamilyBudgetDashboard() {

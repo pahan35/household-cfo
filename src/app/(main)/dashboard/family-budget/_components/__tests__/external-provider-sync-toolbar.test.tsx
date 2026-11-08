@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import * as clientModule from "../external-provider-client";
-import { ExternalProviderSyncProvider, ExternalProviderSyncToolbar, useExternalProviderSync } from "../external-provider-sync-toolbar";
+import {
+  ExternalProviderSyncProvider,
+  ExternalProviderSyncToolbar,
+  useExternalProviderSync,
+} from "../external-provider-sync-toolbar";
 
 function ConsumerTestComponent() {
   const { syncStatus, hotPullMonths, autoPollIntervalMinutes } = useExternalProviderSync();

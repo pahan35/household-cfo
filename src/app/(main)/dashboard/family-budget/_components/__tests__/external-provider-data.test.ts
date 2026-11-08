@@ -14,8 +14,6 @@ import {
   buildSettlementTransaction,
   buildSmartOrderPreviewItems,
   CategoryType,
-  type ExternalProviderCategory,
-  type ExternalProviderTransaction,
   classifyActiveMoversViaLIS,
   classifyCategoryActivity,
   computeAccountLiquiditySummary,
@@ -23,6 +21,8 @@ import {
   computeTransactionsWithRunningBalance,
   convertCurrencyAmount,
   detectExpenseCategoryDisplacement,
+  type ExternalProviderCategory,
+  type ExternalProviderTransaction,
   evaluateCategoryRenameState,
   evaluateZeroSpendCategories,
   extractCanonicalBaseName,
@@ -46,6 +46,7 @@ import {
   isPre2022Timestamp,
   isThrowawayDebtAccount,
   KNOWN_FOREIGN_CURRENCY_CODES,
+  LOCALIZED_CATEGORY_DICTIONARY,
   moveAccountsAboveArchived,
   moveExpenseCategoriesAboveArchived,
   moveExpenseCategoriesToBottom,
@@ -61,7 +62,6 @@ import {
   sortExpenseCategoriesByHierarchy,
   sortRenamesTopologically,
   toDotNetTicks,
-  LOCALIZED_CATEGORY_DICTIONARY,
   unarchiveAccountCategory,
   unarchiveExpenseCategory,
   unarchiveIncomeCategory,
@@ -1998,10 +1998,26 @@ describe("expense category lifecycle", () => {
     });
 
     describe("evaluateZeroSpendCategories & filterZeroSpendCategories", () => {
-      const catActive = { id: "c-active", name: "Groceries", categoryType: CategoryType.Expense } as ExternalProviderCategory;
-      const catRecent = { id: "c-recent", name: "Vacation", categoryType: CategoryType.Expense } as ExternalProviderCategory;
-      const catOld = { id: "c-old", name: "Hotels CHF", categoryType: CategoryType.Expense } as ExternalProviderCategory;
-      const catDormant = { id: "c-dormant", name: "Old Gym", categoryType: CategoryType.Expense } as ExternalProviderCategory;
+      const catActive = {
+        id: "c-active",
+        name: "Groceries",
+        categoryType: CategoryType.Expense,
+      } as ExternalProviderCategory;
+      const catRecent = {
+        id: "c-recent",
+        name: "Vacation",
+        categoryType: CategoryType.Expense,
+      } as ExternalProviderCategory;
+      const catOld = {
+        id: "c-old",
+        name: "Hotels CHF",
+        categoryType: CategoryType.Expense,
+      } as ExternalProviderCategory;
+      const catDormant = {
+        id: "c-dormant",
+        name: "Old Gym",
+        categoryType: CategoryType.Expense,
+      } as ExternalProviderCategory;
       const allCats = [catActive, catRecent, catOld, catDormant];
 
       // Points spanning 6 months:

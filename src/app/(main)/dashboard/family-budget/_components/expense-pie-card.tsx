@@ -30,12 +30,6 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
-  type ExternalProviderCategory,
-  extractCanonicalBaseName,
-  formatMoney,
-  type StatCategoryPoint,
-} from "./external-provider-data";
-import {
   assignChartColors,
   detectSliceCurrency,
   type ExpenseSlice,
@@ -45,6 +39,12 @@ import {
   type PeriodComparisonResult,
   transformExpenses,
 } from "./expense-transforms";
+import {
+  type ExternalProviderCategory,
+  extractCanonicalBaseName,
+  formatMoney,
+  type StatCategoryPoint,
+} from "./external-provider-data";
 import { getMonthIncompleteDescription, type MonthIncompleteReason } from "./month-completeness";
 import { PresetDialog } from "./preset-dialog";
 import { SectionShell } from "./section-shell";

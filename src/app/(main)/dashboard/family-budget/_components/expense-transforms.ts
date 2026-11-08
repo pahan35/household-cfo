@@ -1,8 +1,8 @@
 import {
   CategoryType,
+  convertCurrencyAmount,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
-  convertCurrencyAmount,
   extractCanonicalBaseName,
   isCyrillic,
   KNOWN_FOREIGN_CURRENCY_CODES,

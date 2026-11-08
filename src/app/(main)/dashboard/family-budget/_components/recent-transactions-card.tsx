@@ -11,9 +11,9 @@ import { Button } from "@/components/ui/button";
 import { getTransactionPage, updateTransactionTags } from "./external-provider-client";
 import {
   CategoryType,
+  computeTransactionsWithRunningBalance,
   type ExternalProviderCategory,
   type ExternalProviderTransaction,
-  computeTransactionsWithRunningBalance,
   formatMoney,
   formatTransactionDate,
   getAccountBalance,

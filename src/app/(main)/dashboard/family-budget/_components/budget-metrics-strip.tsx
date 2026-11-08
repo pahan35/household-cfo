@@ -8,8 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
-import { formatMoney } from "./external-provider-data";
 import type { MetricDelta, PeriodComparisonResult } from "./expense-transforms";
+import { formatMoney } from "./external-provider-data";
 import { getMonthIncompleteDescription, type MonthIncompleteReason } from "./month-completeness";
 
 interface BudgetMetricsStripProps {

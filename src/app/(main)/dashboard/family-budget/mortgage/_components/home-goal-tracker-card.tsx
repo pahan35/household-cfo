@@ -221,8 +221,8 @@ export function HomeGoalTrackerCard({
           </div>
         </div>
         <CardDescription className="text-xs">
-          Link active ExternalProvider Goal categories, track two-milestone savings progress, audit against historical net
-          cashflow margin, and sync upstream targets.
+          Link active ExternalProvider Goal categories, track two-milestone savings progress, audit against historical
+          net cashflow margin, and sync upstream targets.
         </CardDescription>
       </CardHeader>
 

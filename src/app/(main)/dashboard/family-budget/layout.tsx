@@ -1,6 +1,9 @@
 import type { ReactNode } from "react";
 
-import { ExternalProviderSyncProvider, ExternalProviderSyncToolbar } from "./_components/external-provider-sync-toolbar";
+import {
+  ExternalProviderSyncProvider,
+  ExternalProviderSyncToolbar,
+} from "./_components/external-provider-sync-toolbar";
 
 export default function FamilyBudgetLayout({ children }: { children: ReactNode }) {
   return (

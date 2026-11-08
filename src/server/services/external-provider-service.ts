@@ -19,7 +19,11 @@ import {
   updateTransactionSchema,
 } from "@/lib/schemas/external-provider";
 import { type ExternalProviderSyncResult, getExternalProviderAdapter } from "@/server/external-provider/adapter";
-import { type ExternalProviderSnapshot, type ExternalProviderSyncConfig, getExternalProviderStore } from "@/server/external-provider/db";
+import {
+  type ExternalProviderSnapshot,
+  type ExternalProviderSyncConfig,
+  getExternalProviderStore,
+} from "@/server/external-provider/db";
 import { isMockAdapterMode } from "@/server/supabase/config";
 
 import { type AuthContext, guard, ServiceError } from "./types";

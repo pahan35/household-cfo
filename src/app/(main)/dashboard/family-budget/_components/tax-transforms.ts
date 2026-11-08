@@ -2,10 +2,10 @@ import { format } from "date-fns";
 
 import {
   CategoryType,
+  convertCurrencyAmount,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderTransaction,
-  convertCurrencyAmount,
   isAccountType,
 } from "./external-provider-data";
 import { resolveCategoryCurrency, toFxRateToTarget } from "./external-provider-money";

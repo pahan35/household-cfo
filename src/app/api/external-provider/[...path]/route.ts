@@ -3,7 +3,11 @@ import { type NextRequest, NextResponse } from "next/server";
 import { isAuthBypassActive } from "@/server/auth/config";
 import { getSessionFromRequest } from "@/server/auth/session";
 import { getExternalProviderAdapter } from "@/server/external-provider/adapter";
-import { buildProxyCacheKey, fetchWithProxyCache, invalidateProxyCacheByPathPrefix } from "@/server/external-provider/cache";
+import {
+  buildProxyCacheKey,
+  fetchWithProxyCache,
+  invalidateProxyCacheByPathPrefix,
+} from "@/server/external-provider/cache";
 import {
   ALLOWED_METHODS,
   isAllowedPath,
@@ -11,7 +15,11 @@ import {
   RESPONSE_HEADER_ALLOWLIST,
   UPSTREAM_ORIGIN,
 } from "@/server/external-provider/config";
-import { isRedirectError, isStaleUpstreamResponse, notifyCredentialIssue } from "@/server/external-provider/credentials";
+import {
+  isRedirectError,
+  isStaleUpstreamResponse,
+  notifyCredentialIssue,
+} from "@/server/external-provider/credentials";
 import { getExternalProviderStore } from "@/server/external-provider/db";
 import {
   buildUpstreamErrorBody,

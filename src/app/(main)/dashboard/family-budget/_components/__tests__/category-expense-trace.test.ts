@@ -186,7 +186,12 @@ describe("category-expense-trace-helpers", () => {
     it("normalizes multi-currency account spending into reporting currency and retains native subtotals", () => {
       const categories: ExternalProviderCategory[] = [
         { id: "acc-mono", name: "Monobank UAH", categoryType: CategoryType.BankAccount, currencyId: "UAH" },
-        { id: "acc-primary-bank", name: "Primary Bank Card", categoryType: CategoryType.BankAccount, currencyId: "PLN" },
+        {
+          id: "acc-primary-bank",
+          name: "Primary Bank Card",
+          categoryType: CategoryType.BankAccount,
+          currencyId: "PLN",
+        },
       ];
       const currencies: ExternalProviderCurrency[] = [
         { id: "USD", rate: 1 },

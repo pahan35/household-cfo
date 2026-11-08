@@ -43,9 +43,9 @@ import { getCategories, updateCategoriesOrder } from "./external-provider-client
 import {
   archiveAccountCategory,
   CategoryType,
+  computeAccountLiquiditySummary,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
-  computeAccountLiquiditySummary,
   filterAndClassifyAccounts,
   findAccountsBelowArchived,
   formatMoney,
@@ -417,8 +417,9 @@ export function AccountsCard({
                       <AlertTriangle className="size-4 shrink-0 text-amber-500 mt-0.5" />
                       <div>
                         <span className="font-semibold">Unreconciled Balance Warning:</span> This account has a non-zero
-                        balance ({formatMoney(accountToArchive.balance, accountToArchive.currency)}). In ExternalProvider,
-                        archived accounts with non-zero balances remain visible with a reconciliation warning.
+                        balance ({formatMoney(accountToArchive.balance, accountToArchive.currency)}). In
+                        ExternalProvider, archived accounts with non-zero balances remain visible with a reconciliation
+                        warning.
                       </div>
                     </div>
                   )}

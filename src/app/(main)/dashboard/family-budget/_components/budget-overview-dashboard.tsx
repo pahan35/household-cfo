@@ -18,6 +18,8 @@ import {
 import { BudgetSummaryCard } from "./budget-summary-card";
 import { CategoryExpenseTraceSheet } from "./category-expense-trace-sheet";
 import { CategoryRenamingDialog } from "./category-renaming-dialog";
+import { ExpensePieCard } from "./expense-pie-card";
+import { type CompareMode, computePeriodComparison, type ExpenseSlice, transformExpenses } from "./expense-transforms";
 import {
   getBudgetSelection,
   getCategories,
@@ -44,8 +46,6 @@ import {
   unarchiveExpenseCategory,
 } from "./external-provider-data";
 import { useExternalProviderSync } from "./external-provider-sync-toolbar";
-import { ExpensePieCard } from "./expense-pie-card";
-import { type CompareMode, computePeriodComparison, type ExpenseSlice, transformExpenses } from "./expense-transforms";
 import { evaluateMonthCompleteness } from "./month-completeness";
 import { MonthPeriodPicker } from "./month-period-picker";
 import { useExclusionPresets } from "./use-exclusion-presets";

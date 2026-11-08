@@ -9,8 +9,8 @@ import { Area, AreaChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "r
 import { Badge } from "@/components/ui/badge";
 import { type ChartConfig, ChartContainer, ChartTooltip } from "@/components/ui/chart";
 
-import { type ExternalProviderCategory, formatMoney, type StatPoint } from "./external-provider-data";
 import { type ExclusionPreset, transformExpenses } from "./expense-transforms";
+import { type ExternalProviderCategory, formatMoney, type StatPoint } from "./external-provider-data";
 import { BASE_CPI_MONTH, getMacroData } from "./macro-data";
 import {
   calculateRealValue,

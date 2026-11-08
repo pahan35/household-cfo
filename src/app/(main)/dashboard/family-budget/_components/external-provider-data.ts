@@ -1750,7 +1750,10 @@ export interface ResolveCategoryCurrencyOptions {
  * 3. Transaction currency history for this category or pre-2022 timestamp ("UAH").
  * 4. Fallback to defaultCurrency ("PLN").
  */
-export function resolveCategoryCurrency(cat: ExternalProviderCategory, options?: ResolveCategoryCurrencyOptions): string {
+export function resolveCategoryCurrency(
+  cat: ExternalProviderCategory,
+  options?: ResolveCategoryCurrencyOptions,
+): string {
   const defaultUpper = (options?.defaultCurrency ?? "PLN").trim().toUpperCase();
 
   // 1. cat.currencyId (trimmed and uppercased) if present and non-empty.
@@ -2235,7 +2238,9 @@ export interface ExpenseArchivedDisplacement {
   activeBelow: ExternalProviderCategory[];
 }
 
-export function detectExpenseCategoryDisplacement(allCategories: ExternalProviderCategory[]): ExpenseArchivedDisplacement {
+export function detectExpenseCategoryDisplacement(
+  allCategories: ExternalProviderCategory[],
+): ExpenseArchivedDisplacement {
   const list = sortedActiveExpenseCategories(allCategories);
   const firstArchivedIdx = list.findIndex((c) => isArchivedCategoryName(c.name));
   if (firstArchivedIdx === -1) {
@@ -2271,7 +2276,9 @@ export function detectExpenseCategoryDisplacement(allCategories: ExternalProvide
   };
 }
 
-export function findExpenseCategoriesBelowArchived(allCategories: ExternalProviderCategory[]): ExternalProviderCategory[] {
+export function findExpenseCategoriesBelowArchived(
+  allCategories: ExternalProviderCategory[],
+): ExternalProviderCategory[] {
   return detectExpenseCategoryDisplacement(allCategories).activeBelow;
 }
 

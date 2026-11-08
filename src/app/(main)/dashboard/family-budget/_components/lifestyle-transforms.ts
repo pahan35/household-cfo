@@ -2,10 +2,10 @@ import { format, isValid, parseISO } from "date-fns";
 
 import {
   CategoryType,
+  convertCurrencyAmount,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderTransaction,
-  convertCurrencyAmount,
   parseExternalProviderTimestamp,
 } from "./external-provider-data";
 import { resolveCategoryCurrency } from "./external-provider-money";
@@ -199,7 +199,10 @@ export function getConvertedTransactionAmount(
 /**
  * Evaluates whether a transaction is classified as an expense or income.
  */
-export function isExpenseTransaction(tx: ExternalProviderTransaction, categoryMap: Map<string, ExternalProviderCategory>): boolean {
+export function isExpenseTransaction(
+  tx: ExternalProviderTransaction,
+  categoryMap: Map<string, ExternalProviderCategory>,
+): boolean {
   if (tx.destinationType !== undefined) {
     const dt = Number(tx.destinationType);
     if (dt === CategoryType.Expense || dt === CategoryType.Goal || dt === CategoryType.ClassicGoal) {
@@ -216,7 +219,10 @@ export function isExpenseTransaction(tx: ExternalProviderTransaction, categoryMa
   return false;
 }
 
-export function isIncomeTransaction(tx: ExternalProviderTransaction, categoryMap: Map<string, ExternalProviderCategory>): boolean {
+export function isIncomeTransaction(
+  tx: ExternalProviderTransaction,
+  categoryMap: Map<string, ExternalProviderCategory>,
+): boolean {
   if (tx.sourceType !== undefined) {
     const st = Number(tx.sourceType);
     if (st === CategoryType.Income) {

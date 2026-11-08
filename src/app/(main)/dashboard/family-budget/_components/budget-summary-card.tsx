@@ -36,14 +36,15 @@ import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { CategoryOrganizationDialog, type CategoryOrganizationStrategy } from "./category-organization-dialog";
+import { type CategoryComparisonDelta, detectSliceCurrency, type ExpenseSlice } from "./expense-transforms";
 import { getBudgetSelection } from "./external-provider-client";
 import {
   CategoryType,
+  convertCurrencyAmount,
+  detectExpenseCategoryDisplacement,
   type ExternalProviderCategory,
   type ExternalProviderCurrency,
   type ExternalProviderTransaction,
-  convertCurrencyAmount,
-  detectExpenseCategoryDisplacement,
   evaluateZeroSpendCategories,
   extractCanonicalBaseName,
   filterAndClassifyCategories,
@@ -56,7 +57,6 @@ import {
   type StatPingData,
   type ZeroSpendLookbackScope,
 } from "./external-provider-data";
-import { type CategoryComparisonDelta, detectSliceCurrency, type ExpenseSlice } from "./expense-transforms";
 import { LastTransactionBadge } from "./last-transaction-badge";
 import { RenameCategoryDialog } from "./rename-category-dialog";
 import { SectionShell } from "./section-shell";

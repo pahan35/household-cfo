@@ -11,7 +11,9 @@ export class InvalidAdapterModeError extends Error {
   }
 }
 
-export function getExternalProviderAdapterMode(env: Record<string, string | undefined> = process.env): ExternalProviderAdapterMode {
+export function getExternalProviderAdapterMode(
+  env: Record<string, string | undefined> = process.env,
+): ExternalProviderAdapterMode {
   const raw = env.EXTERNAL_API_ADAPTER?.trim().toLowerCase();
   if (!raw) {
     return "external-provider";

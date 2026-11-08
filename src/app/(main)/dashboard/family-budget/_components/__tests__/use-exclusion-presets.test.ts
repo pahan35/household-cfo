@@ -3,8 +3,8 @@ import React from "react";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { CategoryType, type ExternalProviderCategory } from "../external-provider-data";
 import type { ExclusionPreset } from "../expense-transforms";
+import { CategoryType, type ExternalProviderCategory } from "../external-provider-data";
 import {
   BUILT_IN_PRESET_IDS,
   buildDefaultPresets,

@@ -2,21 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { computeBudgetSummaryItems } from "./budget-summary-card";
 import {
-  buildCategoryOrderDiffItems,
-  CategoryType,
-  type ExternalProviderCategory,
-  type ExternalProviderCurrency,
-  ExchangeKey,
-  type ExchangePingItem,
-  extractExchangeEntities,
-  isExpenseCategory,
-  optimizeCategoryOrderByActivity,
-  organizeExpenseCategoriesByCurrencyTier,
-  type StatCategoryPoint,
-  type StatPingData,
-  type StatPoint,
-} from "./external-provider-data";
-import {
   computePeriodComparison,
   detectSliceCurrency,
   type ExclusionPreset,
@@ -26,6 +11,21 @@ import {
   isTransportOrTaxi,
   transformExpenses,
 } from "./expense-transforms";
+import {
+  buildCategoryOrderDiffItems,
+  CategoryType,
+  ExchangeKey,
+  type ExchangePingItem,
+  type ExternalProviderCategory,
+  type ExternalProviderCurrency,
+  extractExchangeEntities,
+  isExpenseCategory,
+  optimizeCategoryOrderByActivity,
+  organizeExpenseCategoriesByCurrencyTier,
+  type StatCategoryPoint,
+  type StatPingData,
+  type StatPoint,
+} from "./external-provider-data";
 import { evaluateMonthCompleteness, getMonthIncompleteDescription } from "./month-completeness";
 import { BUILT_IN_PRESET_IDS, buildDefaultPresets, findCategoryIdsByPattern } from "./use-exclusion-presets";
 import {
@@ -204,7 +204,10 @@ const MOEXT_STAT_PING_DATA: StatPingData = {
 
 describe("Exchange/Ping fixture extraction", () => {
   it("extracts category metadata from double-encoded Exchange/Ping items", () => {
-    const extracted = extractExchangeEntities<ExternalProviderCategory>(MOEXT_EXCHANGE_PING_ITEMS, ExchangeKey.Category);
+    const extracted = extractExchangeEntities<ExternalProviderCategory>(
+      MOEXT_EXCHANGE_PING_ITEMS,
+      ExchangeKey.Category,
+    );
     expect(extracted).toHaveLength(5);
     expect(extracted[0]?.id).toBe("cat-income-salary");
   });

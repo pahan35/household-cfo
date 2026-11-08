@@ -108,7 +108,8 @@ export function DebtAccountInitDialog({
               />
               {formattedPreview && (
                 <span className="text-muted-foreground text-[11px]">
-                  ExternalProvider account name: <span className="text-foreground font-semibold">{formattedPreview}</span>
+                  ExternalProvider account name:{" "}
+                  <span className="text-foreground font-semibold">{formattedPreview}</span>
                 </span>
               )}
             </div>

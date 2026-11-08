@@ -5,7 +5,8 @@ import { MortgageDashboard } from "./_components/mortgage-dashboard";
 
 export const metadata: Metadata = {
   title: "Mortgage & Home Goal Simulator | Studio Admin",
-  description: "Polish primary market apartment acquisition, ExternalProvider goal tracking, and overlap cashflow simulator.",
+  description:
+    "Polish primary market apartment acquisition, ExternalProvider goal tracking, and overlap cashflow simulator.",
   alternates: {
     canonical: "/dashboard/family-budget/mortgage",
   },

@@ -26,6 +26,7 @@ import {
   resolveTransactionSpend,
   sortTransactionsReverseChronological,
 } from "./category-expense-trace-helpers";
+import type { ExpenseSlice } from "./expense-transforms";
 import { getTransactionPage } from "./external-provider-client";
 import {
   CategoryType,
@@ -36,7 +37,6 @@ import {
   formatTransactionDate,
 } from "./external-provider-data";
 import { ExternalProviderIcon } from "./external-provider-icons";
-import type { ExpenseSlice } from "./expense-transforms";
 import { MoneyValue } from "./money-value";
 
 export interface CategoryExpenseTraceSheetProps {
@@ -287,7 +287,11 @@ export function CategoryExpenseTraceSheet({
           <div className="flex items-start justify-between gap-4 pr-8">
             <div className="flex min-w-0 items-center gap-3">
               <div className="bg-muted text-foreground flex size-10 shrink-0 items-center justify-center rounded-lg">
-                <ExternalProviderIcon icon={categoryDetails?.icon} fallbackType={CategoryType.Expense} className="size-5" />
+                <ExternalProviderIcon
+                  icon={categoryDetails?.icon}
+                  fallbackType={CategoryType.Expense}
+                  className="size-5"
+                />
               </div>
 
               <div className="min-w-0">
