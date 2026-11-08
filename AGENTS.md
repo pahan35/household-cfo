@@ -122,9 +122,9 @@ Keep a component inside its route until it is reused by another feature. Do not 
    - **Archive & Living Specs**: On completion, run `openspec archive <feature-name>` to merge the change into living specs (`openspec/specs/`) and commit the archived change.
 
 3. **CI & Workflow Version Invariants**:
-   - **Inspect Existing Workflows First**: Before generating or modifying GitHub Actions workflows, inspect `.github/workflows/` to match current action version conventions (e.g., `actions/checkout@v7`, `actions/setup-node@v7`). Never rely on obsolete model defaults (such as `@v4`).
+   - **Inspect Existing Workflows First**: Before generating or modifying GitHub Actions workflows, inspect `.github/workflows/` to match current action version conventions (e.g., `actions/checkout@v7`, `actions/setup-node@v7`, `actions/upload-artifact@v7`). Never rely on obsolete model defaults (such as `@v4`).
    - **Single Source of Truth for Node.js**: Always anchor the Node.js version to `.nvmrc` using `node-version-file: ".nvmrc"` in `actions/setup-node` rather than hardcoding numeric versions in workflow files.
-   - **Verify When Uncertain**: If introducing a new action or runner tool not currently present in the repository, search or verify the latest major release tag rather than guessing.
+   - **Verify When Uncertain**: If introducing a new action or runner tool not currently present in the repository, search or verify the latest major release tag rather than guessing. Use `ctx7` (Context7 CLI: `ctx7 docs <lib> <query>` / `ctx7 library`), `gh release view <owner/repo>`, or `git ls-remote --tags` to confirm the fresh, actual version.
 
 ## Contributions
 
