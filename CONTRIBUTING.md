@@ -1,127 +1,147 @@
-# Contributing to Studio Admin
+# Contributing to Household CFO
 
-Thanks for showing interest in improving **Studio Admin** (repo: `next-shadcn-admin-dashboard`).  
-This guide will help you set up your environment and understand how to contribute.
+Thank you for your interest in contributing to **Household CFO**!  
+This guide will walk you through setting up your local environment, running the app in mock mode, understanding our architecture, and opening pull requests.
 
 ---
 
 ## Overview
 
-This project is built with **Next.js 16**, **TypeScript**, **Tailwind CSS v4**, and **Shadcn UI**.  
-The goal is to keep the codebase modular, scalable, and easy to extend.
+**Household CFO** is an executive-grade personal and household financial cockpit built with:
+- **Next.js 16** (App Router, React 19)
+- **TypeScript** (Strict mode)
+- **Tailwind CSS v4** & **shadcn/ui**
+- **Supabase / PostgreSQL** with an extensible adapter layer for external financial providers
+- **Biome** for fast linting & formatting, **Vitest** for testing
 
 ---
 
-## Project Layout
+## Quick Start / Local Setup
 
-We use a **colocation-based file system**. Each feature keeps its own pages, components, and logic.
+### 1. Fork & Clone
+Fork the repository on GitHub at [github.com/pahan35/household-cfo](https://github.com/pahan35/household-cfo), then clone your fork:
 
-```
-src
-├── app               # Next.js routes (App Router)
-│   ├── (auth)        # Auth layouts & screens
-│   ├── (main)        # Main dashboard routes
-│   │   └── (dashboard)
-│   │       ├── crm
-│   │       ├── finance
-│   │       ├── default
-│   │       └── ...
-│   └── layout.tsx
-├── components        # Shared UI components
-├── hooks             # Reusable hooks
-├── lib               # Config & utilities
-├── styles            # Tailwind / theme setup
-└── types             # TypeScript definitions
+```bash
+git clone https://github.com/YOUR_USERNAME/household-cfo.git
+cd household-cfo
 ```
 
-If you’d like a more detailed example of this setup, check out the [Next Colocation Template](https://github.com/arhamkhnz/next-colocation-template), where the full structure is explained with examples.
+### 2. Node Version & Dependencies
+This project requires **Node.js 26+** (specified in `.nvmrc` and `package.json` engines).
+
+```bash
+# If using nvm / fnm:
+nvm use
+
+# Install dependencies
+npm install
+```
+
+### 3. Environment Configuration
+Copy the example environment file:
+
+```bash
+cp .env.example .env.local
+```
+
+For quick local development without configuring any databases or credentials, Household CFO includes a **zero-dependency mock mode**:
+
+```env
+# .env.local
+EXTERNAL_API_ADAPTER="mock"
+AUTH_BYPASS_LOCAL="true"
+```
+
+- In `EXTERNAL_API_ADAPTER="mock"` mode, an in-memory & seeded financial dataset is used. No external tokens or network calls are required.
+- In `AUTH_BYPASS_LOCAL="true"` mode, Google OAuth authentication is bypassed for seamless local development.
+
+### 4. Run the Dev Server
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 
-## Getting Started
+## Codebase Architecture
 
-### Fork and Clone the Repository
+We adhere to a **colocation and layered backend architecture**:
 
-1. Fork the Repository
-   
-   Click [here](https://github.com/arhamkhnz/next-shadcn-admin-dashboard/fork) to fork the repository.
+```
+src/
+├── app/
+│   ├── (auth)/                               # Google OAuth & session management
+│   ├── (main)/
+│   │   └── dashboard/
+│   │       ├── family-budget/                # Core Household CFO cockpit
+│   │       │   ├── _components/              # Feature components, charts, dialogs
+│   │       │   ├── lifestyle/                # Discretionary spending, travel assistants
+│   │       │   ├── mortgage/                 # Mortgage & prepayment amortization
+│   │       │   ├── offer-comparator/         # Total compensation & tax impact comparator
+│   │       │   └── runway/                   # Capital pool & runway simulator
+│   │       └── ...                           # General admin & analytics screens
+│   └── api/
+│       ├── external-provider/                # Upstream sync & cron webhooks
+│       └── v1/                               # Versioned REST API (mobile & integrations)
+├── components/
+│   └── ui/                                   # shadcn/ui components (radix-nova)
+├── lib/
+│   └── schemas/                              # Shared Zod DTO contracts & schemas
+├── server/
+│   ├── actions/                              # Safe Server Actions (mutations)
+│   ├── external-provider/                    # Pluggable adapter interfaces & engines
+│   ├── services/                             # Transport-agnostic business logic
+│   └── supabase/                             # PostgreSQL connection & config
+└── styles/presets/                           # Theme presets (light/dark mode)
+```
 
-2. Clone the Repository  
+### Architectural Principles
+1. **Colocation**: Keep UI components, client transformers, and feature tests close to their route inside `_components/`.
+2. **Layered Backend**: Business logic belongs in `src/server/services/`, web mutations in `src/server/actions/`, and REST endpoints under `/api/v1/`.
+3. **Pluggable Adapters**: Financial sync is abstracted via `src/server/external-provider/adapter.ts`, supporting both `"mock"` and live `"external-provider"` modes.
+4. **Strict Secrets**: Never hardcode credentials, tokens, or personal identifiers. Follow the guidelines in `.agents/rules/secrets.md`.
+
+---
+
+## Verification & Testing
+
+Always verify that your changes pass linting, formatting, and strict type checking before opening a pull request:
+
+```bash
+# Run Biome lint/format + TypeScript strict check (~5s):
+npm run verify
+
+# Run unit and integration tests:
+npm test
+
+# Auto-fix formatting and imports:
+npm run check:fix
+```
+
+---
+
+## Contribution Workflow
+
+1. Create a focused branch from `main`:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/next-shadcn-admin-dashboard.git
+   git checkout -b feat/runway-scenario-export
    ```
-   
-3. Navigate into the Project  
+2. Commit your changes using **Conventional Commits**:
    ```bash
-   cd next-shadcn-admin-dashboard
+   git commit -m "feat(runway): add CSV export for capital pool projections"
    ```
-
-4. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-5. **Run the dev server**
-   ```bash
-   npm run dev
-   ```
-   App will be available at [http://localhost:3000](http://localhost:3000).
+3. Ensure `npm run verify` and `npm test` exit with `0`.
+4. Push your branch and open a Pull Request against `pahan35/household-cfo:main`.
+5. If your PR introduces visual changes, include screenshots or screen recordings (both light and dark modes).
 
 ---
 
-## Contribution Flow
+## Upstream Template Synchronization
 
-- Always create a new branch before working on changes:
-  ```bash
-  git checkout -b feature/my-update
-  ```
-
-- Use clear commit messages:
-  ```bash
-  git commit -m "feat: add finance dashboard screen"
-  ```
-
-- Open a Pull Request once ready.
-- If your change adds a new UI screen or component, include a screenshot in your PR description.
+Household CFO was originally bootstrapped from the open-source [Studio Admin](https://github.com/arhamkhnz/next-shadcn-admin-dashboard) template by Mohammed Arham Khan. We periodically pull and integrate upstream layout, UI component, and design system updates from `upstream/main`.
 
 ---
 
-## Where to Contribute
-
-- **External Pages**: Landing pages or other non-dashboard routes → `src/app/(external)/`  
-- **Auth Screens**: Login, register, and authentication layouts → `src/app/(main)/auth/`  
-- **Dashboard Screens**: Feature dashboards like CRM, Finance, Analytics → `src/app/(main)/dashboard/`
-- **Components**: Reusable UI goes in `src/components/`  
-- **Hooks**: Custom logic goes in `src/hooks/`  
-- **Themes**: New presets under `src/styles/presets/`  
-
----
-
-## Guidelines
-
-- Prefer **TypeScript types** over `any`
-- Husky pre-commit hooks are enabled - linting and formatting run automatically when you commit, and if there are errors the commit will be blocked until they are fixed. 
-- Follow **Shadcn UI** style & Tailwind v4 conventions
-- Keep accessibility in mind (ARIA, keyboard nav)
-- Use clear commit messages with conventional prefixes (`feat:`, `fix:`, `chore:`, etc.)
-- Avoid unnecessary dependencies — prefer existing utilities where possible
-
----
-
-## Submitting PRs
-
-- Open a Pull Request once your changes are ready.  
-- Ensure your branch is up to date with `main` before submitting.  
-- Reference any related issue in your PR for context.
-
----
-
-## Questions & Support
-
-- Report bugs, suggestions, or issues via [GitHub Issues](https://github.com/arhamkhnz/next-shadcn-admin-dashboard/issues)
-
----
-
-Your contributions keep this project growing. 🚀
-
-**Happy Vibe Coding!**
+Thank you for helping make Household CFO better! 🚀
