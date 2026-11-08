@@ -101,6 +101,7 @@ Keep a component inside its route until it is reused by another feature. Do not 
 - Follow the Biome configuration: double quotes, semicolons, two-space indentation, sorted imports, and a 120-character line width.
 - Avoid unnecessary dependencies.
 - Keep changes focused and do not refactor unrelated files.
+- Adhere to modern React 19 patterns (`.agents/rules/react-modern-patterns.md`): use `useEffectEvent` to decouple effect side-effects from reactive triggers, never write redundant `typeof window === "undefined"` checks inside `useEffect`, and memoize composite custom hook returns.
 
 ## Operational guardrails & workflow
 
