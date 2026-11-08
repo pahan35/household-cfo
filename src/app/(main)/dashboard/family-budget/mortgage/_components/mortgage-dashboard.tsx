@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { format } from "date-fns";
 import { Banknote, Building, Coins, RotateCcw, RotateCw, Target } from "lucide-react";
@@ -135,12 +135,16 @@ export function MortgageDashboard() {
     [setSyncing, setSynced, setOffline, setConflictDetected],
   );
 
+  const onSyncData = useEffectEvent(async (signal: AbortSignal) => {
+    await loadData(signal, false);
+  });
+
   useEffect(() => {
     if (syncVersion < 0) return;
     const controller = new AbortController();
-    void loadData(controller.signal);
+    void onSyncData(controller.signal);
     return () => controller.abort();
-  }, [loadData, syncVersion]);
+  }, [syncVersion]);
 
   // Derived financial models
   const propertySummary = useMemo(() => {

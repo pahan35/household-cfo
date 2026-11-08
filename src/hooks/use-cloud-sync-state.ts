@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 
 import type { CloudSyncStatus, ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
@@ -258,7 +258,11 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
     setState((prev) => ({ ...prev, activeConflict: conflict }));
   }, []);
 
-  // Online / Offline window listeners (registered once; reads latest options via ref)
+  const onReconnectEvent = useEffectEvent(() => {
+    void options?.onReconnect?.();
+  });
+
+  // Online / Offline window listeners (registered once; invokes non-reactive effect event)
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -268,9 +272,7 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
 
     const handleOnline = () => {
       setState((prev) => reduceSetSyncing(prev));
-      if (optionsRef.current?.onReconnect) {
-        void optionsRef.current.onReconnect();
-      }
+      onReconnectEvent();
     };
 
     window.addEventListener("offline", handleOffline);

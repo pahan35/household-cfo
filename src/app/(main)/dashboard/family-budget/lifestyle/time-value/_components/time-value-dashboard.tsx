@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import {
   Banknote,
@@ -69,65 +69,65 @@ export function TimeValueDashboard() {
 
   const { setSyncing, setSynced, setOffline, setConflictDetected } = syncState;
 
+  const onSyncCloud = useEffectEvent(async () => {
+    setSyncing();
+    try {
+      const result = await timeValueRepo.fetchRemoteConfig();
+      if (result.config) {
+        setConfig(result.config);
+        if (result.conflicts && result.conflicts.length > 0) {
+          setConflictDetected(result.conflicts);
+        } else if (result.status === "offline" || result.isOfflineFallback) {
+          setOffline();
+        } else {
+          setSynced(timeValueRepo.getLastSyncedAt() ?? undefined);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to sync time value config from cloud:", err);
+      setOffline();
+    }
+  });
+
+  const onLoadOffer = useEffectEvent(async () => {
+    try {
+      const { tracks } = await offerRepo.load();
+      const currentTrack = tracks.find((t: OfferTrack) => t.status === "current") ?? tracks[0];
+      if (currentTrack) {
+        const rev =
+          currentTrack.revisions.find((r: OfferRevision) => r.id === currentTrack.activeRevisionId) ??
+          currentTrack.revisions[0];
+        setActiveOfferRevision(rev || null);
+        setActiveOfferTitle(`${currentTrack.companyName} (${rev?.title || "Active"})`);
+      }
+    } catch (err) {
+      console.warn("Failed to load offer comparator track:", err);
+    }
+  });
+
+  const onStorageChange = useEffectEvent((e: StorageEvent) => {
+    if (e.key === timeValueRepo["storageKey"]) {
+      setConfig(timeValueRepo.loadConfig());
+    }
+    if (e.key === offerRepo["storageKey"]) {
+      void onLoadOffer();
+    }
+  });
+
   // Load offer comparator active revision on mount & listen for storage updates
   useEffect(() => {
-    let isMounted = true;
-
-    const syncCloud = async () => {
-      setSyncing();
-      try {
-        const result = await timeValueRepo.fetchRemoteConfig();
-        if (isMounted && result.config) {
-          setConfig(result.config);
-          if (result.conflicts && result.conflicts.length > 0) {
-            setConflictDetected(result.conflicts);
-          } else if (result.status === "offline" || result.isOfflineFallback) {
-            setOffline();
-          } else {
-            setSynced(timeValueRepo.getLastSyncedAt() ?? undefined);
-          }
-        }
-      } catch (err) {
-        console.warn("Failed to sync time value config from cloud:", err);
-        setOffline();
-      }
-    };
-
-    void syncCloud();
-
-    const loadOffer = async () => {
-      try {
-        const { tracks } = await offerRepo.load();
-        const currentTrack = tracks.find((t: OfferTrack) => t.status === "current") ?? tracks[0];
-        if (currentTrack && isMounted) {
-          const rev =
-            currentTrack.revisions.find((r: OfferRevision) => r.id === currentTrack.activeRevisionId) ??
-            currentTrack.revisions[0];
-          setActiveOfferRevision(rev || null);
-          setActiveOfferTitle(`${currentTrack.companyName} (${rev?.title || "Active"})`);
-        }
-      } catch (err) {
-        console.warn("Failed to load offer comparator track:", err);
-      }
-    };
-
-    void loadOffer();
+    void onSyncCloud();
+    void onLoadOffer();
 
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === timeValueRepo["storageKey"]) {
-        setConfig(timeValueRepo.loadConfig());
-      }
-      if (e.key === offerRepo["storageKey"]) {
-        void loadOffer();
-      }
+      onStorageChange(e);
     };
 
     window.addEventListener("storage", handleStorage);
     return () => {
-      isMounted = false;
       window.removeEventListener("storage", handleStorage);
     };
-  }, [offerRepo, setConflictDetected, setOffline, setSynced, setSyncing, timeValueRepo]);
+  }, []);
 
   // Compute mortgage gap & baseline savings margin
   const mortgageMetrics = useMemo(() => {

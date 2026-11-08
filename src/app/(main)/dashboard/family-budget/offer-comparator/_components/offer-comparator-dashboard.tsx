@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { toast } from "sonner";
 
@@ -59,63 +59,65 @@ export function OfferComparatorDashboard() {
   const [editingRevision, setEditingRevision] = useState<OfferRevision | null>(null);
   const [isNewTrack, setIsNewTrack] = useState(false);
 
-  // 1. Load repository tracks and config
-  useEffect(() => {
-    async function initRepo() {
-      setSyncing();
-      try {
-        const data = await repository.load();
-        setTracks(data.tracks);
-        setConfig(data.globalConfig);
-        if (data.conflicts && data.conflicts.length > 0) {
-          setConflictDetected(data.conflicts);
-        } else if (data.status === "offline" || data.isOfflineFallback) {
-          setOffline();
-        } else {
-          setSynced(repository.getLastSyncedAt() ?? undefined);
-        }
-      } catch (e) {
-        console.error("Failed to initialize offer comparator repository", e);
+  const onInitRepo = useEffectEvent(async () => {
+    setSyncing();
+    try {
+      const data = await repository.load();
+      setTracks(data.tracks);
+      setConfig(data.globalConfig);
+      if (data.conflicts && data.conflicts.length > 0) {
+        setConflictDetected(data.conflicts);
+      } else if (data.status === "offline" || data.isOfflineFallback) {
         setOffline();
-      } finally {
-        setIsRepoLoaded(true);
+      } else {
+        setSynced(repository.getLastSyncedAt() ?? undefined);
       }
+    } catch (e) {
+      console.error("Failed to initialize offer comparator repository", e);
+      setOffline();
+    } finally {
+      setIsRepoLoaded(true);
     }
-    void initRepo();
-  }, [setConflictDetected, setOffline, setSynced, setSyncing]);
+  });
 
-  // 2. Fetch ExternalProvider live data
+  // 1. Load repository tracks and config on mount
+  useEffect(() => {
+    void onInitRepo();
+  }, []);
+
+  const onLoadExternalProvider = useEffectEvent(async () => {
+    try {
+      const [catRes, curRes, txRes] = await Promise.allSettled([
+        getCategories(),
+        getCurrencies(),
+        getTransactionPage({ skip: 0, take: 500 }),
+      ]);
+
+      if (catRes.status === "fulfilled") {
+        setCategories(catRes.value);
+      }
+      if (curRes.status === "fulfilled") {
+        setCurrencies(curRes.value);
+        const rateMap: Record<string, number> = {};
+        for (const c of curRes.value) {
+          if (c.id && c.rate) {
+            rateMap[c.id.toUpperCase()] = c.rate;
+          }
+        }
+        setLiveRates(rateMap);
+      }
+      if (txRes.status === "fulfilled") {
+        setTransactions(txRes.value.transactions || []);
+      }
+    } catch {
+      // ExternalProvider may not be configured; comparator operates in standalone mode
+    }
+  });
+
+  // 2. Fetch ExternalProvider live data when syncVersion updates
   useEffect(() => {
     if (syncVersion < 0) return;
-    async function loadExternalProvider() {
-      try {
-        const [catRes, curRes, txRes] = await Promise.allSettled([
-          getCategories(),
-          getCurrencies(),
-          getTransactionPage({ skip: 0, take: 500 }),
-        ]);
-
-        if (catRes.status === "fulfilled") {
-          setCategories(catRes.value);
-        }
-        if (curRes.status === "fulfilled") {
-          setCurrencies(curRes.value);
-          const rateMap: Record<string, number> = {};
-          for (const c of curRes.value) {
-            if (c.id && c.rate) {
-              rateMap[c.id.toUpperCase()] = c.rate;
-            }
-          }
-          setLiveRates(rateMap);
-        }
-        if (txRes.status === "fulfilled") {
-          setTransactions(txRes.value.transactions || []);
-        }
-      } catch {
-        // ExternalProvider may not be configured; comparator operates in standalone mode
-      }
-    }
-    void loadExternalProvider();
+    void onLoadExternalProvider();
   }, [syncVersion]);
 
   // 3. Compute live benefit spend ceilings

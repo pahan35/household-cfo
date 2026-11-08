@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import {
   type CloudSyncStatus,
@@ -30,6 +30,25 @@ const RENT_CATEGORY_REGEX = /(rent|аренд|квартир|найм|czynsz|hou
  */
 export function findCategoryIdsByPattern(categories: ExternalProviderCategory[], pattern: RegExp): string[] {
   return categories.filter((c) => pattern.test(c.name)).map((c) => c.id);
+}
+
+/**
+ * Finds category IDs from serialized category key signature whose name matches the given pattern.
+ */
+export function findMatchingIdsFromKey(key: string, pattern: RegExp): string[] {
+  if (!key) return [];
+  const result: string[] = [];
+  for (const entry of key.split(",")) {
+    const colonIndex = entry.indexOf(":");
+    if (colonIndex > 0) {
+      const id = entry.slice(0, colonIndex);
+      const name = entry.slice(colonIndex + 1);
+      if (pattern.test(name)) {
+        result.push(id);
+      }
+    }
+  }
+  return result;
 }
 
 /**
@@ -295,16 +314,14 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
   // Stable key based on category IDs & names to prevent re-detecting on re-allocated category arrays
   const categoriesKey = categories.map((c) => `${c.id}:${c.name}`).join(",");
 
-  // Auto-detect Tax and Rent category IDs from available metadata
-  // biome-ignore lint/correctness/useExhaustiveDependencies: categoriesKey captures all relevant category changes
+  // Auto-detect Tax and Rent category IDs from stable categoriesKey
   const detectedTaxCategoryIds = useMemo(
-    () => findCategoryIdsByPattern(categories, TAX_CATEGORY_REGEX),
+    () => findMatchingIdsFromKey(categoriesKey, TAX_CATEGORY_REGEX),
     [categoriesKey],
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: categoriesKey captures all relevant category changes
   const detectedRentCategoryIds = useMemo(
-    () => findCategoryIdsByPattern(categories, RENT_CATEGORY_REGEX),
+    () => findMatchingIdsFromKey(categoriesKey, RENT_CATEGORY_REGEX),
     [categoriesKey],
   );
 
@@ -332,6 +349,62 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
   const [conflicts, setConflicts] = useState<ConflictRecord<ExclusionPreset>[]>([]);
   const [activeConflict, setActiveConflict] = useState<ConflictRecord<ExclusionPreset> | null>(null);
   const [isConflictModalOpen, setIsConflictModalOpen] = useState(false);
+
+  const onSyncPresets = useEffectEvent(
+    async (params: {
+      localPresets: ExclusionPreset[];
+      localActiveId: string;
+      hasLocalStore: boolean;
+      storedLastSyncedAt: string | null;
+      isCancelled: () => boolean;
+    }) => {
+      setIsSyncing(true);
+      setSyncStatus("syncing");
+
+      const fetchImpl = options?.fetchFn ?? (typeof window !== "undefined" ? window.fetch.bind(window) : fetch);
+
+      try {
+        const res = await syncPresetsWithRemote({
+          localPresets: params.localPresets,
+          localActiveId: params.localActiveId,
+          defaultPresets,
+          fetchFn: fetchImpl,
+          lastSyncedAt: params.storedLastSyncedAt,
+          hasLocalStore: params.hasLocalStore,
+        });
+
+        if (params.isCancelled()) return;
+        setIsOfflineFallback(res.isOfflineFallback);
+        setSyncStatus(res.status);
+        setConflicts(res.conflicts);
+        if (res.conflicts.length > 0) {
+          setActiveConflict(res.conflicts[0]);
+        }
+        if (res.lastSyncedAt) {
+          setLastSyncedAt(new Date(res.lastSyncedAt));
+          try {
+            window.localStorage.setItem(PRESETS_LAST_SYNCED_STORAGE_KEY, res.lastSyncedAt);
+          } catch {
+            // Ignore
+          }
+        }
+        if (!res.isOfflineFallback) {
+          setCustomPresets(res.presets);
+          setActivePresetIdState(res.activePresetId);
+          try {
+            window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(res.presets));
+            window.localStorage.setItem(ACTIVE_PRESET_STORAGE_KEY, res.activePresetId);
+          } catch {
+            // Ignore localStorage write failures
+          }
+        }
+      } finally {
+        if (!params.isCancelled()) {
+          setIsSyncing(false);
+        }
+      }
+    },
+  );
 
   // Initialize from localStorage synchronously on mount, then trigger background Supabase synchronization
   useEffect(() => {
@@ -370,56 +443,18 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
     }
 
     let isCancelled = false;
-    setIsSyncing(true);
-    setSyncStatus("syncing");
-
-    const fetchImpl = options?.fetchFn ?? (typeof window !== "undefined" ? window.fetch.bind(window) : fetch);
-
-    void syncPresetsWithRemote({
+    void onSyncPresets({
       localPresets,
       localActiveId,
-      defaultPresets,
-      fetchFn: fetchImpl,
-      lastSyncedAt: storedLastSyncedAt,
       hasLocalStore,
-    })
-      .then((res) => {
-        if (isCancelled) return;
-        setIsOfflineFallback(res.isOfflineFallback);
-        setSyncStatus(res.status);
-        setConflicts(res.conflicts);
-        if (res.conflicts.length > 0) {
-          setActiveConflict(res.conflicts[0]);
-        }
-        if (res.lastSyncedAt) {
-          setLastSyncedAt(new Date(res.lastSyncedAt));
-          try {
-            window.localStorage.setItem(PRESETS_LAST_SYNCED_STORAGE_KEY, res.lastSyncedAt);
-          } catch {
-            // Ignore
-          }
-        }
-        if (!res.isOfflineFallback) {
-          setCustomPresets(res.presets);
-          setActivePresetIdState(res.activePresetId);
-          try {
-            window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(res.presets));
-            window.localStorage.setItem(ACTIVE_PRESET_STORAGE_KEY, res.activePresetId);
-          } catch {
-            // Ignore localStorage write failures
-          }
-        }
-      })
-      .finally(() => {
-        if (!isCancelled) {
-          setIsSyncing(false);
-        }
-      });
+      storedLastSyncedAt,
+      isCancelled: () => isCancelled,
+    });
 
     return () => {
       isCancelled = true;
     };
-  }, [defaultPresets, options?.disableAutoSync, options?.fetchFn]);
+  }, [options?.disableAutoSync]);
 
   const allPresets = useMemo(() => {
     return mergePresets(defaultPresets, customPresets);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { format } from "date-fns";
 import { AlertCircle, RotateCcw, RotateCw, ShieldCheck } from "lucide-react";
@@ -172,12 +172,16 @@ export function RunwayDashboard() {
     [setSyncing, setSynced, setOffline, setConflictDetected],
   );
 
+  const onSyncData = useEffectEvent(async (signal: AbortSignal) => {
+    await loadData(signal, false);
+  });
+
   useEffect(() => {
     if (syncVersion < 0) return;
     const controller = new AbortController();
-    void loadData(controller.signal);
+    void onSyncData(controller.signal);
     return () => controller.abort();
-  }, [loadData, syncVersion]);
+  }, [syncVersion]);
 
   // Fetch linked OfferRevision if active scenario is tied to Offer Comparator track
   useEffect(() => {
