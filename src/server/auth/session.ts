@@ -3,7 +3,7 @@ import type { NextRequest, NextResponse } from "next/server";
 import { isFocusedMode } from "@/config/app-mode";
 import { rootUser } from "@/data/users";
 
-import { FatalAuthConfigError, isEmailAllowed, isVercelOrProd } from "./config";
+import { FatalAuthConfigError, isEmailAllowed, isVercelOrProd, normalizeOrigin } from "./config";
 
 export const AUTH_COOKIE_NAME = "family_budget_session";
 export const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60; // 7 days
@@ -281,4 +281,107 @@ export async function getDashboardUserFromCookies(
     avatar: rootUser.avatar,
     role: rootUser.role,
   };
+}
+
+export const OAUTH_STATE_MAX_AGE_SECONDS = 10 * 60; // 10 minutes
+
+export interface OAuthStatePayload {
+  state: string;
+  returnTo: string;
+  origin?: string;
+  canonicalUrl?: string;
+  iat: number;
+  exp: number;
+}
+
+/**
+ * Creates an HMAC-SHA256 signed OAuth state token.
+ */
+export async function createOAuthStateToken(
+  params: {
+    state: string;
+    returnTo: string;
+    origin?: string;
+    canonicalUrl?: string;
+  },
+  options?: {
+    secret?: string;
+    expiresInSeconds?: number;
+    now?: number;
+  },
+): Promise<string> {
+  const secret = options?.secret ?? getSessionSecret();
+  const now = options?.now ?? Math.floor(Date.now() / 1000);
+  const expiresIn = options?.expiresInSeconds ?? OAUTH_STATE_MAX_AGE_SECONDS;
+
+  const payload: OAuthStatePayload = {
+    state: params.state,
+    returnTo: params.returnTo,
+    origin: params.origin ? (normalizeOrigin(params.origin) ?? undefined) : undefined,
+    canonicalUrl: params.canonicalUrl ? (normalizeOrigin(params.canonicalUrl) ?? undefined) : undefined,
+    iat: now,
+    exp: now + expiresIn,
+  };
+
+  const enc = new TextEncoder();
+  const encodedPayload = toBase64Url(enc.encode(JSON.stringify(payload)));
+  const key = await getCryptoKey(secret);
+  const signature = await crypto.subtle.sign("HMAC", key, enc.encode(encodedPayload));
+  const encodedSignature = toBase64Url(new Uint8Array(signature));
+
+  return `${encodedPayload}.${encodedSignature}`;
+}
+
+/**
+ * Verifies an HMAC-SHA256 signed OAuth state token.
+ * Returns the decoded payload if valid and not expired, or null otherwise.
+ */
+export async function verifyOAuthStateToken(
+  token: string,
+  options?: {
+    secret?: string;
+    env?: Record<string, string | undefined>;
+    now?: number;
+  },
+): Promise<OAuthStatePayload | null> {
+  if (!token || typeof token !== "string") {
+    return null;
+  }
+
+  const parts = token.split(".");
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const [encodedPayload, encodedSignature] = parts;
+  if (!encodedPayload || !encodedSignature) {
+    return null;
+  }
+
+  const env = options?.env ?? process.env;
+  const secret = options?.secret ?? getSessionSecret(env);
+  const now = options?.now ?? Math.floor(Date.now() / 1000);
+
+  try {
+    const key = await getCryptoKey(secret);
+    const enc = new TextEncoder();
+    const signatureBytes = fromBase64Url(encodedSignature);
+
+    const isValid = await crypto.subtle.verify("HMAC", key, signatureBytes as BufferSource, enc.encode(encodedPayload));
+
+    if (!isValid) {
+      return null;
+    }
+
+    const jsonStr = new TextDecoder().decode(fromBase64Url(encodedPayload));
+    const payload = JSON.parse(jsonStr) as OAuthStatePayload;
+
+    if (!payload.state || typeof payload.exp !== "number" || now > payload.exp) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
 }

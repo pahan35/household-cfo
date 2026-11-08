@@ -7,11 +7,13 @@ import {
   AUTH_COOKIE_NAME,
   attachSessionCookie,
   clearSessionCookie,
+  createOAuthStateToken,
   createSessionToken,
   getDashboardUserFromCookies,
   getSessionFromRequest,
   getSessionSecret,
   type SessionUser,
+  verifyOAuthStateToken,
   verifySessionToken,
 } from "../session";
 
@@ -201,6 +203,63 @@ describe("session management", () => {
       const user = await getDashboardUserFromCookies(cookieStore, fullEnv);
       expect(user.name).toBe("Arham Khan");
       expect(user.email).toBe("hello@arhamkhnz.com");
+    });
+  });
+
+  describe("createOAuthStateToken & verifyOAuthStateToken", () => {
+    it("creates a signed state token and verifies it successfully", async () => {
+      const token = await createOAuthStateToken(
+        {
+          state: "nonce-123456",
+          returnTo: "/dashboard/family-budget",
+          origin: "https://family-budget-preview-1.vercel.app",
+          canonicalUrl: "https://family-budget.vercel.app",
+        },
+        { secret },
+      );
+
+      const verified = await verifyOAuthStateToken(token, { secret, env });
+      expect(verified).not.toBeNull();
+      expect(verified?.state).toBe("nonce-123456");
+      expect(verified?.returnTo).toBe("/dashboard/family-budget");
+      expect(verified?.origin).toBe("https://family-budget-preview-1.vercel.app");
+      expect(verified?.canonicalUrl).toBe("https://family-budget.vercel.app");
+    });
+
+    it("returns null if state token is expired", async () => {
+      const now = 1_000_000;
+      const token = await createOAuthStateToken(
+        { state: "nonce-123", returnTo: "/" },
+        { secret, now, expiresInSeconds: 60 },
+      );
+
+      const verified = await verifyOAuthStateToken(token, { secret, env, now: now + 61 });
+      expect(verified).toBeNull();
+    });
+
+    it("returns null if signature is tampered with", async () => {
+      const token = await createOAuthStateToken({ state: "nonce-123", returnTo: "/" }, { secret });
+      const [payload] = token.split(".");
+      const tampered = `${payload}.bad-sig`;
+
+      const verified = await verifyOAuthStateToken(tampered, { secret, env });
+      expect(verified).toBeNull();
+    });
+
+    it("returns null if payload is tampered with", async () => {
+      const token = await createOAuthStateToken({ state: "nonce-123", returnTo: "/" }, { secret });
+      const [, sig] = token.split(".");
+      const forgedPayload = btoa(JSON.stringify({ state: "attacker-nonce", exp: 9_999_999_999 }));
+      const tampered = `${forgedPayload}.${sig}`;
+
+      const verified = await verifyOAuthStateToken(tampered, { secret, env });
+      expect(verified).toBeNull();
+    });
+
+    it("returns null for malformed tokens", async () => {
+      expect(await verifyOAuthStateToken("", { secret, env })).toBeNull();
+      expect(await verifyOAuthStateToken("single-part", { secret, env })).toBeNull();
+      expect(await verifyOAuthStateToken("one.two.three", { secret, env })).toBeNull();
     });
   });
 });

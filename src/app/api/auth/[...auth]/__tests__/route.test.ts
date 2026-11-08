@@ -2,10 +2,14 @@ import { NextRequest } from "next/server";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import * as authConfig from "@/server/auth/config";
-import { AUTH_COOKIE_NAME, createSessionToken } from "@/server/auth/session";
+import {
+  AUTH_COOKIE_NAME,
+  createOAuthStateToken,
+  createSessionToken,
+  verifyOAuthStateToken,
+} from "@/server/auth/session";
 
-import { GET, POST } from "../route";
+import { GET } from "../route";
 
 describe("OAuth route handler", () => {
   const originalFetch = globalThis.fetch;
@@ -283,6 +287,145 @@ describe("OAuth route handler", () => {
       const data = await res.json();
       expect(data.user?.email).toBe("allowed@family.org");
       expect(data.user?.name).toBe("Family Member");
+    });
+  });
+
+  describe("canonical relay OAuth flow", () => {
+    const canonicalUrl = "https://family-budget.vercel.app";
+    const previewOrigin = "https://family-budget-git-feat-team.vercel.app";
+
+    beforeEach(() => {
+      process.env.AUTH_CANONICAL_URL = canonicalUrl;
+      process.env.AUTH_SECRET = "test-auth-secret-minimum-32-chars-long";
+    });
+
+    it("login on preview origin sets canonical redirect_uri and encodes origin in signed state", async () => {
+      const req = new NextRequest(`${previewOrigin}/api/auth/login?returnTo=/dashboard/custom`);
+      const res = await GET(req, { params: Promise.resolve({ auth: ["login"] }) });
+
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") || "";
+      const url = new URL(location);
+
+      expect(url.searchParams.get("redirect_uri")).toBe(`${canonicalUrl}/api/auth/callback`);
+
+      const stateParam = url.searchParams.get("state");
+      expect(stateParam).toBeDefined();
+
+      const verified = await verifyOAuthStateToken(stateParam || "", {
+        secret: process.env.AUTH_SECRET,
+      });
+      expect(verified).not.toBeNull();
+      expect(verified?.origin).toBe(previewOrigin);
+      expect(verified?.canonicalUrl).toBe(canonicalUrl);
+      expect(verified?.returnTo).toBe("/dashboard/custom");
+    });
+
+    it("canonical callback relays code and state to preview origin", async () => {
+      const signedState = await createOAuthStateToken(
+        {
+          state: "nonce-xyz-123",
+          returnTo: "/dashboard/family-budget",
+          origin: previewOrigin,
+          canonicalUrl,
+        },
+        { secret: process.env.AUTH_SECRET },
+      );
+
+      const req = new NextRequest(`${canonicalUrl}/api/auth/callback?code=mock-google-code&state=${signedState}`);
+      const res = await GET(req, { params: Promise.resolve({ auth: ["callback"] }) });
+
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") || "";
+      expect(location).toBe(`${previewOrigin}/api/auth/callback?code=mock-google-code&state=${signedState}`);
+    });
+
+    it("canonical callback relays Google error back to preview login page", async () => {
+      const signedState = await createOAuthStateToken(
+        {
+          state: "nonce-xyz-123",
+          returnTo: "/dashboard/family-budget",
+          origin: previewOrigin,
+          canonicalUrl,
+        },
+        { secret: process.env.AUTH_SECRET },
+      );
+
+      const req = new NextRequest(`${canonicalUrl}/api/auth/callback?error=access_denied&state=${signedState}`);
+      const res = await GET(req, { params: Promise.resolve({ auth: ["callback"] }) });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(`${previewOrigin}/auth/login?error=access_denied`);
+    });
+
+    it("canonical callback rejects relay to disallowed origin", async () => {
+      const signedState = await createOAuthStateToken(
+        {
+          state: "nonce-xyz-123",
+          returnTo: "/dashboard",
+          origin: "https://evil-attacker.com",
+          canonicalUrl,
+        },
+        { secret: process.env.AUTH_SECRET },
+      );
+
+      const req = new NextRequest(`${canonicalUrl}/api/auth/callback?code=mock-code&state=${signedState}`);
+      const res = await GET(req, { params: Promise.resolve({ auth: ["callback"] }) });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(`${canonicalUrl}/auth/login?error=disallowed_relay_origin`);
+    });
+
+    it("preview callback exchanges code using canonical redirect_uri and sets session cookie", async () => {
+      let capturedExchangeParams: URLSearchParams | null = null;
+      globalThis.fetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+        if (url.includes("oauth2.googleapis.com/token")) {
+          capturedExchangeParams = new URLSearchParams(init?.body?.toString());
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ access_token: "mock-access-token" }),
+          });
+        }
+        if (url.includes("openidconnect.googleapis.com/v1/userinfo")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              email: "allowed@family.org",
+              email_verified: true,
+              name: "Preview Tester",
+              picture: "https://example.com/pic.jpg",
+            }),
+          });
+        }
+        return Promise.reject(new Error(`Unexpected fetch URL: ${url}`));
+      });
+
+      const signedState = await createOAuthStateToken(
+        {
+          state: "nonce-xyz-123",
+          returnTo: "/dashboard/family-budget",
+          origin: previewOrigin,
+          canonicalUrl,
+        },
+        { secret: process.env.AUTH_SECRET },
+      );
+
+      const req = new NextRequest(`${previewOrigin}/api/auth/callback?code=mock-relayed-code&state=${signedState}`);
+      const res = await GET(req, { params: Promise.resolve({ auth: ["callback"] }) });
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(`${previewOrigin}/dashboard/family-budget`);
+
+      // Verify that code exchange sent the canonical redirect_uri to Google
+      expect(capturedExchangeParams).not.toBeNull();
+      const params = capturedExchangeParams as unknown as URLSearchParams;
+      expect(params.get("redirect_uri")).toBe(`${canonicalUrl}/api/auth/callback`);
+      expect(params.get("code")).toBe("mock-relayed-code");
+
+      // Verify session cookie was attached on preview origin
+      const sessionCookie = res.cookies.get(AUTH_COOKIE_NAME);
+      expect(sessionCookie).toBeDefined();
+      expect(sessionCookie?.value).toBeTruthy();
     });
   });
 });

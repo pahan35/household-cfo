@@ -43,6 +43,8 @@ In production on Vercel, the following environment variables configure Google OA
 - `AUTH_SECRET`: Secret key (32+ bytes) used for stateless HMAC-SHA256 session cookie signing
 - `ALLOWED_USER_EMAILS`: Comma-separated list of authorized family member Google email addresses
 - `AUTH_BYPASS_LOCAL`: Local development flag. Defaults to `"true"` in local development; must NEVER be enabled on Vercel or in production (hard fail-closed guard).
+- `AUTH_CANONICAL_URL`: Canonical production origin (e.g. `https://family-budget.vercel.app`) registered in Google OAuth Client redirect URIs, used by dynamic Vercel Preview deployments to relay OAuth callbacks.
+- `ALLOWED_PREVIEW_ORIGINS`: Optional comma-separated list of additional preview origins authorized for OAuth relay (defaults to `*.vercel.app`).
 
 Never log or expose `GOOGLE_CLIENT_SECRET`, `AUTH_SECRET`, or `ALLOWED_USER_EMAILS`. Never expose these variables with a `NEXT_PUBLIC_` prefix.
 
