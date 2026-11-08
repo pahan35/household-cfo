@@ -1,0 +1,71 @@
+name: E2E Develop Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Target Vercel deployment URL"
+        required: false
+        type: string
+        default: "https://family-budget-git-develop-p35-pl.vercel.app"
+      reset_mock_data:
+        description: "Reset target mock database to seed snapshot before running tests"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Playwright E2E Tests (Develop)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium Browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Reset Mock Database Seed
+        if: ${{ github.event.inputs.reset_mock_data != 'false' }}
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url || secrets.E2E_DEVELOP_BASE_URL || 'https://family-budget-git-develop-p35-pl.vercel.app' }}
+          MOBILE_API_TOKENS: ${{ secrets.MOBILE_API_TOKENS }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          CLEAN_URL="${TARGET_URL%/}"
+          echo "Resetting mock database on target: $CLEAN_URL"
+          HEADERS=("-H" "Authorization: Bearer $MOBILE_API_TOKENS")
+          if [ -n "$VERCEL_AUTOMATION_BYPASS_SECRET" ]; then
+            HEADERS+=("-H" "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET")
+          fi
+          curl -fsSL -X POST "$CLEAN_URL/api/v1/external-provider/mock/reset" "${HEADERS[@]}"
+
+      - name: Run Playwright E2E Tests
+        env:
+          E2E_BASE_URL: ${{ github.event.inputs.target_url || secrets.E2E_DEVELOP_BASE_URL || 'https://family-budget-git-develop-p35-pl.vercel.app' }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          ALLOWED_USER_EMAILS: ${{ secrets.ALLOWED_USER_EMAILS }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          CI: "true"
+        run: npm run test:e2e
+
+      - name: Upload Playwright Test Report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14

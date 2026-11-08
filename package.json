@@ -12,6 +12,7 @@
     "start": "next start",
     "lint": "biome lint",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "format": "biome format --write",
     "check": "biome check",
     "check:fix": "biome check --write",
@@ -68,6 +69,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.5",
+    "@playwright/test": "^1.65.0",
     "@tailwindcss/postcss": "^4.3.4",
     "@testing-library/react": "^16.3.3",
     "@types/d3-geo": "^3.1.1",
