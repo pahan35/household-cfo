@@ -11,6 +11,7 @@ import type {
   TimeValueMotivatorConfig,
   WeeklyCheckInEntry,
 } from "@/app/(main)/dashboard/family-budget/lifestyle/time-value/_components/time-value-types";
+import { resolveSupabaseCredentials } from "@/server/supabase/config";
 
 export interface TimeValueProfileRow {
   player: "me" | "wife";
@@ -586,24 +587,27 @@ export class SupabaseRestTimeValueStore implements TimeValueStore {
 }
 
 let activeTimeValueStore: TimeValueStore | null = null;
+let activeTimeValueStoreKey: string | null = null;
 
 export function getTimeValueStore(): TimeValueStore {
-  if (activeTimeValueStore) {
+  const creds = resolveSupabaseCredentials();
+  const currentKey = creds ? `remote:${creds.url}` : "in-memory";
+
+  if (activeTimeValueStore && (activeTimeValueStoreKey === currentKey || activeTimeValueStoreKey === "test")) {
     return activeTimeValueStore;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (supabaseUrl && serviceRoleKey) {
-    activeTimeValueStore = new SupabaseRestTimeValueStore(supabaseUrl, serviceRoleKey);
+  if (creds) {
+    activeTimeValueStore = new SupabaseRestTimeValueStore(creds.url, creds.key);
   } else {
     activeTimeValueStore = new InMemoryTimeValueStore();
   }
 
+  activeTimeValueStoreKey = currentKey;
   return activeTimeValueStore;
 }
 
 export function setTestTimeValueStore(store: TimeValueStore | null): void {
   activeTimeValueStore = store;
+  activeTimeValueStoreKey = store ? "test" : null;
 }

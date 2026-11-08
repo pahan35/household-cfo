@@ -18,6 +18,7 @@ import type {
   PropertyPricingMode,
   RenovationFundingMode,
 } from "@/app/(main)/dashboard/family-budget/mortgage/_components/mortgage-types";
+import { resolveSupabaseCredentials } from "@/server/supabase/config";
 
 export type { MortgageScenario };
 
@@ -562,24 +563,27 @@ export class SupabaseRestMortgageStore implements MortgageStore {
 }
 
 let activeMortgageStore: MortgageStore | null = null;
+let activeMortgageStoreKey: string | null = null;
 
 export function getMortgageStore(): MortgageStore {
-  if (activeMortgageStore) {
+  const creds = resolveSupabaseCredentials();
+  const currentKey = creds ? `remote:${creds.url}` : "in-memory";
+
+  if (activeMortgageStore && (activeMortgageStoreKey === currentKey || activeMortgageStoreKey === "test")) {
     return activeMortgageStore;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (supabaseUrl && serviceRoleKey) {
-    activeMortgageStore = new SupabaseRestMortgageStore(supabaseUrl, serviceRoleKey);
+  if (creds) {
+    activeMortgageStore = new SupabaseRestMortgageStore(creds.url, creds.key);
   } else {
     activeMortgageStore = new InMemoryMortgageStore();
   }
 
+  activeMortgageStoreKey = currentKey;
   return activeMortgageStore;
 }
 
 export function setTestMortgageStore(store: MortgageStore | null): void {
   activeMortgageStore = store;
+  activeMortgageStoreKey = store ? "test" : null;
 }

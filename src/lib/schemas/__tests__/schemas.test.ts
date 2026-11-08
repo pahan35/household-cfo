@@ -1,10 +1,56 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  createTransactionsSchema,
+  normalizeCategoriesInput,
+  normalizeTransactionsInput,
+  snapshotQuerySchema,
+  triggerSyncSchema,
+  updateTransactionSchema,
+  upsertCategoriesSchema,
+} from "../external-provider";
 import { deletePresetSchema, upsertPresetSchema } from "../presets";
 import { createMortgageScenarioSchema, scenarioKindSchema, updateRunwayScenarioSchema } from "../scenarios";
 import { screenLogBatchSchema, screenLogSchema } from "../screen-log";
 
 describe("shared DTO schemas", () => {
+  it("validates ExternalProvider transaction and category schemas and normalization", () => {
+    // Single transaction normalization
+    const singleTx = { sourceAmount: 100, destinationAmount: 100 };
+    expect(createTransactionsSchema.safeParse(singleTx).success).toBe(true);
+    expect(normalizeTransactionsInput(singleTx)).toEqual([{ ...singleTx, tags: [] }]);
+
+    // Array of transactions normalization
+    const multiTx = [
+      { id: "tx-1", sourceAmount: 50 },
+      { id: "tx-2", destinationAmount: 50 },
+    ];
+    expect(createTransactionsSchema.safeParse(multiTx).success).toBe(true);
+    expect(normalizeTransactionsInput(multiTx)).toHaveLength(2);
+
+    // Object wrapping array normalization
+    expect(normalizeTransactionsInput({ transactions: multiTx })).toHaveLength(2);
+
+    // Update requires non-empty id
+    expect(updateTransactionSchema.safeParse({ id: "tx-1", sourceAmount: 20 }).success).toBe(true);
+    expect(updateTransactionSchema.safeParse({ sourceAmount: 20 }).success).toBe(false);
+    expect(updateTransactionSchema.safeParse({ id: "" }).success).toBe(false);
+
+    // Categories normalization
+    const cat = { id: "cat-1", name: "Food", categoryType: 3 };
+    expect(upsertCategoriesSchema.safeParse(cat).success).toBe(true);
+    expect(normalizeCategoriesInput(cat)).toEqual([cat]);
+    expect(normalizeCategoriesInput([cat])).toEqual([cat]);
+    expect(normalizeCategoriesInput({ categories: [cat] })).toEqual([cat]);
+
+    // Sync options
+    expect(triggerSyncSchema.safeParse({ tier: "cold", force: true }).success).toBe(true);
+    expect(triggerSyncSchema.safeParse({ tier: "invalid" }).success).toBe(false);
+
+    // Snapshot query coercion
+    expect(snapshotQuerySchema.parse({ sinceVersion: "5" })).toEqual({ sinceVersion: 5 });
+    expect(snapshotQuerySchema.safeParse({ sinceVersion: -1 }).success).toBe(false);
+  });
   it("accepts a valid screen log and rejects malformed dates and negative hours", () => {
     expect(
       screenLogSchema.safeParse({ weekStartDate: "2026-11-02", player: "me", gamingTotalHours: 4.5 }).success,

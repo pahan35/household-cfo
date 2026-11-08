@@ -250,12 +250,24 @@ describe("SupabaseRestExternalProviderStore", () => {
 describe("getExternalProviderStore factory", () => {
   const originalEnv = { ...process.env };
 
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.EXTERNAL_API_ADAPTER;
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SECRET_KEY;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    delete process.env.SUPABASE_MOCK_URL;
+    delete process.env.SUPABASE_MOCK_SECRET_KEY;
+    delete process.env.SUPABASE_MOCK_SERVICE_ROLE_KEY;
+    setTestExternalProviderStore(null);
+  });
+
   afterEach(() => {
     process.env = { ...originalEnv };
     setTestExternalProviderStore(null);
   });
 
-  it("returns SupabaseRestExternalProviderStore when credentials are present", () => {
+  it("returns SupabaseRestExternalProviderStore when credentials are present in externalProvider mode", () => {
     process.env.SUPABASE_URL = "https://my-project.supabase.co";
     process.env.SUPABASE_SERVICE_ROLE_KEY = "service-key-123";
 
@@ -264,13 +276,33 @@ describe("getExternalProviderStore factory", () => {
     expect(store).toBeInstanceOf(SupabaseRestExternalProviderStore);
   });
 
-  it("returns LocalFileExternalProviderStore when credentials are absent", () => {
-    delete process.env.SUPABASE_URL;
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  it("returns LocalFileExternalProviderStore pointing to standard cache when credentials are absent in externalProvider mode", () => {
+    setTestExternalProviderStore(null);
+    const store = getExternalProviderStore();
+    expect(store).toBeInstanceOf(LocalFileExternalProviderStore);
+    expect((store as LocalFileExternalProviderStore).getFilePath()).toContain("external-provider-store.json");
+    expect((store as LocalFileExternalProviderStore).getFilePath()).not.toContain("external-provider-mock-store.json");
+  });
+
+  it("returns SupabaseRestExternalProviderStore when mock credentials are present in mock mode", () => {
+    process.env.EXTERNAL_API_ADAPTER = "mock";
+    process.env.SUPABASE_MOCK_URL = "https://mock-project.supabase.co";
+    process.env.SUPABASE_MOCK_SECRET_KEY = "mock-secret-key-123";
+
+    setTestExternalProviderStore(null);
+    const store = getExternalProviderStore();
+    expect(store).toBeInstanceOf(SupabaseRestExternalProviderStore);
+  });
+
+  it("returns LocalFileExternalProviderStore pointing to mock cache in mock mode even if prod credentials are set", () => {
+    process.env.EXTERNAL_API_ADAPTER = "mock";
+    process.env.SUPABASE_URL = "https://prod-project.supabase.co";
+    process.env.SUPABASE_SECRET_KEY = "prod-secret-key-123";
 
     setTestExternalProviderStore(null);
     const store = getExternalProviderStore();
     expect(store).toBeInstanceOf(LocalFileExternalProviderStore);
+    expect((store as LocalFileExternalProviderStore).getFilePath()).toContain("external-provider-mock-store.json");
   });
 
   it("respects setTestExternalProviderStore override", () => {

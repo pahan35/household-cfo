@@ -316,5 +316,25 @@ describe("Preset DB Layer & Store Tests", () => {
       const store = getPresetStore();
       expect(store).toBeInstanceOf(InMemoryPresetStore);
     });
+
+    it("returns SupabaseRestPresetStore when mock credentials are set in mock mode", () => {
+      process.env.EXTERNAL_API_ADAPTER = "mock";
+      process.env.SUPABASE_MOCK_URL = "https://mock.supabase.co";
+      process.env.SUPABASE_MOCK_SECRET_KEY = "mock-secret";
+
+      const store = getPresetStore();
+      expect(store).toBeInstanceOf(SupabaseRestPresetStore);
+    });
+
+    it("falls back to InMemoryPresetStore in mock mode if only prod credentials are set", () => {
+      process.env.EXTERNAL_API_ADAPTER = "mock";
+      process.env.SUPABASE_URL = "https://example.supabase.co";
+      process.env.SUPABASE_SECRET_KEY = "prod-secret";
+      delete process.env.SUPABASE_MOCK_URL;
+      delete process.env.SUPABASE_MOCK_SECRET_KEY;
+
+      const store = getPresetStore();
+      expect(store).toBeInstanceOf(InMemoryPresetStore);
+    });
   });
 });

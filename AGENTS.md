@@ -18,7 +18,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Secrets
 
-This project proxies a third-party API through `src/app/api/external-provider/[...path]/route.ts`. Credentials are read server-side by `src/server/external-provider/token.ts` from the macOS keychain (in default `EXTERNAL_API_SECRET_SOURCE="keychain"` mode) or from server-side environment variables (`EXTERNAL_API_SECRET_SOURCE="env"` on Vercel). No source file contains a secret.
+This project proxies a third-party API through `src/app/api/external-provider/[...path]/route.ts`. Credentials are read server-side by `src/server/external-provider/token.ts` from the macOS keychain (in default `EXTERNAL_API_SECRET_SOURCE="keychain"` mode) or from server-side environment variables (`EXTERNAL_API_SECRET_SOURCE="env"` on Vercel). In `"mock"` mode (`EXTERNAL_API_ADAPTER="mock"`), no upstream network calls or credentials are used, and mock Supabase operations strictly read `SUPABASE_MOCK_URL` and `SUPABASE_MOCK_SECRET_KEY`. No source file contains a secret.
 
 Never read, print, log, echo, commit, or write a credential into any file. Concretely, do not open `.env` or `.env.*` (`.env.example` holds placeholders only), do not run `security find-generic-password`, and do not dump the environment with `env` or `printenv`. Ask the user to perform keychain operations themselves.
 

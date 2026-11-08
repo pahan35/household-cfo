@@ -4,7 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import { NextRequest } from "next/server";
 
-import { POST } from "@/app/api/external-provider/[...path]/route";
+import { GET, POST } from "@/app/api/external-provider/[...path]/route";
 import * as authConfig from "@/server/auth/config";
 import { AUTH_COOKIE_NAME, createSessionToken } from "@/server/auth/session";
 
@@ -444,6 +444,80 @@ describe("Proxy Route write logging and request body isolation", () => {
           upstreamPath: "/Exchange/Ping",
         }),
       );
+    });
+  });
+
+  describe("when EXTERNAL_API_ADAPTER='mock'", () => {
+    let mockStore: LocalFileExternalProviderStore;
+
+    beforeEach(() => {
+      process.env.EXTERNAL_API_ADAPTER = "mock";
+      mockStore = new LocalFileExternalProviderStore({ inMemory: true });
+      setTestExternalProviderStore(mockStore);
+    });
+
+    afterEach(() => {
+      setTestExternalProviderStore(null);
+    });
+
+    it("serves GET /settings/get without calling upstream fetch or credentials", async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+      const getWebCredsSpy = vi.spyOn(tokenModule, "getWebCredentials");
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/settings/get", {
+        method: "GET",
+      });
+      const context = { params: Promise.resolve({ path: ["settings", "get"] }) };
+      const response = await GET(req, context);
+
+      expect(response.status).toBe(200);
+      const json = await response.json();
+      expect(json.isSuccess).toBe(true);
+      expect(json.data.userId).toBe("mock-user-e2e");
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(getWebCredsSpy).not.toHaveBeenCalled();
+    });
+
+    it("serves POST /api/transaction/create and updates mock store", async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+
+      const newTx = {
+        id: "tx-proxy-mock-1",
+        sourceId: "cat-acc-main",
+        sourceAmount: 150,
+        destinationId: "cat-exp-groceries",
+        destinationAmount: 150,
+      };
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/api/transaction/create", {
+        method: "POST",
+        body: JSON.stringify([newTx]),
+        headers: { "content-type": "application/json" },
+      });
+      const context = { params: Promise.resolve({ path: ["api", "transaction", "create"] }) };
+      const response = await POST(req, context);
+
+      expect(response.status).toBe(200);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const txs = await mockStore.getTransactions();
+      expect(txs.some((t) => t.id === "tx-proxy-mock-1")).toBe(true);
+    });
+
+    it("fails closed with 503 if EXTERNAL_API_ADAPTER is invalid", async () => {
+      process.env.EXTERNAL_API_ADAPTER = "invalid_adapter";
+
+      const req = new NextRequest("http://localhost:3000/api/external-provider/settings/get", {
+        method: "GET",
+      });
+      const context = { params: Promise.resolve({ path: ["settings", "get"] }) };
+      const response = await GET(req, context);
+
+      expect(response.status).toBe(503);
+      const json = await response.json();
+      expect(json.error.message).toContain('Invalid EXTERNAL_API_ADAPTER: "invalid_adapter"');
     });
   });
 });

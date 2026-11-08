@@ -5,7 +5,7 @@ vi.mock("server-only", () => ({}));
 import { CategoryType, ExchangeKey } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
 
 import { LocalFileExternalProviderStore, setTestExternalProviderStore } from "../db";
-import { runExternalProviderSync } from "../sync";
+import { fetchFromExternalProvider, runExternalProviderSync } from "../sync";
 import * as tokenModule from "../token";
 
 describe("runExternalProviderSync", () => {
@@ -228,5 +228,37 @@ describe("runExternalProviderSync", () => {
     expect(parsed.echo).toBe('{"selfSufficientRequest":true}');
     expect(parsed.selection.period.Before).toBe(40);
     expect(parsed.selection.period.from).toBeDefined();
+  });
+
+  describe("when EXTERNAL_API_ADAPTER='mock'", () => {
+    beforeEach(() => {
+      process.env.EXTERNAL_API_ADAPTER = "mock";
+    });
+
+    it("runs mock sync with zero HTTP fetch calls and auto-seeds when sync_version is 0", async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+
+      const result = await runExternalProviderSync({ tier: "hot" });
+      expect(result.success).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const config = await store.getSyncConfig();
+      expect(config.sync_version).toBeGreaterThan(0);
+      expect(config.sync_status).toBe("idle");
+    });
+
+    it("fetches settings, ping, and transactions via fetchFromExternalProvider without HTTP calls", async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+
+      const settings = await fetchFromExternalProvider<{ isSuccess: boolean }>("/settings/get");
+      expect(settings.isSuccess).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      const ping = await fetchFromExternalProvider<{ isSuccess: boolean }>("/Exchange/Ping");
+      expect(ping.isSuccess).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
   });
 });

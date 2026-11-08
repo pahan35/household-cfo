@@ -11,7 +11,7 @@ export interface AuthContext {
   source: AuthSource;
 }
 
-export type ServiceErrorCode = "unauthorized" | "not_found" | "invalid" | "conflict" | "internal";
+export type ServiceErrorCode = "unauthorized" | "forbidden" | "not_found" | "invalid" | "conflict" | "internal";
 
 export class ServiceError extends Error {
   readonly code: ServiceErrorCode;
@@ -25,6 +25,7 @@ export class ServiceError extends Error {
 
 const STATUS_BY_CODE: Record<ServiceErrorCode, number> = {
   unauthorized: 401,
+  forbidden: 403,
   not_found: 404,
   invalid: 400,
   conflict: 409,

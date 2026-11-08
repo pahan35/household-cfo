@@ -20,6 +20,7 @@ import type {
   RyczaltYtdHealthTier,
 } from "@/app/(main)/dashboard/family-budget/runway/_components/runway-types";
 import { getOfferStore, type OfferRevisionRow, revisionRowToDomain } from "@/server/offers/db";
+import { resolveSupabaseCredentials } from "@/server/supabase/config";
 
 export type { RunwayScenario };
 
@@ -759,24 +760,27 @@ export class SupabaseRestRunwayStore implements RunwayStore {
 }
 
 let activeRunwayStore: RunwayStore | null = null;
+let activeRunwayStoreKey: string | null = null;
 
 export function getRunwayStore(): RunwayStore {
-  if (activeRunwayStore) {
+  const creds = resolveSupabaseCredentials();
+  const currentKey = creds ? `remote:${creds.url}` : "in-memory";
+
+  if (activeRunwayStore && (activeRunwayStoreKey === currentKey || activeRunwayStoreKey === "test")) {
     return activeRunwayStore;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (supabaseUrl && serviceRoleKey) {
-    activeRunwayStore = new SupabaseRestRunwayStore(supabaseUrl, serviceRoleKey);
+  if (creds) {
+    activeRunwayStore = new SupabaseRestRunwayStore(creds.url, creds.key);
   } else {
     activeRunwayStore = new InMemoryRunwayStore();
   }
 
+  activeRunwayStoreKey = currentKey;
   return activeRunwayStore;
 }
 
 export function setTestRunwayStore(store: RunwayStore | null): void {
   activeRunwayStore = store;
+  activeRunwayStoreKey = store ? "test" : null;
 }

@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 
 import { isAuthBypassActive } from "@/server/auth/config";
 import { getSessionFromRequest } from "@/server/auth/session";
+import { getExternalProviderAdapter } from "@/server/external-provider/adapter";
 import { buildProxyCacheKey, fetchWithProxyCache, invalidateProxyCacheByPathPrefix } from "@/server/external-provider/cache";
 import {
   ALLOWED_METHODS,
@@ -29,6 +30,7 @@ import {
   MissingTokenError,
   type WebCredentials,
 } from "@/server/external-provider/token";
+import { InvalidAdapterModeError, isMockAdapterMode } from "@/server/supabase/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,6 +68,63 @@ async function handler(request: NextRequest, context: CatchAllContext): Promise<
     if (!session) {
       return jsonError("Unauthorized", 401);
     }
+  }
+
+  try {
+    if (isMockAdapterMode()) {
+      const adapter = getExternalProviderAdapter();
+      const requestBody = method === "GET" ? undefined : await request.arrayBuffer();
+
+      let result: unknown;
+      if (upstreamPath === "/settings/get") {
+        result = await adapter.getSettings();
+      } else if (upstreamPath === "/Exchange/Ping") {
+        let payload: { items?: Array<{ key: number; entityJson: string | null }> } | undefined;
+        if (requestBody && requestBody.byteLength > 0) {
+          try {
+            payload = JSON.parse(new TextDecoder().decode(requestBody));
+          } catch {
+            // Ignore malformed JSON in payload
+          }
+        }
+        result = await adapter.exchangePing(payload);
+      } else if (upstreamPath === "/api/transaction/get") {
+        let query: unknown;
+        if (requestBody && requestBody.byteLength > 0) {
+          try {
+            query = JSON.parse(new TextDecoder().decode(requestBody));
+          } catch {
+            // Ignore malformed JSON in query body
+          }
+        }
+        result = await adapter.getTransactions(query as any);
+      } else if (upstreamPath === "/api/transaction/create") {
+        let body: unknown;
+        if (requestBody && requestBody.byteLength > 0) {
+          body = JSON.parse(new TextDecoder().decode(requestBody));
+        }
+        const list = Array.isArray(body) ? body : [body];
+        result = await adapter.createTransactions(list as any);
+      } else if (upstreamPath === "/api/transaction/update") {
+        let body: any = {};
+        if (requestBody && requestBody.byteLength > 0) {
+          body = JSON.parse(new TextDecoder().decode(requestBody));
+        }
+        result = await adapter.updateTransaction(body);
+      } else if (upstreamPath === "/stat/ping") {
+        const dataParam = request.nextUrl.searchParams.get("data") ?? undefined;
+        result = await adapter.statPing(dataParam);
+      } else {
+        return jsonError(`Mock External API does not support path: ${upstreamPath}`, 404);
+      }
+
+      return NextResponse.json(result, { status: 200 });
+    }
+  } catch (error) {
+    if (error instanceof InvalidAdapterModeError) {
+      return jsonError(error.message, 503);
+    }
+    throw error;
   }
 
   let secretSource: ExternalProviderSecretSource;

@@ -3,9 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import * as authConfig from "@/server/auth/config";
+import { setTestExternalProviderAdapter } from "@/server/external-provider/adapter";
+import { LocalFileExternalProviderStore, setTestExternalProviderStore } from "@/server/external-provider/db";
 import { InMemoryTimeValueStore, setTestTimeValueStore } from "@/server/lifestyle/time-value-db";
 import { InMemoryMortgageStore, setTestMortgageStore } from "@/server/mortgage/db";
 
+import { PUT as putCategories } from "../external-provider/categories/route";
+import { POST as resetMock } from "../external-provider/mock/reset/route";
+import { GET as getSnapshot } from "../external-provider/snapshot/route";
+import { POST as postSync } from "../external-provider/sync/route";
+import { PATCH as patchTransaction, POST as postTransactions } from "../external-provider/transactions/route";
 import { DELETE, GET as getScenarios, PATCH, POST as postScenario } from "../scenarios/[kind]/route";
 import { GET as getScreenLogs, POST as postScreenLogs } from "../screen-logs/route";
 
@@ -25,6 +32,8 @@ describe("/api/v1 routes", () => {
   beforeEach(() => {
     setTestMortgageStore(new InMemoryMortgageStore());
     setTestTimeValueStore(new InMemoryTimeValueStore());
+    setTestExternalProviderStore(new LocalFileExternalProviderStore({ inMemory: true }));
+    setTestExternalProviderAdapter(null);
     vi.stubEnv("MOBILE_API_TOKENS", `phone:${TOKEN}`);
     vi.spyOn(authConfig, "isAuthBypassActive").mockReturnValue(false);
   });
@@ -32,6 +41,8 @@ describe("/api/v1 routes", () => {
   afterEach(() => {
     setTestMortgageStore(null);
     setTestTimeValueStore(null);
+    setTestExternalProviderStore(null);
+    setTestExternalProviderAdapter(null);
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
@@ -147,6 +158,113 @@ describe("/api/v1 routes", () => {
 
       const anon = await getScenarios(request("/api/v1/scenarios/mortgage"), kindContext("mortgage"));
       expect(anon.status).toBe(401);
+    });
+  });
+
+  describe("/api/v1/external-provider endpoints", () => {
+    describe("in mock adapter mode", () => {
+      beforeEach(() => {
+        process.env.EXTERNAL_API_ADAPTER = "mock";
+      });
+
+      it("fetches snapshot and auto-seeds on initial access", async () => {
+        const res = await getSnapshot(request("/api/v1/external-provider/snapshot", { token: TOKEN }));
+        expect(res.status).toBe(200);
+        const snapshot = await res.json();
+        expect(snapshot.syncConfig.sync_version).toBe(1);
+        expect(snapshot.categories.length).toBeGreaterThan(0);
+      });
+
+      it("triggers sync via POST /api/v1/external-provider/sync", async () => {
+        const res = await postSync(
+          request("/api/v1/external-provider/sync", {
+            token: TOKEN,
+            method: "POST",
+            body: JSON.stringify({ tier: "hot" }),
+          }),
+        );
+        expect(res.status).toBe(200);
+        const result = await res.json();
+        expect(result.success).toBe(true);
+      });
+
+      it("creates transactions via POST /api/v1/external-provider/transactions", async () => {
+        const res = await postTransactions(
+          request("/api/v1/external-provider/transactions", {
+            token: TOKEN,
+            method: "POST",
+            body: JSON.stringify({
+              sourceId: "cat-acc-main",
+              sourceAmount: 120,
+              destinationId: "cat-exp-groceries",
+              destinationAmount: 120,
+            }),
+          }),
+        );
+        expect(res.status).toBe(201);
+        const created = await res.json();
+        expect(created).toHaveLength(1);
+        expect(created[0].sourceAmount).toBe(120);
+      });
+
+      it("updates transactions via PATCH /api/v1/external-provider/transactions", async () => {
+        const res = await patchTransaction(
+          request("/api/v1/external-provider/transactions", {
+            token: TOKEN,
+            method: "PATCH",
+            body: JSON.stringify({
+              id: "tx-seed-1",
+              comment: "Patched comment",
+            }),
+          }),
+        );
+        expect(res.status).toBe(200);
+        const updated = await res.json();
+        expect(updated.comment).toBe("Patched comment");
+      });
+
+      it("upserts categories via PUT /api/v1/external-provider/categories", async () => {
+        const res = await putCategories(
+          request("/api/v1/external-provider/categories", {
+            token: TOKEN,
+            method: "PUT",
+            body: JSON.stringify([
+              { id: "cat-exp-groceries", name: "Groceries (V1)", categoryType: 3, limitAmount: 3500 },
+            ]),
+          }),
+        );
+        expect(res.status).toBe(200);
+        const updated = await res.json();
+        expect(updated[0].name).toBe("Groceries (V1)");
+      });
+
+      it("resets state to seed via POST /api/v1/external-provider/mock/reset", async () => {
+        const res = await resetMock(
+          request("/api/v1/external-provider/mock/reset", {
+            token: TOKEN,
+            method: "POST",
+          }),
+        );
+        expect(res.status).toBe(200);
+        const snapshot = await res.json();
+        expect(snapshot.syncConfig.sync_version).toBe(1);
+      });
+    });
+
+    describe("in live externalProvider mode (default)", () => {
+      it("rejects POST /api/v1/external-provider/mock/reset with 403 Forbidden", async () => {
+        delete process.env.EXTERNAL_API_ADAPTER;
+
+        const res = await resetMock(
+          request("/api/v1/external-provider/mock/reset", {
+            token: TOKEN,
+            method: "POST",
+          }),
+        );
+        expect(res.status).toBe(403);
+        const err = await res.json();
+        expect(err.error.message).toContain("Resetting ExternalProvider is forbidden when not in mock mode");
+      });
     });
   });
 });

@@ -19,6 +19,7 @@ import type {
   TimeOffPolicy,
   ZusStage,
 } from "@/app/(main)/dashboard/family-budget/offer-comparator/_components/offer-types";
+import { resolveSupabaseCredentials } from "@/server/supabase/config";
 
 export type { ComparatorGlobalConfig, OfferRevision, OfferTrack };
 
@@ -758,24 +759,27 @@ export class SupabaseRestOfferStore implements OfferStore {
 }
 
 let activeOfferStore: OfferStore | null = null;
+let activeOfferStoreKey: string | null = null;
 
 export function getOfferStore(): OfferStore {
-  if (activeOfferStore) {
+  const creds = resolveSupabaseCredentials();
+  const currentKey = creds ? `remote:${creds.url}` : "in-memory";
+
+  if (activeOfferStore && (activeOfferStoreKey === currentKey || activeOfferStoreKey === "test")) {
     return activeOfferStore;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (supabaseUrl && serviceRoleKey) {
-    activeOfferStore = new SupabaseRestOfferStore(supabaseUrl, serviceRoleKey);
+  if (creds) {
+    activeOfferStore = new SupabaseRestOfferStore(creds.url, creds.key);
   } else {
     activeOfferStore = new InMemoryOfferStore();
   }
 
+  activeOfferStoreKey = currentKey;
   return activeOfferStore;
 }
 
 export function setTestOfferStore(store: OfferStore | null): void {
   activeOfferStore = store;
+  activeOfferStoreKey = store ? "test" : null;
 }

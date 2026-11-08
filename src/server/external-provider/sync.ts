@@ -14,8 +14,10 @@ import {
   type StatPoint,
   type TransactionPageResponse,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
+import { isMockAdapterMode } from "@/server/supabase/config";
 
 import { serverLogger } from "../logger";
+import { getExternalProviderAdapter, registerLiveSyncRunner } from "./adapter";
 import { UPSTREAM_ORIGIN } from "./config";
 import { getExternalProviderStore, type StatPointInput } from "./db";
 import { injectUserId } from "./http";
@@ -51,6 +53,33 @@ export async function fetchFromExternalProvider<T>(
   pathname: string,
   options?: { method?: string; body?: unknown },
 ): Promise<T> {
+  if (isMockAdapterMode()) {
+    const adapter = getExternalProviderAdapter();
+    if (pathname === "/settings/get") {
+      return (await adapter.getSettings()) as T;
+    }
+    if (pathname === "/Exchange/Ping") {
+      return (await adapter.exchangePing(
+        options?.body as { items?: Array<{ key: number; entityJson: string | null }> } | undefined,
+      )) as T;
+    }
+    if (pathname === "/api/transaction/get") {
+      return (await adapter.getTransactions(options?.body as any)) as T;
+    }
+    if (pathname === "/api/transaction/create") {
+      const txs = Array.isArray(options?.body) ? options.body : [options?.body];
+      return (await adapter.createTransactions(txs as ExternalProviderTransaction[])) as T;
+    }
+    if (pathname === "/api/transaction/update") {
+      return (await adapter.updateTransaction(options?.body as ExternalProviderTransaction)) as T;
+    }
+    if (pathname.startsWith("/stat/ping")) {
+      const query = pathname.includes("?data=") ? pathname.split("?data=")[1] : undefined;
+      return (await adapter.statPing(query)) as T;
+    }
+    throw new Error(`Mock External API does not support path: ${pathname}`);
+  }
+
   const method = options?.method ?? (options?.body ? "POST" : "GET");
   const headers = new Headers({
     accept: "application/json",
@@ -92,6 +121,11 @@ export async function fetchFromExternalProvider<T>(
 }
 
 export async function runExternalProviderSync(options?: RunSyncOptions): Promise<ExternalProviderSyncResult> {
+  if (isMockAdapterMode()) {
+    const adapter = getExternalProviderAdapter();
+    return adapter.sync(options);
+  }
+
   if (activeSyncPromise) {
     return activeSyncPromise;
   }
@@ -105,6 +139,8 @@ export async function runExternalProviderSync(options?: RunSyncOptions): Promise
     activeSyncPromise = null;
   }
 }
+
+registerLiveSyncRunner(runExternalProviderSync);
 
 async function executeSync(options?: RunSyncOptions): Promise<ExternalProviderSyncResult> {
   const store = getExternalProviderStore();

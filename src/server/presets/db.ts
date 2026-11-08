@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { ExclusionPreset } from "@/app/(main)/dashboard/family-budget/_components/expense-transforms";
+import { resolveSupabaseCredentials } from "@/server/supabase/config";
 
 export type { ExclusionPreset };
 
@@ -325,24 +326,27 @@ export class SupabaseRestPresetStore implements PresetStore {
 }
 
 let activePresetStore: PresetStore | null = null;
+let activePresetStoreKey: string | null = null;
 
 export function getPresetStore(): PresetStore {
-  if (activePresetStore) {
+  const creds = resolveSupabaseCredentials();
+  const currentKey = creds ? `remote:${creds.url}` : "in-memory";
+
+  if (activePresetStore && (activePresetStoreKey === currentKey || activePresetStoreKey === "test")) {
     return activePresetStore;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (supabaseUrl && serviceRoleKey) {
-    activePresetStore = new SupabaseRestPresetStore(supabaseUrl, serviceRoleKey);
+  if (creds) {
+    activePresetStore = new SupabaseRestPresetStore(creds.url, creds.key);
   } else {
     activePresetStore = new InMemoryPresetStore();
   }
 
+  activePresetStoreKey = currentKey;
   return activePresetStore;
 }
 
 export function setTestPresetStore(store: PresetStore | null): void {
   activePresetStore = store;
+  activePresetStoreKey = store ? "test" : null;
 }

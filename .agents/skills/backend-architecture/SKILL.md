@@ -8,12 +8,12 @@ description: Layered backend architecture for this repo — transport-agnostic s
 ## Layers
 
 ```
-src/lib/schemas/        Shared Zod DTO contracts (web + mobile)
+src/lib/schemas/        Shared Zod DTO contracts (web + mobile + external)
 src/server/services/    Pure domain services: (ctx: AuthContext, input) => result
 src/server/actions/     Web mutations: next-safe-action, thin wrappers over services
 src/server/auth/        Session + Bearer token resolution (mobile.ts)
-src/app/api/v1/         Versioned REST for mobile/external callers, thin controllers
-src/app/api/external-provider/ Third-party proxy + cron (preserved, not part of this layering)
+src/app/api/v1/         Versioned REST for mobile/external callers, thin controllers (/api/v1/external-provider/*, scenarios, presets, screen-logs)
+src/app/api/external-provider/ Web proxy + sync/cron (delegates to switchable ExternalProviderUpstreamAdapter)
 ```
 
 Business logic lives ONLY in `src/server/services/`. Everything else is transport.

@@ -7,6 +7,7 @@ import type {
   ExternalProviderTransaction,
   StatPoint,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
+import { isMockAdapterMode, resolveSupabaseCredentials } from "@/server/supabase/config";
 
 import fs from "node:fs";
 import path from "node:path";
@@ -101,6 +102,10 @@ export class LocalFileExternalProviderStore implements ExternalProviderStore {
       this.filePath = options?.filePath ?? path.join(process.cwd(), ".cache", "external-provider-store.json");
     }
     this.state = this.loadInitialState();
+  }
+
+  getFilePath(): string | undefined {
+    return this.filePath;
   }
 
   private loadInitialState(): LocalStoreState {
@@ -527,24 +532,31 @@ export class SupabaseRestExternalProviderStore implements ExternalProviderStore 
 }
 
 let activeStore: ExternalProviderStore | null = null;
+let activeStoreKey: string | null = null;
 
 export function getExternalProviderStore(): ExternalProviderStore {
-  if (activeStore) {
+  const isMock = isMockAdapterMode();
+  const creds = resolveSupabaseCredentials();
+  const currentKey = creds ? `remote:${creds.url}` : `local:${isMock ? "mock" : "live"}`;
+
+  if (activeStore && (activeStoreKey === currentKey || activeStoreKey === "test")) {
     return activeStore;
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (supabaseUrl && serviceRoleKey) {
-    activeStore = new SupabaseRestExternalProviderStore(supabaseUrl, serviceRoleKey);
+  if (creds) {
+    activeStore = new SupabaseRestExternalProviderStore(creds.url, creds.key);
   } else {
-    activeStore = new LocalFileExternalProviderStore();
+    const filePath = isMock
+      ? path.join(process.cwd(), ".cache", "external-provider-mock-store.json")
+      : path.join(process.cwd(), ".cache", "external-provider-store.json");
+    activeStore = new LocalFileExternalProviderStore({ filePath });
   }
 
+  activeStoreKey = currentKey;
   return activeStore;
 }
 
 export function setTestExternalProviderStore(store: ExternalProviderStore | null): void {
   activeStore = store;
+  activeStoreKey = store ? "test" : null;
 }

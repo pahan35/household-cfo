@@ -56,8 +56,11 @@ In production on Vercel, the following environment variables configure the share
 - `SUPABASE_URL`: Supabase project URL
 - `SUPABASE_SECRET_KEY` / `SUPABASE_SERVICE_ROLE_KEY`: Supabase secret API key (`sb_secret_...`) or legacy service role key (elevated server-side access to bypass RLS)
 - `CRON_SECRET`: Bearer token configured in Vercel project settings to authenticate Vercel Cron invocation of `/api/external-provider/cron/daily-sync`
+- `EXTERNAL_API_ADAPTER`: Active upstream adapter (`"external-provider"` by default, or `"mock"` for isolated test/dev environments)
+- `SUPABASE_MOCK_URL`: Supabase project URL for mock/E2E environment (read strictly when `EXTERNAL_API_ADAPTER="mock"`)
+- `SUPABASE_MOCK_SECRET_KEY` / `SUPABASE_MOCK_SERVICE_ROLE_KEY`: Supabase secret key for mock/E2E environment
 
-Never log or expose `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or `CRON_SECRET`. Never prefix these with `NEXT_PUBLIC_`.
+Never log or expose `DATABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_MOCK_SECRET_KEY`, `SUPABASE_MOCK_SERVICE_ROLE_KEY`, or `CRON_SECRET`. Never prefix these with `NEXT_PUBLIC_`.
 
 ## Mobile API Secrets
 
