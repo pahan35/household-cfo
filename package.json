@@ -2,6 +2,9 @@
   "name": "studio-admin",
   "version": "2.2.0",
   "private": true,
+  "engines": {
+    "node": ">=26.0.0"
+  },
   "scripts": {
     "dev": "next dev",
     "dev:focused": "NEXT_PUBLIC_APP_MODE=focused next dev",

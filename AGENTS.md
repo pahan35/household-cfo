@@ -119,6 +119,11 @@ Keep a component inside its route until it is reused by another feature. Do not 
    - **Implement**: Implement according to the checklist in `tasks.md` (or `/opsx-apply`). Update `tasks.md` as items complete and commit milestones progressively.
    - **Archive & Living Specs**: On completion, run `openspec archive <feature-name>` to merge the change into living specs (`openspec/specs/`) and commit the archived change.
 
+3. **CI & Workflow Version Invariants**:
+   - **Inspect Existing Workflows First**: Before generating or modifying GitHub Actions workflows, inspect `.github/workflows/` to match current action version conventions (e.g., `actions/checkout@v7`, `actions/setup-node@v7`). Never rely on obsolete model defaults (such as `@v4`).
+   - **Single Source of Truth for Node.js**: Always anchor the Node.js version to `.nvmrc` using `node-version-file: ".nvmrc"` in `actions/setup-node` rather than hardcoding numeric versions in workflow files.
+   - **Verify When Uncertain**: If introducing a new action or runner tool not currently present in the repository, search or verify the latest major release tag rather than guessing.
+
 ## Contributions
 
 - Use conventional commit prefixes such as `feat:`, `fix:`, `refactor:`, `docs:`, and `chore:`.
