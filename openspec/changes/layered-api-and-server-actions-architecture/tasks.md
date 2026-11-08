@@ -16,7 +16,7 @@
 
 - [x] 3.1 Setup base `actionClient` and authenticated `authActionClient` middleware in `src/server/actions/action-client.ts`
 - [x] 3.2 Implement Server Actions in `src/server/actions/` delegating to domain services and verify with unit tests
-- [ ] 3.3 Refactor simulator dashboard components to trigger mutations via Server Actions rather than manual `fetch` calls
+- [x] 3.3 Refactor simulator dashboard components to trigger mutations via Server Actions rather than manual `fetch` calls
 
 ## 4. Versioned REST API & Mobile Auth
 
@@ -27,8 +27,8 @@
 ## 5. Client Read Caching with SWR
 
 - [x] 5.1 Implement shared SWR query hooks (`useCategoriesQuery`, `useScenariosQuery`) with automated request deduplication
-- [ ] 5.2 Refactor dashboard cards and simulator views to read data via SWR, linking global revalidation to `useExternalProviderSync`
-- [ ] 5.3 Verify that dashboard widgets render without redundant duplicate network requests
+- [x] 5.2 Refactor dashboard cards and simulator views to read data via SWR, linking global revalidation to `useExternalProviderSync`
+- [x] 5.3 Verify that dashboard widgets render without redundant duplicate network requests
 
 ## 6. Agentic Harness Skills & Rules
 

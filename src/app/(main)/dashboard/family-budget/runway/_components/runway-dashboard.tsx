@@ -8,9 +8,6 @@ import { toast } from "sonner";
 
 import {
   getBudgetSelection,
-  getCategories,
-  getCurrencies,
-  getSettings,
   getTransactionPage,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-client";
 import type {
@@ -21,12 +18,27 @@ import type {
   StatPingData,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
 import { useExternalProviderSync } from "@/app/(main)/dashboard/family-budget/_components/external-provider-sync-toolbar";
+import {
+  useCategoriesQuery,
+  useCurrenciesQuery,
+  useSettingsQuery,
+} from "@/app/(main)/dashboard/family-budget/_components/use-external-provider-queries";
 import { useExclusionPresets } from "@/app/(main)/dashboard/family-budget/_components/use-exclusion-presets";
+import { revalidateScenarios } from "@/app/(main)/dashboard/family-budget/_components/use-scenarios-query";
 import type { OfferRevision } from "@/app/(main)/dashboard/family-budget/offer-comparator/_components/offer-types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
+import { createActionScenarioTransport } from "@/lib/scenario-transport";
+import {
+  createRunwayScenarioAction,
+  deleteRunwayScenarioAction,
+  duplicateRunwayScenarioAction,
+  listRunwayScenariosAction,
+  setPrimaryRunwayScenarioAction,
+  updateRunwayScenarioAction,
+} from "@/server/actions/runway-actions";
 
 import { CapitalPoolCard } from "./capital-pool-card";
 import { CategoryAusterityMatrix } from "./category-austerity-matrix";
@@ -42,7 +54,7 @@ import {
   projectRunwayScenario,
 } from "./runway-engine";
 import { RunwayKpiStrip } from "./runway-kpi-strip";
-import { RUNWAY_STORAGE_KEY, runwayRepository } from "./runway-repository";
+import { RUNWAY_STORAGE_KEY, RunwayRepository } from "./runway-repository";
 import { RunwayScenarioToolbar } from "./runway-scenario-toolbar";
 import { RunwayTrajectoryCard } from "./runway-trajectory-card";
 import type {
@@ -54,11 +66,34 @@ import type {
   RunwayScenario,
 } from "./runway-types";
 
+const runwayActionTransport = createActionScenarioTransport(
+  {
+    list: listRunwayScenariosAction,
+    create: createRunwayScenarioAction,
+    update: updateRunwayScenarioAction,
+    delete: deleteRunwayScenarioAction,
+    setPrimary: setPrimaryRunwayScenarioAction,
+    duplicate: duplicateRunwayScenarioAction,
+  },
+  {
+    onMutated: () => void revalidateScenarios("runway"),
+  },
+);
+
+const runwayRepository = new RunwayRepository(RUNWAY_STORAGE_KEY, undefined, undefined, runwayActionTransport);
+
 export function RunwayDashboard() {
   const { syncVersion } = useExternalProviderSync();
-  const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
-  const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
-  const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
+  const categoriesQuery = useCategoriesQuery();
+  const currenciesQuery = useCurrenciesQuery();
+  const settingsQuery = useSettingsQuery();
+  const categories = useMemo(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
+  const currencies = useMemo(() => currenciesQuery.data ?? [], [currenciesQuery.data]);
+  const settings = settingsQuery.data ?? null;
+  const { mutate: mutateCategories } = categoriesQuery;
+  const { mutate: mutateCurrencies } = currenciesQuery;
+  const { mutate: mutateSettings } = settingsQuery;
+
   const [transactions, setTransactions] = useState<ExternalProviderTransaction[]>([]);
   const [statData, setStatData] = useState<StatPingData | null>(null);
 
@@ -112,19 +147,18 @@ export function RunwayDashboard() {
       try {
         const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
 
-        const [settingsRes, categoriesRes, currenciesRes, transactionsRes, statRes, scenariosRes] =
-          await Promise.allSettled([
-            getSettings({ signal, forceRefresh }),
-            getCategories({ signal, forceRefresh }),
-            getCurrencies({ signal, forceRefresh }),
-            getTransactionPage({ skip: 0, take: 500, signal, forceRefresh }),
-            getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
-            runwayRepository.fetchRemoteScenarios(signal),
-          ]);
+        if (forceRefresh) {
+          void mutateCategories();
+          void mutateCurrencies();
+          void mutateSettings();
+        }
 
-        if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
-        if (categoriesRes.status === "fulfilled") setCategories(categoriesRes.value);
-        if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
+        const [transactionsRes, statRes, scenariosRes] = await Promise.allSettled([
+          getTransactionPage({ skip: 0, take: 500, signal, forceRefresh }),
+          getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
+          runwayRepository.fetchRemoteScenarios(signal),
+        ]);
+
         if (transactionsRes.status === "fulfilled") setTransactions(transactionsRes.value.transactions ?? []);
         if (statRes.status === "fulfilled") setStatData(statRes.value);
 
@@ -169,7 +203,7 @@ export function RunwayDashboard() {
         setIsLoading(false);
       }
     },
-    [setSyncing, setSynced, setOffline, setConflictDetected],
+    [setSyncing, setSynced, setOffline, setConflictDetected, mutateCategories, mutateCurrencies, mutateSettings],
   );
 
   const onSyncData = useEffectEvent(async (signal: AbortSignal) => {

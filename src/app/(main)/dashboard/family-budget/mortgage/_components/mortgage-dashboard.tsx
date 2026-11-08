@@ -6,25 +6,33 @@ import { format } from "date-fns";
 import { Banknote, Building, Coins, RotateCcw, RotateCw, Target } from "lucide-react";
 import { toast } from "sonner";
 
-import {
-  getBudgetSelection,
-  getCategories,
-  getCurrencies,
-  getSettings,
-} from "@/app/(main)/dashboard/family-budget/_components/external-provider-client";
+import { getBudgetSelection } from "@/app/(main)/dashboard/family-budget/_components/external-provider-client";
 import {
   type ExternalProviderCategory,
-  type ExternalProviderCurrency,
-  type ExternalProviderSettings,
   formatMoney,
   type StatPoint,
 } from "@/app/(main)/dashboard/family-budget/_components/external-provider-data";
 import { useExternalProviderSync } from "@/app/(main)/dashboard/family-budget/_components/external-provider-sync-toolbar";
+import {
+  useCategoriesQuery,
+  useCurrenciesQuery,
+  useSettingsQuery,
+} from "@/app/(main)/dashboard/family-budget/_components/use-external-provider-queries";
+import { revalidateScenarios } from "@/app/(main)/dashboard/family-budget/_components/use-scenarios-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCloudSyncState } from "@/hooks/use-cloud-sync-state";
+import { createActionScenarioTransport } from "@/lib/scenario-transport";
+import {
+  createMortgageScenarioAction,
+  deleteMortgageScenarioAction,
+  duplicateMortgageScenarioAction,
+  listMortgageScenariosAction,
+  setPrimaryMortgageScenarioAction,
+  updateMortgageScenarioAction,
+} from "@/server/actions/mortgage-actions";
 
 import { BudgetImpactCard } from "./budget-impact-card";
 import { HomeGoalTrackerCard } from "./home-goal-tracker-card";
@@ -44,14 +52,42 @@ import type {
 import { OverlapCashflowCard } from "./overlap-cashflow-card";
 import { PropertyAcquisitionCard } from "./property-acquisition-card";
 
-const repository = new MortgageRepository();
+const mortgageActionTransport = createActionScenarioTransport(
+  {
+    list: listMortgageScenariosAction,
+    create: createMortgageScenarioAction,
+    update: updateMortgageScenarioAction,
+    delete: deleteMortgageScenarioAction,
+    setPrimary: setPrimaryMortgageScenarioAction,
+    duplicate: duplicateMortgageScenarioAction,
+  },
+  {
+    onMutated: () => void revalidateScenarios("mortgage"),
+  },
+);
+
+const repository = new MortgageRepository(MORTGAGE_STORAGE_KEY, undefined, undefined, mortgageActionTransport);
 
 export function MortgageDashboard() {
   const { syncVersion } = useExternalProviderSync();
+  const categoriesQuery = useCategoriesQuery();
+  const currenciesQuery = useCurrenciesQuery();
+  const settingsQuery = useSettingsQuery();
+  const categories = useMemo(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
+  const currencies = useMemo(() => currenciesQuery.data ?? [], [currenciesQuery.data]);
+  const _settings = useMemo(() => settingsQuery.data ?? {}, [settingsQuery.data]);
+  const { mutate: mutateCategories } = categoriesQuery;
+  const { mutate: mutateCurrencies } = currenciesQuery;
+  const { mutate: mutateSettings } = settingsQuery;
+
+  const handleCategoriesUpdated = useCallback(
+    (updated: ExternalProviderCategory[]) => {
+      void mutateCategories(updated, false);
+    },
+    [mutateCategories],
+  );
+
   const [isLoading, setIsLoading] = useState(true);
-  const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
-  const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
-  const [_settings, setSettings] = useState<ExternalProviderSettings>({});
   const [statPoints, setStatPoints] = useState<StatPoint[]>([]);
 
   // Multi-scenario state
@@ -90,17 +126,18 @@ export function MortgageDashboard() {
       try {
         const currentMonthAnchor = format(new Date(), "yyyy-MM-01");
 
-        const [settingsRes, categoriesRes, currenciesRes, statRes] = await Promise.allSettled([
-          getSettings({ signal, forceRefresh }),
-          getCategories({ signal, forceRefresh }),
-          getCurrencies({ signal, forceRefresh }),
-          getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
-        ]);
+        if (forceRefresh) {
+          void mutateCategories();
+          void mutateCurrencies();
+          void mutateSettings();
+        }
 
-        if (settingsRes.status === "fulfilled") setSettings(settingsRes.value);
-        if (categoriesRes.status === "fulfilled") setCategories(categoriesRes.value);
-        if (currenciesRes.status === "fulfilled") setCurrencies(currenciesRes.value);
-        if (statRes.status === "fulfilled") setStatPoints(statRes.value?.selection?.points ?? []);
+        try {
+          const statData = await getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh });
+          setStatPoints(statData.selection?.points ?? []);
+        } catch {
+          // Stat points are non-fatal for simulator calculations
+        }
 
         // Synchronize scenarios from Supabase
         setSyncing();
@@ -132,7 +169,7 @@ export function MortgageDashboard() {
         setIsLoading(false);
       }
     },
-    [setSyncing, setSynced, setOffline, setConflictDetected],
+    [setSyncing, setSynced, setOffline, setConflictDetected, mutateCategories, mutateCurrencies, mutateSettings],
   );
 
   const onSyncData = useEffectEvent(async (signal: AbortSignal) => {
@@ -441,7 +478,7 @@ export function MortgageDashboard() {
         currencies={currencies}
         statPoints={statPoints}
         onChange={handleGoalTrackingChange}
-        onCategoriesUpdated={setCategories}
+        onCategoriesUpdated={handleCategoriesUpdated}
       />
 
       <OverlapCashflowCard

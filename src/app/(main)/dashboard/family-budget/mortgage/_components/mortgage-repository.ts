@@ -4,6 +4,8 @@ import {
   type ConflictResolutionChoice,
   reconcileEntities,
 } from "@/lib/cloud-sync-reconciler";
+import { createFetchScenarioTransport, type ScenarioTransport } from "@/lib/scenario-transport";
+import type { CreateMortgageScenarioDto, UpdateMortgageScenarioDto } from "@/lib/schemas/scenarios";
 
 import {
   DEFAULT_HOME_GOAL_TRACKING_CONFIG,
@@ -15,6 +17,14 @@ import {
 import type { MortgageScenario, MortgageSimulatorConfig, MortgageSimulatorStoragePayload } from "./mortgage-types";
 
 export const MORTGAGE_STORAGE_KEY = "family-budget:mortgage-simulator:v1";
+
+export type MortgageScenarioCreateInput = CreateMortgageScenarioDto;
+export type MortgageScenarioUpdateInput = Omit<UpdateMortgageScenarioDto, "id">;
+export type MortgageScenarioTransport = ScenarioTransport<
+  MortgageScenario,
+  MortgageScenarioCreateInput,
+  MortgageScenarioUpdateInput
+>;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -63,8 +73,18 @@ export class MortgageRepository {
   private readonly storageKey: string;
   private readonly storage: StorageLike | null = null;
   private readonly fetchFn: typeof fetch;
+  private readonly transport: MortgageScenarioTransport;
 
-  constructor(storageKey = MORTGAGE_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
+  /**
+   * @param transport Remote transport for scenario persistence. Defaults to the REST routes over
+   * `customFetch`; pass an action-backed transport to use Server Actions. Offline fallbacks apply either way.
+   */
+  constructor(
+    storageKey = MORTGAGE_STORAGE_KEY,
+    customStorage?: StorageLike,
+    customFetch?: typeof fetch,
+    transport?: MortgageScenarioTransport,
+  ) {
     this.storageKey = storageKey;
     if (customStorage) {
       this.storage = customStorage;
@@ -74,6 +94,12 @@ export class MortgageRepository {
       this.storage = null;
     }
     this.fetchFn = customFetch ?? ((...args) => fetch(...args));
+    this.transport =
+      transport ??
+      createFetchScenarioTransport<MortgageScenario, MortgageScenarioCreateInput, MortgageScenarioUpdateInput>(
+        this.fetchFn,
+        "/api/family-budget/mortgage/scenarios",
+      );
   }
 
   /**
@@ -255,18 +281,7 @@ export class MortgageRepository {
     status?: CloudSyncStatus;
   }> {
     try {
-      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-        signal,
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to fetch scenarios: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const remoteScenarios: MortgageScenario[] = data.scenarios ?? [];
+      const remoteScenarios: MortgageScenario[] = await this.transport.list(signal);
       const local = this.loadLocalScenarios();
 
       // Auto-migration: if remote database is empty, seed it with current local scenario
@@ -382,18 +397,7 @@ export class MortgageRepository {
     isPrimary?: boolean;
     config?: Partial<MortgageSimulatorConfig>;
   }): Promise<MortgageScenario> {
-    const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Failed to create scenario remotely: HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-    return data.scenario;
+    return await this.transport.create(input);
   }
 
   public async updateRemoteScenarioWithoutCacheUpdate(
@@ -404,18 +408,7 @@ export class MortgageRepository {
       config?: Partial<MortgageSimulatorConfig>;
     },
   ): Promise<MortgageScenario> {
-    const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, ...updates }),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Failed to update scenario remotely: HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-    return data.scenario;
+    return await this.transport.update(id, updates);
   }
 
   /**
@@ -427,18 +420,7 @@ export class MortgageRepository {
     config?: Partial<MortgageSimulatorConfig>;
   }): Promise<MortgageScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to create scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const created: MortgageScenario = data.scenario;
+      const created: MortgageScenario = await this.transport.create(input);
 
       // Update local storage
       const { scenarios } = this.loadLocalScenarios();
@@ -484,18 +466,7 @@ export class MortgageRepository {
     },
   ): Promise<MortgageScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, ...updates }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to update scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const updated: MortgageScenario = data.scenario;
+      const updated: MortgageScenario = await this.transport.update(id, updates);
 
       const { scenarios } = this.loadLocalScenarios();
       const nextList = scenarios.map((s) => {
@@ -543,13 +514,7 @@ export class MortgageRepository {
    */
   public async deleteRemoteScenario(id: string): Promise<boolean> {
     try {
-      const res = await this.fetchFn(`/api/family-budget/mortgage/scenarios?id=${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to delete scenario remotely: HTTP ${res.status}`);
-      }
+      await this.transport.delete(id);
     } catch {
       // Proceed to update local storage anyway for offline resiliency
     }
@@ -573,18 +538,7 @@ export class MortgageRepository {
    */
   public async setRemotePrimary(id: string): Promise<MortgageScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "set_primary", id }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to set primary scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const updated: MortgageScenario = data.scenario;
+      const updated: MortgageScenario = await this.transport.setPrimary(id);
 
       const { scenarios } = this.loadLocalScenarios();
       const nextList = scenarios.map((s) => (s.id === id ? updated : { ...s, isPrimary: false }));
@@ -616,18 +570,7 @@ export class MortgageRepository {
    */
   public async duplicateRemoteScenario(id: string, newName?: string): Promise<MortgageScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/mortgage/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "duplicate", id, name: newName }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to duplicate scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const duplicated: MortgageScenario = data.scenario;
+      const duplicated: MortgageScenario = await this.transport.duplicate(id, newName);
 
       const { scenarios } = this.loadLocalScenarios();
       this.saveLocalScenarios([...scenarios, duplicated], duplicated.id);

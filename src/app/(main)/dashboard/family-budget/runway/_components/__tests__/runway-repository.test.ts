@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OFFER_STORAGE_KEY } from "@/app/(main)/dashboard/family-budget/offer-comparator/_components/offer-repository";
 
 import { DEFAULT_CAPITAL_POOL_CONFIG, DEFAULT_JDG_RUNWAY_CONFIG } from "../runway-engine";
-import { DEFAULT_RUNWAY_STORAGE_PAYLOAD, RunwayRepository, type StorageLike } from "../runway-repository";
+import {
+  DEFAULT_RUNWAY_STORAGE_PAYLOAD,
+  RunwayRepository,
+  type RunwayScenarioTransport,
+  type StorageLike,
+} from "../runway-repository";
 import type { RunwayScenario } from "../runway-types";
 
 class MemoryStorage implements StorageLike {
@@ -566,6 +571,41 @@ describe("runway-repository", () => {
       const localResolved = syncedClient.loadLocalScenarios().scenarios[0];
       expect(localResolved.name).toBe("Shared Plan - Remote 12m Window");
       expect(localResolved.lookbackWindow).toBe("12m");
+    });
+
+    it("supports pluggable ScenarioTransport and falls back to local storage when transport fails", async () => {
+      const storage = new MemoryStorage();
+      const failingTransport = {
+        list: vi.fn().mockRejectedValue(new Error("Server action timeout")),
+        create: vi.fn().mockRejectedValue(new Error("Action error")),
+        update: vi.fn().mockRejectedValue(new Error("Action error")),
+        delete: vi.fn().mockRejectedValue(new Error("Action error")),
+        setPrimary: vi.fn().mockRejectedValue(new Error("Action error")),
+        duplicate: vi.fn().mockRejectedValue(new Error("Action error")),
+      };
+
+      const repo = new RunwayRepository(
+        "transport-runway-key",
+        storage,
+        undefined,
+        failingTransport as unknown as RunwayScenarioTransport,
+      );
+
+      // Creating remotely falls back to offline local storage
+      const created = await repo.createRemoteScenario({ name: "Offline Runway Action Plan", isPrimary: true });
+      expect(created.name).toBe("Offline Runway Action Plan");
+      expect(created.id).toMatch(/^offline-/);
+
+      // Listing scenarios returns the offline fallback
+      const synced = await repo.fetchRemoteScenarios();
+      expect(synced.isOfflineFallback).toBe(true);
+      expect(synced.status).toBe("offline");
+      expect(synced.scenarios[0].name).toBe("Offline Runway Action Plan");
+
+      // Updating remotely when offline updates local storage
+      const updated = await repo.updateRemoteScenario(created.id, { name: "Offline Runway Action Plan v2" });
+      expect(updated.name).toBe("Offline Runway Action Plan v2");
+      expect(repo.loadLocalScenarios().scenarios[0].name).toBe("Offline Runway Action Plan v2");
     });
   });
 });

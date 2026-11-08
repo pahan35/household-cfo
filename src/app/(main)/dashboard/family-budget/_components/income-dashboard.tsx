@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 import { CategoryRenamingDialog } from "./category-renaming-dialog";
-import { getBudgetSelection, getCategories, getCurrencies, getSettings, getTransactionPage } from "./external-provider-client";
+import { getBudgetSelection, getTransactionPage } from "./external-provider-client";
 import {
   buildLastTransactionMap,
   CategoryType,
@@ -40,14 +40,28 @@ import {
   matchTaxBucket,
   type TaxTimelineTimingMode,
 } from "./tax-transforms";
+import { useCategoriesQuery, useCurrenciesQuery, useSettingsQuery } from "./use-external-provider-queries";
 import { parsePointDate } from "./yoy-transforms";
 
 export function IncomeDashboard() {
   const { syncVersion } = useExternalProviderSync();
-  const [settings, setSettings] = useState<ExternalProviderSettings | null>(null);
-  const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
-  const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
+  const categoriesQuery = useCategoriesQuery();
+  const currenciesQuery = useCurrenciesQuery();
+  const settingsQuery = useSettingsQuery();
+  const categories = useMemo(() => categoriesQuery.data ?? [], [categoriesQuery.data]);
+  const currencies = useMemo(() => currenciesQuery.data ?? [], [currenciesQuery.data]);
+  const settings = settingsQuery.data ?? null;
+  const { mutate: mutateCategories } = categoriesQuery;
+  const { mutate: mutateCurrencies } = currenciesQuery;
+  const { mutate: mutateSettings } = settingsQuery;
   const [transactions, setTransactions] = useState<ExternalProviderTransaction[]>([]);
+
+  const handleCategoriesUpdated = useCallback(
+    (updated: ExternalProviderCategory[]) => {
+      void mutateCategories(updated, false);
+    },
+    [mutateCategories],
+  );
   const [statData, setStatData] = useState<StatPingData | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -66,46 +80,39 @@ export function IncomeDashboard() {
 
   const defaultCurrency = settings?.defaultCurrency ?? "PLN";
 
-  const loadData = useCallback(async (signal?: AbortSignal, forceRefresh?: boolean) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
+  const loadData = useCallback(
+    async (signal?: AbortSignal, forceRefresh?: boolean) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
 
-      const [settingsRes, categoriesRes, currenciesRes, transactionsRes, statRes] = await Promise.allSettled([
-        getSettings({ signal, forceRefresh }),
-        getCategories({ signal, forceRefresh }),
-        getCurrencies({ signal, forceRefresh }),
-        getTransactionPage({ skip: 0, take: 1500, signal, forceRefresh }),
-        getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
-      ]);
+        if (forceRefresh) {
+          void mutateCategories();
+          void mutateCurrencies();
+          void mutateSettings();
+        }
 
-      if (settingsRes.status === "fulfilled") {
-        setSettings(settingsRes.value);
-      }
-      if (categoriesRes.status === "fulfilled") {
-        setCategories(categoriesRes.value);
-      }
-      if (currenciesRes.status === "fulfilled") {
-        setCurrencies(currenciesRes.value);
-      }
-      if (transactionsRes.status === "fulfilled") {
-        setTransactions(transactionsRes.value.transactions ?? []);
-      }
-      if (statRes.status === "fulfilled") {
-        setStatData(statRes.value);
-      }
+        const [transactionsRes, statRes] = await Promise.allSettled([
+          getTransactionPage({ skip: 0, take: 1500, signal, forceRefresh }),
+          getBudgetSelection({ from: currentMonthAnchor, signal, forceRefresh }),
+        ]);
 
-      if (categoriesRes.status === "rejected" && !signal?.aborted) {
-        setError(categoriesRes.reason instanceof Error ? categoriesRes.reason : new Error("Failed to load categories"));
+        if (transactionsRes.status === "fulfilled") {
+          setTransactions(transactionsRes.value.transactions ?? []);
+        }
+        if (statRes.status === "fulfilled") {
+          setStatData(statRes.value);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
+        setError(err instanceof Error ? err : new Error("Failed to load income data"));
+      } finally {
+        setIsLoading(false);
       }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") return;
-      setError(err instanceof Error ? err : new Error("Failed to load income data"));
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+    },
+    [mutateCategories, mutateCurrencies, mutateSettings],
+  );
 
   useEffect(() => {
     if (syncVersion < 0) return;
@@ -584,7 +591,7 @@ export function IncomeDashboard() {
             onSelectSource={handleSelectSource}
             incomeBySourceId={incomeBySourceId}
             onOpenNormalizeCategories={() => setIsRenamingDialogOpen(true)}
-            onCategoriesUpdated={setCategories}
+            onCategoriesUpdated={handleCategoriesUpdated}
             periodMode={periodMode}
             targetMultiplier={activeMonthsCount}
           />
@@ -647,7 +654,7 @@ export function IncomeDashboard() {
         transactions={transactions}
         defaultScope="income"
         onRenamed={(updatedCategories) => {
-          setCategories(updatedCategories);
+          handleCategoriesUpdated(updatedCategories);
           void loadData(undefined, true);
         }}
       />

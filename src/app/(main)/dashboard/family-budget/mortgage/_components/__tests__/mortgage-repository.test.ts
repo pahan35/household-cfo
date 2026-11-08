@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_MORTGAGE_SIMULATOR_CONFIG, DEFAULT_PROPERTY_ACQUISITION_CONFIG } from "../mortgage-engine";
-import { MortgageRepository, type StorageLike } from "../mortgage-repository";
+import { MortgageRepository, type MortgageScenarioTransport, type StorageLike } from "../mortgage-repository";
 import type { MortgageScenario, MortgageSimulatorConfig } from "../mortgage-types";
 
 class MemoryStorage implements StorageLike {
@@ -361,9 +361,46 @@ describe("MortgageRepository Remote Synchronization & Auto-Migration", () => {
     expect(localAfter.config.property.areaSqm).toBe(70);
 
     // Resolving conflict with "use_cloud" adopts remote
-    await syncedClient.resolveConflict(result.conflicts![0], "use_cloud");
+    if (result.conflicts?.[0]) {
+      await syncedClient.resolveConflict(result.conflicts[0], "use_cloud");
+    }
     const localResolved = syncedClient.loadLocalScenarios().scenarios[0];
     expect(localResolved.name).toBe("Shared Plan - Remote 80m²");
     expect(localResolved.config.property.areaSqm).toBe(80);
+  });
+
+  it("supports pluggable ScenarioTransport and falls back to local storage when transport fails", async () => {
+    const storage = new MemoryStorage();
+    const failingTransport = {
+      list: vi.fn().mockRejectedValue(new Error("Server action timeout")),
+      create: vi.fn().mockRejectedValue(new Error("Action error")),
+      update: vi.fn().mockRejectedValue(new Error("Action error")),
+      delete: vi.fn().mockRejectedValue(new Error("Action error")),
+      setPrimary: vi.fn().mockRejectedValue(new Error("Action error")),
+      duplicate: vi.fn().mockRejectedValue(new Error("Action error")),
+    };
+
+    const repo = new MortgageRepository(
+      "transport-key",
+      storage,
+      undefined,
+      failingTransport as unknown as MortgageScenarioTransport,
+    );
+
+    // Creating remotely falls back to offline local storage
+    const created = await repo.createRemoteScenario({ name: "Offline Action Plan", isPrimary: true });
+    expect(created.name).toBe("Offline Action Plan");
+    expect(created.id).toMatch(/^offline-/);
+
+    // Listing scenarios returns the offline fallback
+    const synced = await repo.fetchRemoteScenarios();
+    expect(synced.isOfflineFallback).toBe(true);
+    expect(synced.status).toBe("offline");
+    expect(synced.scenarios[0].name).toBe("Offline Action Plan");
+
+    // Updating remotely when offline updates local storage
+    const updated = await repo.updateRemoteScenario(created.id, { name: "Offline Action Plan v2" });
+    expect(updated.name).toBe("Offline Action Plan v2");
+    expect(repo.loadLocalScenarios().scenarios[0].name).toBe("Offline Action Plan v2");
   });
 });

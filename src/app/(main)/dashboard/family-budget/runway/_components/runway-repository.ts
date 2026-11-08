@@ -12,6 +12,8 @@ import {
   type ConflictResolutionChoice,
   reconcileEntities,
 } from "@/lib/cloud-sync-reconciler";
+import { createFetchScenarioTransport, type ScenarioTransport } from "@/lib/scenario-transport";
+import type { CreateRunwayScenarioDto, UpdateRunwayScenarioDto } from "@/lib/schemas/scenarios";
 
 import { DEFAULT_CAPITAL_POOL_CONFIG, DEFAULT_JDG_RUNWAY_CONFIG } from "./runway-engine";
 import type {
@@ -26,6 +28,14 @@ import type {
 } from "./runway-types";
 
 export const RUNWAY_STORAGE_KEY = "family-budget:runway-simulator:v1";
+
+export type RunwayScenarioCreateInput = CreateRunwayScenarioDto;
+export type RunwayScenarioUpdateInput = Omit<UpdateRunwayScenarioDto, "id">;
+export type RunwayScenarioTransport = ScenarioTransport<
+  RunwayScenario,
+  RunwayScenarioCreateInput,
+  RunwayScenarioUpdateInput
+>;
 
 export const DEFAULT_RUNWAY_STORAGE_PAYLOAD: RunwaySimulatorStoragePayload = {
   version: 1,
@@ -95,8 +105,18 @@ export class RunwayRepository {
   private readonly storageKey: string;
   private readonly storage: StorageLike | null = null;
   private readonly fetchFn: typeof fetch;
+  private readonly transport: RunwayScenarioTransport;
 
-  constructor(storageKey = RUNWAY_STORAGE_KEY, customStorage?: StorageLike, customFetch?: typeof fetch) {
+  /**
+   * @param transport Remote transport for scenario persistence. Defaults to the REST routes over
+   * `customFetch`; pass an action-backed transport to use Server Actions. Offline fallbacks apply either way.
+   */
+  constructor(
+    storageKey = RUNWAY_STORAGE_KEY,
+    customStorage?: StorageLike,
+    customFetch?: typeof fetch,
+    transport?: RunwayScenarioTransport,
+  ) {
     this.storageKey = storageKey;
     if (customStorage) {
       this.storage = customStorage;
@@ -106,6 +126,12 @@ export class RunwayRepository {
       this.storage = null;
     }
     this.fetchFn = customFetch ?? ((...args) => fetch(...args));
+    this.transport =
+      transport ??
+      createFetchScenarioTransport<RunwayScenario, RunwayScenarioCreateInput, RunwayScenarioUpdateInput>(
+        this.fetchFn,
+        "/api/family-budget/runway/scenarios",
+      );
   }
 
   /**
@@ -408,18 +434,7 @@ export class RunwayRepository {
     status?: CloudSyncStatus;
   }> {
     try {
-      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-        method: "GET",
-        headers: { "Content-Type": "application/json" },
-        signal,
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to fetch runway scenarios: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const remoteScenarios: RunwayScenario[] = data.scenarios ?? [];
+      const remoteScenarios: RunwayScenario[] = await this.transport.list(signal);
       const local = this.loadLocalScenarios();
 
       // Auto-migration: if remote database is empty, seed it with the current local scenario
@@ -570,18 +585,7 @@ export class RunwayRepository {
     categoryCuts?: Record<string, CategoryAusterityWeight>;
     baselineOfferRevisionId?: string | null;
   }): Promise<RunwayScenario> {
-    const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Failed to create runway scenario remotely: HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-    return data.scenario;
+    return await this.transport.create(input);
   }
 
   public async updateRemoteScenarioWithoutCacheUpdate(
@@ -598,18 +602,7 @@ export class RunwayRepository {
       baselineOfferRevisionId?: string | null;
     },
   ): Promise<RunwayScenario> {
-    const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, ...updates }),
-    });
-
-    if (!res.ok) {
-      throw new Error(`Failed to update runway scenario remotely: HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-    return data.scenario;
+    return await this.transport.update(id, updates);
   }
 
   /**
@@ -627,18 +620,7 @@ export class RunwayRepository {
     baselineOfferRevisionId?: string | null;
   }): Promise<RunwayScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to create scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const created: RunwayScenario = data.scenario;
+      const created: RunwayScenario = await this.transport.create(input);
 
       const { scenarios } = this.loadLocalScenarios();
       const updatedList = created.isPrimary
@@ -695,18 +677,7 @@ export class RunwayRepository {
     },
   ): Promise<RunwayScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, ...updates }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to update scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const updated: RunwayScenario = data.scenario;
+      const updated: RunwayScenario = await this.transport.update(id, updates);
 
       const { scenarios } = this.loadLocalScenarios();
       const nextList = scenarios.map((s) => {
@@ -757,13 +728,7 @@ export class RunwayRepository {
    */
   public async deleteRemoteScenario(id: string): Promise<boolean> {
     try {
-      const res = await this.fetchFn(`/api/family-budget/runway/scenarios?id=${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to delete scenario remotely: HTTP ${res.status}`);
-      }
+      await this.transport.delete(id);
 
       const { scenarios, activeScenarioId } = this.loadLocalScenarios();
       const remaining = scenarios.filter((s) => s.id !== id);
@@ -797,18 +762,7 @@ export class RunwayRepository {
    */
   public async setPrimaryRemoteScenario(id: string): Promise<RunwayScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "set_primary", id }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to set primary scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const primary: RunwayScenario = data.scenario;
+      const primary: RunwayScenario = await this.transport.setPrimary(id);
 
       const { scenarios } = this.loadLocalScenarios();
       const updatedList = scenarios.map((s) => ({
@@ -839,18 +793,7 @@ export class RunwayRepository {
    */
   public async duplicateRemoteScenario(id: string, newName?: string): Promise<RunwayScenario> {
     try {
-      const res = await this.fetchFn("/api/family-budget/runway/scenarios", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "duplicate", id, name: newName }),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Failed to duplicate scenario remotely: HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const duplicated: RunwayScenario = data.scenario;
+      const duplicated: RunwayScenario = await this.transport.duplicate(id, newName);
 
       const { scenarios } = this.loadLocalScenarios();
       this.saveLocalScenarios([...scenarios, duplicated], duplicated.id);

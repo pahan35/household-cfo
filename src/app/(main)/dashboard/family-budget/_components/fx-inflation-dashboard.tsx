@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { cn } from "cn";
 import { format, startOfMonth } from "date-fns";
-import { Filter, RotateCw } from "lucide-react";
+import { Filter } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
