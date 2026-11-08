@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CloudSyncStatus, ConflictRecord, ConflictResolutionChoice } from "@/lib/cloud-sync-reconciler";
 
@@ -177,7 +177,12 @@ function resolveDefaultStorage(customStorage?: StorageLike | null): StorageLike 
  * browser window online/offline event listeners, and interactive conflict resolution choices.
  */
 export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOptions<T>): UseCloudSyncStateReturn<T> {
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
   const storage = resolveDefaultStorage(options?.storage);
+  const storageRef = useRef(storage);
+  storageRef.current = storage;
 
   const isOnline = typeof window !== "undefined" && typeof navigator !== "undefined" ? navigator.onLine : true;
 
@@ -202,12 +207,9 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
     setState((prev) => reduceSetOffline(prev));
   }, []);
 
-  const setSynced = useCallback(
-    (syncedAt?: string) => {
-      setState((prev) => reduceSetSynced(prev, syncedAt, options?.storageSyncKey, storage));
-    },
-    [options?.storageSyncKey, storage],
-  );
+  const setSynced = useCallback((syncedAt?: string) => {
+    setState((prev) => reduceSetSynced(prev, syncedAt, optionsRef.current?.storageSyncKey, storageRef.current));
+  }, []);
 
   const setConflictDetected = useCallback((newConflicts: ConflictRecord<T>[]) => {
     setState((prev) => reduceSetConflictDetected(prev, newConflicts));
@@ -223,18 +225,24 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
       choice: ConflictResolutionChoice,
       onResolve?: (choice: ConflictResolutionChoice, record: ConflictRecord<T>) => Promise<void> | void,
     ) => {
-      const target = state.conflicts.find((c) => c.entityId === entityId);
-      if (!target) return;
+      let targetRecord: ConflictRecord<T> | undefined;
+      setState((prev) => {
+        targetRecord = prev.conflicts.find((c) => c.entityId === entityId);
+        return prev;
+      });
+      if (!targetRecord) return;
 
       if (onResolve) {
-        await onResolve(choice, target);
-      } else if (options?.onConflictResolved) {
-        await options.onConflictResolved(entityId, choice, target);
+        await onResolve(choice, targetRecord);
+      } else if (optionsRef.current?.onConflictResolved) {
+        await optionsRef.current.onConflictResolved(entityId, choice, targetRecord);
       }
 
-      setState((prev) => reduceResolveConflict(prev, entityId, undefined, options?.storageSyncKey, storage));
+      setState((prev) =>
+        reduceResolveConflict(prev, entityId, undefined, optionsRef.current?.storageSyncKey, storageRef.current),
+      );
     },
-    [state.conflicts, options?.onConflictResolved, options?.storageSyncKey, storage],
+    [],
   );
 
   const clearConflicts = useCallback(() => {
@@ -250,7 +258,7 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
     setState((prev) => ({ ...prev, activeConflict: conflict }));
   }, []);
 
-  // Online / Offline window listeners
+  // Online / Offline window listeners (registered once; reads latest options via ref)
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -260,8 +268,8 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
 
     const handleOnline = () => {
       setState((prev) => reduceSetSyncing(prev));
-      if (options?.onReconnect) {
-        void options.onReconnect();
+      if (optionsRef.current?.onReconnect) {
+        void optionsRef.current.onReconnect();
       }
     };
 
@@ -272,24 +280,38 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
     };
-  }, [options?.onReconnect]);
+  }, []);
 
-  return {
-    status: state.status,
-    isSyncing: state.status === "syncing",
-    isOffline: state.status === "offline",
-    hasConflict: state.status === "conflict",
-    conflicts: state.conflicts,
-    activeConflict: state.activeConflict,
-    lastSyncedAt: state.lastSyncedAt,
-    setStatus,
-    setConflicts,
-    setSyncing,
-    setSynced,
-    setOffline,
-    setConflictDetected,
-    resolveConflict,
-    clearConflicts,
-    selectConflict,
-  };
+  return useMemo(
+    () => ({
+      status: state.status,
+      isSyncing: state.status === "syncing",
+      isOffline: state.status === "offline",
+      hasConflict: state.status === "conflict",
+      conflicts: state.conflicts,
+      activeConflict: state.activeConflict,
+      lastSyncedAt: state.lastSyncedAt,
+      setStatus,
+      setConflicts,
+      setSyncing,
+      setSynced,
+      setOffline,
+      setConflictDetected,
+      resolveConflict,
+      clearConflicts,
+      selectConflict,
+    }),
+    [
+      state,
+      setStatus,
+      setConflicts,
+      setSyncing,
+      setSynced,
+      setOffline,
+      setConflictDetected,
+      resolveConflict,
+      clearConflicts,
+      selectConflict,
+    ],
+  );
 }

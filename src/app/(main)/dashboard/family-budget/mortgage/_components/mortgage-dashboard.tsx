@@ -82,6 +82,8 @@ export function MortgageDashboard() {
     },
   });
 
+  const { setSyncing, setSynced, setOffline, setConflictDetected } = syncState;
+
   const loadData = useCallback(
     async (signal?: AbortSignal, forceRefresh = false) => {
       setIsLoading(true);
@@ -101,18 +103,18 @@ export function MortgageDashboard() {
         if (statRes.status === "fulfilled") setStatPoints(statRes.value?.selection?.points ?? []);
 
         // Synchronize scenarios from Supabase
-        syncState.setSyncing();
+        setSyncing();
         try {
           const remote = await repository.fetchRemoteScenarios(signal);
           setScenarios(remote.scenarios);
           setActiveScenarioId(remote.activeScenarioId);
 
           if (remote.conflicts && remote.conflicts.length > 0) {
-            syncState.setConflictDetected(remote.conflicts);
+            setConflictDetected(remote.conflicts);
           } else if (remote.isOfflineFallback) {
-            syncState.setOffline();
+            setOffline();
           } else {
-            syncState.setSynced();
+            setSynced();
           }
 
           const active = remote.scenarios.find((s) => s.id === remote.activeScenarioId) ?? remote.scenarios[0];
@@ -120,7 +122,7 @@ export function MortgageDashboard() {
             setConfig(active.config);
           }
         } catch (err) {
-          syncState.setOffline();
+          setOffline();
           console.error("Failed to sync scenarios with Supabase:", err);
         }
       } catch (err) {
@@ -130,7 +132,7 @@ export function MortgageDashboard() {
         setIsLoading(false);
       }
     },
-    [syncState],
+    [setSyncing, setSynced, setOffline, setConflictDetected],
   );
 
   useEffect(() => {

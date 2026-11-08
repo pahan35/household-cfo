@@ -45,6 +45,8 @@ export function OfferComparatorDashboard() {
     },
   });
 
+  const { setSyncing, setSynced, setOffline, setConflictDetected } = syncState;
+
   // ExternalProvider live data
   const [categories, setCategories] = useState<ExternalProviderCategory[]>([]);
   const [currencies, setCurrencies] = useState<ExternalProviderCurrency[]>([]);
@@ -60,27 +62,27 @@ export function OfferComparatorDashboard() {
   // 1. Load repository tracks and config
   useEffect(() => {
     async function initRepo() {
-      syncState.setSyncing();
+      setSyncing();
       try {
         const data = await repository.load();
         setTracks(data.tracks);
         setConfig(data.globalConfig);
         if (data.conflicts && data.conflicts.length > 0) {
-          syncState.setConflictDetected(data.conflicts);
+          setConflictDetected(data.conflicts);
         } else if (data.status === "offline" || data.isOfflineFallback) {
-          syncState.setOffline();
+          setOffline();
         } else {
-          syncState.setSynced(repository.getLastSyncedAt() ?? undefined);
+          setSynced(repository.getLastSyncedAt() ?? undefined);
         }
       } catch (e) {
         console.error("Failed to initialize offer comparator repository", e);
-        syncState.setOffline();
+        setOffline();
       } finally {
         setIsRepoLoaded(true);
       }
     }
     void initRepo();
-  }, [syncState]);
+  }, [setConflictDetected, setOffline, setSynced, setSyncing]);
 
   // 2. Fetch ExternalProvider live data
   useEffect(() => {

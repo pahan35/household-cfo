@@ -67,27 +67,29 @@ export function TimeValueDashboard() {
     },
   });
 
+  const { setSyncing, setSynced, setOffline, setConflictDetected } = syncState;
+
   // Load offer comparator active revision on mount & listen for storage updates
   useEffect(() => {
     let isMounted = true;
 
     const syncCloud = async () => {
-      syncState.setSyncing();
+      setSyncing();
       try {
         const result = await timeValueRepo.fetchRemoteConfig();
         if (isMounted && result.config) {
           setConfig(result.config);
           if (result.conflicts && result.conflicts.length > 0) {
-            syncState.setConflictDetected(result.conflicts);
+            setConflictDetected(result.conflicts);
           } else if (result.status === "offline" || result.isOfflineFallback) {
-            syncState.setOffline();
+            setOffline();
           } else {
-            syncState.setSynced(timeValueRepo.getLastSyncedAt() ?? undefined);
+            setSynced(timeValueRepo.getLastSyncedAt() ?? undefined);
           }
         }
       } catch (err) {
         console.warn("Failed to sync time value config from cloud:", err);
-        syncState.setOffline();
+        setOffline();
       }
     };
 
@@ -125,7 +127,7 @@ export function TimeValueDashboard() {
       isMounted = false;
       window.removeEventListener("storage", handleStorage);
     };
-  }, [offerRepo, syncState, timeValueRepo]);
+  }, [offerRepo, setConflictDetected, setOffline, setSynced, setSyncing, timeValueRepo]);
 
   // Compute mortgage gap & baseline savings margin
   const mortgageMetrics = useMemo(() => {

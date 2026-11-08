@@ -31,6 +31,15 @@ function TestSsrComponent() {
   return <div data-testid="status">{syncState.status}</div>;
 }
 
+function TestHarnessComponent({ onCapture }: { onCapture: (state: ReturnType<typeof useCloudSyncState>) => void }) {
+  const syncState = useCloudSyncState({
+    initialStatus: "syncing",
+    storageSyncKey: "test-key",
+  });
+  onCapture(syncState);
+  return <div data-status={syncState.status}>{syncState.status}</div>;
+}
+
 describe("useCloudSyncState state logic", () => {
   it("initializes with synced by default", () => {
     const state = createInitialCloudSyncState();
@@ -114,5 +123,25 @@ describe("useCloudSyncState state logic", () => {
   it("renders in React component via SSR renderToString", () => {
     const html = renderToString(<TestSsrComponent />);
     expect(html).toContain("syncing");
+  });
+
+  it("provides all action handlers and initial status through the hook", () => {
+    let captured: ReturnType<typeof useCloudSyncState> | null = null;
+    const html = renderToString(
+      <TestHarnessComponent
+        onCapture={(state) => {
+          captured = state;
+        }}
+      />,
+    );
+    expect(html).toContain('data-status="syncing"');
+    expect(captured).not.toBeNull();
+    expect(typeof captured!.setSyncing).toBe("function");
+    expect(typeof captured!.setSynced).toBe("function");
+    expect(typeof captured!.setOffline).toBe("function");
+    expect(typeof captured!.setConflictDetected).toBe("function");
+    expect(typeof captured!.resolveConflict).toBe("function");
+    expect(typeof captured!.clearConflicts).toBe("function");
+    expect(typeof captured!.selectConflict).toBe("function");
   });
 });

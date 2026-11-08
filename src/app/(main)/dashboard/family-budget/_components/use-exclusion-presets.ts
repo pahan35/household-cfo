@@ -292,12 +292,20 @@ export interface UseExclusionPresetsOptions {
  * and category auto-matching.
  */
 export function useExclusionPresets(categories: ExternalProviderCategory[] = [], options?: UseExclusionPresetsOptions) {
-  // Auto-detect Tax and Rent category IDs from available metadata
-  const detectedTaxCategoryIds = useMemo(() => findCategoryIdsByPattern(categories, TAX_CATEGORY_REGEX), [categories]);
+  // Stable key based on category IDs & names to prevent re-detecting on re-allocated category arrays
+  const categoriesKey = categories.map((c) => `${c.id}:${c.name}`).join(",");
 
+  // Auto-detect Tax and Rent category IDs from available metadata
+  // biome-ignore lint/correctness/useExhaustiveDependencies: categoriesKey captures all relevant category changes
+  const detectedTaxCategoryIds = useMemo(
+    () => findCategoryIdsByPattern(categories, TAX_CATEGORY_REGEX),
+    [categoriesKey],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: categoriesKey captures all relevant category changes
   const detectedRentCategoryIds = useMemo(
     () => findCategoryIdsByPattern(categories, RENT_CATEGORY_REGEX),
-    [categories],
+    [categoriesKey],
   );
 
   const defaultPresets = useMemo(

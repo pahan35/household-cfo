@@ -89,6 +89,8 @@ export function RunwayDashboard() {
     },
   });
 
+  const { setSyncing, setSynced, setOffline, setConflictDetected } = syncState;
+
   // Active Configuration State (projected from active scenario)
   const [jdgConfig, setJdgConfig] = useState<JdgRunwayConfig>(DEFAULT_JDG_RUNWAY_CONFIG);
   const [capitalPoolConfig, setCapitalPoolConfig] = useState<CapitalPoolConfig>(DEFAULT_CAPITAL_POOL_CONFIG);
@@ -105,7 +107,7 @@ export function RunwayDashboard() {
     async (signal?: AbortSignal, forceRefresh?: boolean) => {
       setIsLoading(true);
       setError(null);
-      syncState.setSyncing();
+      setSyncing();
 
       try {
         const currentMonthAnchor = format(new Date(), "yyyy-MM-dd");
@@ -138,11 +140,11 @@ export function RunwayDashboard() {
           setActiveScenarioId(loadedActiveId);
 
           if (conflicts && conflicts.length > 0) {
-            syncState.setConflictDetected(conflicts);
+            setConflictDetected(conflicts);
           } else if (offline) {
-            syncState.setOffline();
+            setOffline();
           } else {
-            syncState.setSynced();
+            setSynced();
           }
 
           const active =
@@ -161,13 +163,13 @@ export function RunwayDashboard() {
         }
       } catch (err) {
         console.error("Failed to load runway dashboard data:", err);
-        syncState.setOffline();
+        setOffline();
         setError(err instanceof Error ? err : new Error("Failed to load data"));
       } finally {
         setIsLoading(false);
       }
     },
-    [syncState],
+    [setSyncing, setSynced, setOffline, setConflictDetected],
   );
 
   useEffect(() => {
