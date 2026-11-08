@@ -408,8 +408,6 @@ export function useExclusionPresets(categories: ExternalProviderCategory[] = [],
 
   // Initialize from localStorage synchronously on mount, then trigger background Supabase synchronization
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
     let localPresets: ExclusionPreset[] = [];
     let localActiveId: string = BUILT_IN_PRESET_IDS.CONTROLLABLE_EXPENSES;
     let hasLocalStore = false;

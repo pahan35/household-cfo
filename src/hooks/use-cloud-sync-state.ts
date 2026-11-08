@@ -264,8 +264,6 @@ export function useCloudSyncState<T = unknown>(options?: UseCloudSyncStateOption
 
   // Online / Offline window listeners (registered once; invokes non-reactive effect event)
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
     const handleOffline = () => {
       setState((prev) => reduceSetOffline(prev));
     };
